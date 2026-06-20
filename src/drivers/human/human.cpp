@@ -103,6 +103,7 @@ static void
 shutdown(int index)
 {
 	int	idx = index - 1;
+	PlayerLoggerStop(index);
 
 	free (HCtx[idx]);
 
@@ -332,6 +333,7 @@ static void initTrack(int index, tTrack* track, void *carHandle, void **carParmH
 void newrace(int index, tCarElt* car, tSituation *s)
 {
 	int idx = index - 1;
+	PlayerLoggerStart(index, curTrack, car, s);
 
 	if (HCtx[idx]->MouseControlUsed) {
 		GfctrlMouseCenter();

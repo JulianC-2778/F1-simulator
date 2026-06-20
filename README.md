@@ -1,624 +1,241 @@
-# **TORCS 1.3.7** 
-Version of TORCS 1.3.7 with [SCR patch](https://github.com/barisdemirdelen/scr-torcs-1.3.7) and an additional patch to send the current game image to another application via shared memory.
+# TORCS 1.3.7
 
-## Installation on Ubuntu 20.04
 
-For Ubuntu 20.04, please proceed as follow:
 
-### Install all necessary requirements
+本项目仅面向 Ubuntu 部署。
 
-```
-sudo apt-get install libglib2.0-dev  libgl1-mesa-dev libglu1-mesa-dev  freeglut3-dev  libplib-dev  libopenal-dev libalut-dev libxi-dev libxmu-dev libxrender-dev  libxrandr-dev libpng-dev libvorbis-dev
-```
+## 安装依赖
 
-### Build torcs
-
-```
-$ export CFLAGS="-fPIC"
-$ export CPPFLAGS=$CFLAGS
-$ export CXXFLAGS=$CFLAGS
-$ ./configure --prefix=$(pwd)/BUILD  # local install dir
-$ make
-$ make install
-$ make datainstall
-```
-### Run torcs
-
-To run torcs with local installation, execute
-
-```
-./your_path_to_torcs/torcs-1.3.7/BUILD/bin/torcs
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libglib2.0-dev \
+  libgl1-mesa-dev \
+  libglu1-mesa-dev \
+  freeglut3-dev \
+  libplib-dev \
+  libopenal-dev \
+  libalut-dev \
+  libxi-dev \
+  libxmu-dev \
+  libxrender-dev \
+  libxrandr-dev \
+  libpng-dev \
+  libvorbis-dev
 ```
 
-## Installation on Ubuntu 18.04
+## 编译与安装
 
-For Ubuntu 18.04, please proceed as follow:
+在项目根目录执行：
 
-### Install all necessary requirements
+```bash
+export CFLAGS="-fPIC"
+export CPPFLAGS="$CFLAGS"
+export CXXFLAGS="$CFLAGS"
 
-```
-sudo apt-get install libglib2.0-dev  libgl1-mesa-dev libglu1-mesa-dev  freeglut3-dev  libplib-dev  libopenal-dev libalut-dev libxi-dev libxmu-dev libxrender-dev  libxrandr-dev libpng-dev
-```
-
-### Build torcs
-
-```
-$ export CFLAGS="-fPIC"
-$ export CPPFLAGS=$CFLAGS
-$ export CXXFLAGS=$CFLAGS
-$ ./configure --prefix=$(pwd)/BUILD  # local install dir
-$ make
-$ make install
-$ make datainstall
+./configure --prefix="$(pwd)/BUILD"
+make -j"$(nproc)"
+make install
+make datainstall
 ```
 
-### Usage with ROS
+程序会安装到项目目录下的 `BUILD` 文件夹，不会写入系统安装目录。
 
-If you want to run this software with the ROS adapter, you also need to install opencv uing `$apt-get install -y *opencv*`, after installing the ROS Melodic release.
+## 运行
 
-## Installation on Ubuntu 16.04
+```bash
+./BUILD/bin/torcs
+```
 
-### install torcs dependencies
-first we need to get some necessary debian packages
+TORCS 的用户配置和运行数据默认保存在 `~/.torcs`。
 
-```sudo apt-get install mesa-utils libalut-dev libvorbis-dev cmake libxrender-dev libxrender1 libxrandr-dev zlib1g-dev libpng16-dev```
+## 原生 SCR Server
 
-now check for openGL/DRI by running
+项目保留了 SCR patch 提供的 `scr_server` 驾驶员模块，源码位于 `src/drivers/scr_server`。它面向外部自动驾驶客户端：TORCS 负责仿真和传感器计算，客户端通过 UDP 接收车辆状态、计算动作，再把油门、制动、转向等控制量发回 TORCS。
 
-```glxinfo | grep direct```
+SCR Server 是实时闭环控制接口，本身不会生成 CSV。它和下文的 human 数据采集器彼此独立：
 
-the result should look like
+| 接口 | 用途 | 默认端口/输出 |
+| --- | --- | --- |
+| `scr_server` | 外部程序通过传感器状态控制 SCR 车辆 | UDP 3001–3010 |
+| human 数据采集器 | 记录真人玩家状态，也可单向推送每行记录 | CSV；UDP 3101 |
 
-```direct rendering: Yes```
+### 启动
 
-check for glut by running
+构建和安装项目时，`scr_server.so` 及其 10 个车辆配置会一并安装。启动时必须用 `-ver` 指定 SCR 协议版本；推荐使用量程为 200 m 的 `2013`：
 
-```dpkg -l | grep glut```
+```bash
+./BUILD/bin/torcs -ver 2013
+```
 
-if it is not installed run
+随后在图形界面进入 **Race → Quick Race**，选择 `scr_server 1` 作为驾驶员并开始比赛。仓库自带的 Quick Race 配置已经默认选择 `scr_server 1`。也可以直接指定该配置：
 
-```sudo apt-get install freeglut3 freeglut3-dev```
+```bash
+./BUILD/bin/torcs \
+  -ver 2013 \
+  -r "$(pwd)/BUILD/share/games/torcs/config/raceman/quickrace.xml"
+```
 
-check for libpng by running
+进入比赛后 TORCS 会等待客户端握手，因此应同时启动外部 SCR 客户端。`scr_server 1` 到 `scr_server 10` 依次监听 UDP 端口 `3001` 到 `3010`，支持最多 10 个独立客户端。
 
-```dpkg -l | grep png```
+SCR Server 还支持以下启动参数：
 
+- `-t <微秒>`：等待客户端每步回传控制指令的超时时间，默认 `10000`，即 10 ms；超时后沿用上一条控制指令。
+- `-noisy`：给赛道、对手和 focus 距离传感器加入噪声。
+- `-nodamage`：禁用真实损伤，并在状态中返回模拟损伤值。
+- `-nofuel`：禁用燃油消耗。
+- `-nolaptime`：禁用圈速限制。
+- `-ver 2009`：距离传感器量程为 100 m；`-ver 2010` 至 `-ver 2013` 的量程为 200 m。
 
-#### install PLIB
+### UDP 协议
 
-first we have to create a folder for all torcs-related stuff. Therefore, run the following commands
+协议使用由括号包围的空格分隔字段，不是 JSON。客户端首先向对应端口发送以 `SCR` 开头的识别消息：
 
-```cd /your_desired_location/```
+```text
+SCR
+```
 
-```sudo mkdir torcs```
+也可以在握手时自定义 19 路赛道传感器的角度：
 
-```export TORCS_PATH=/your_desired_location/torcs```
+```text
+SCR(init -90 -80 -70 -60 -50 -40 -30 -20 -10 0 10 20 30 40 50 60 70 80 90)
+```
 
-```cd $TORCS_PATH```
+未提供 `init` 时使用上面的默认角度。识别成功后服务端回复：
 
-install PLIB-dependencies
+```text
+***identified***
+```
 
-```sudo apt-get install libxmu-dev libxmu6 libxi-dev```
+之后每个仿真步按以下顺序循环：
 
-now download [PLIB 1.8.5](http://plib.sourceforge.net/download.html), unpack to the created directory and enter the plib folder by 
+1. 服务端发送一条车辆状态消息。
+2. 客户端在超时前发送一条控制消息。
+3. TORCS 应用控制量并进入下一仿真步。
 
-```sudo tar xfvz /path_to_downloaded_files/plib-1.8.5.tar.gz```
+状态消息示意：
 
-```cd plib-1.8.5```
+```text
+(angle 0.01)(curLapTime 3.2)(damage 0)(distFromStart 125.4)...
+```
 
-before we compile plib we need need to set some environment variables
+状态字段包括 `angle`、`curLapTime`、`damage`、`distFromStart`、`distRaced`、`fuel`、`gear`、`lastLapTime`、`opponents[36]`、`racePos`、`rpm`、`speedX/Y/Z`、`track[19]`、`trackPos`、`wheelSpinVel[4]`、`z` 和 `focus[5]`。这些字段的单位和含义与下文主 CSV 中的同名字段一致。此外，SCR Server 还发送：
 
-```export CFLAGS="-fPIC"```
+| 字段 | 单位 | 含义 |
+| --- | --- | --- |
+| `x`, `y` | m | 车辆世界坐标 |
+| `roll`, `pitch`, `yaw` | rad | 车辆在世界坐标系中的横滚角、俯仰角和航向角 |
+| `speedGlobalX`, `speedGlobalY` | m/s | 世界坐标系 X、Y 方向的速度 |
 
-```export CPPFLAGS=$CFLAGS```
+`focus[5]` 的中心方向由客户端控制消息中的 `focus` 指定，五路角度为 `focus-2°` 到 `focus+2°`。focus 每次有效读取后有 1 秒冷却时间，冷却期间返回 `-1`。
 
-```export CXXFLAGS=$CFLAGS```
+客户端控制消息包含以下字段：
 
-now we can configure and compile PLIB
+```text
+(accel 1)(brake 0)(gear 1)(steer 0)(clutch 0)(focus 0)(meta 0)
+```
 
-```./configure```
-
-```make```
-
-```sudo make install```
-
-just for safety, wen unset our environment variables again
-
-```export CFLAGS=```
-
-```export CPPFLAGS=```
-
-```export CXXFLAGS=```
-
-#### install openal
-let's enter our base directory again
-
-```cd $TORCS_PATH```
-
-now we download [openal 1.17.2](http://kcat.strangesoft.net/openal-releases/) and unpack it
-
-```sudo tar xfvj /path_to_downloaded_files/openal-soft-1.17.2.tar.bz2 ```
-
-we enter the build folder and compile openal
-
-```cd openal-soft-1.17.2/build```
-
-```sudo cmake ..```
-
-```sudo make```
-
-```sudo make install```
-
-### install TORCS
-enter your TORCS_PATH 
-
-```cd $TORCS_PATH```
-
-and clone this repository
-
-```git clone https://github.com/fmirus/torcs-1.3.7.git```
-
-now we enter our torcs folder 
-
-```cd torcs-1.3.7```
-
-now build we build TORCS and log the output to a text-files as TORCS does not interrupt the build on errors
-
-```make >& error.log```
-
-now open error.log with your favourite text editor and search for errors. If there are no errors you can proceed, otherwise you have to resolve.
-
-now we are ready to install torcs by running
-
-```sudo make install```
-
-also install the torcs data-files by running
-
-```sudo make datainstall```
-
-If you made it this far, you can delete the TORCS_PATH variable by ```unset TORCS_PATH``` and are now ready to go. Congratulations :-)
-
-# Original TORCS README:
-
-1.  Introduction
-2.  Documentation
-3.  Non-Free content (in GPL sense)
-4.  Track editor
-5.  Linux Installation from Source
-6.  Windows Installation from Source (Release version)
-6.1 Windows Installation from Source, additional notes
-7.  Windows Installation from Source (Debug version)
-8.  Testing
-9.  Getting Help
-10. Running under Valgrind with Linux
-11. Changes
-12. TODO/Notes
-
-
-## 1. Introduction
----------------
-First a big welcome, I hope you will enjoy your ride:-)
-
-This is an all in one package of TORCS. Be aware that some included
-artwork has non free (in the GPL sense) licenses, you will find a "readme.txt"
-in those directories. The rest is either licensed under the GPL or the Free
-Art License. If you want to create cars or advanced tracks using the accc tool,
-you will require stripe from http://www.cs.sunysb.edu/~stripe.
-
-If you use TORCS for research/projects you can have a look into the FAQ for
-citation guidelines.
-
-Kind regards
-
-Bernhard
-
-
-## 2. Documentation
-----------------
-You can find a variety of links on www.torcs.org (video tutorials about content
-creation/usage, written documentation like the robot tutorial, etc.). The TORCS
-API and architecture documentation can be generated with Doxygen 1.8, run
-"make doc", the result can be found in doc/manual/api, point to index.html.
-
-
-## 3. Non-Free content (in GPL sense)
-----------------------------------
-Here the list with the directories containing non free content, look at the
-readme.txt for details:
-- data/cars/models/pw-*
-- data/cars/models/kc-*
-
-
-## 4. Track editor
----------------
-The track editor is not included in this distribution, you can get it from
-http://www.berniw.org/trb/download/trackeditor-0.6.2c.tar.bz2, the sources
-are included in the jar. The sources are also available here:
-http://sourceforge.net/projects/trackeditor.
-
-
-## 5. Linux Installation from Source
----------------------------------
-- Requires plib 1.8.5, FreeGLUT or GLUT, be aware to compile plib with -fPIC
-  on AMD64 if you run a 64 bit version of Linux. Be aware that maybe just
-  1.8.5 works.
-- Untar the archive
-- cd into the torcs-1.3.5 directory
-- ./configure (use --help for showing the options, of interest might be
-  --enable-debug and --disable-xrandr).
-- make
-- make install
-- make datainstall
-- start with "torcs"
-
-Command line arguments:
-* -l list the dynamically linked libraries
-* -d run under gdb and print stack trace on exit, makes most sense when compiled
-     with --enable-debug
-* -g run under Valgrind (requires a debug build for useful results)
-* -e display the commands to issue when you want to run under gdb
-* -s disable multitexturing, important for older graphics cards
-* -m use X mouse cursor and do not hide it during races
-* -r pathtoraceconfigfile, run race from command line only, for testing and AI
-     training, see FAQ for details
-* -k (keep) suppress calls to dlclose to keep modules loaded (for Valgrind runs,
-     to avoid "??" in the call stack)
-
-
-## 6. Windows Installation from Source (Release version)
------------------------------------------------------
-- hint: you can have a release and a debug build side by side, the release
-  version goes to "runtime" and the debug to "runtimed".
-- requires VS 6 (tested with sp6) or VS 2008 (tested with sp1), VS2010 is reported
-  to work as well. For express editions or VS 2012 read notes in section 6.1.
-- VS 6.0 support is fading out, you will need to install the Windows Server 2003
-  February Edtion CORE SDK (the last one which worked with VS 6.0) and set the lib
-  and include path in the options (used for SHGetFolderPath etc.).
-- untar the archive into a path without whitespaces and special characters.
-- cd into the torcs-1.3.5 directory
-- run setup_win32.bat
-- run setup_win32-data-from-CVS.bat
-- select the TORCS workspace (TORCS.dsw for VS 6) or solution (TORCS.sln
-  for VS 2008), select the w32-Release version.
-- compile project (0 warnings)
-- cd into the "runtime" directory.
-- run "wtorcs.exe"
-
-Command line arguments:
-* -s disable multitexturing, important for older graphics cards
-* -r pathtoraceconfigfile, run race from command line only, for testing and AI
-     training, see FAQ for details 
-
-
-### 6.1 Windows Installation from Source, additional notes
-------------------------------------------------------
-#### 6.1.1 VS 2005 Express (based on imported dsw), reported by Eric Espie:
-- Run up to the setup*.bat step in the above instructions, then open the TORCS.dsw
-  file and do the following changes
-- in wtorcs -> Source Files (Solution explorer) exclude torcs.rc
-- in client -> Source Files add the file errno.cpp to the solution (located
-  in src/libs/client)
-- change in the properties of all the sub-projects :
-        in "Configuration Properties -> Link Editor -> Entry : Ignore Specific Library"
-        change LIBCD in LIBC if present.
-
-#### 6.1.2 VS 2005 Express (based on VS2008 sln), reported by Wolf-Dieter Beelitz:
-- Edit all vcproj (=xml) files and set the "version" from 9.00 to 8.00
-- Follow the instructions above.
-
-#### 6.1.3 VS 2008 Express, reported by Stacey Pritchett:
-- in wtorcs -> Source Files (Solution explorer) exclude torcs.rc
-- Follow the instructions above.
-
-#### 6.1.4 VS 2012, reported by SteveO:
-- In every project (except TORCS) add /SAFESEH:NO into the Additional Options
-  (Properties-Configuration Properties-Linker-Command Line), see also
-  http://msdn.microsoft.com/en-us/library/9a89h429.aspx.
-
-
-## 7. Windows Installation from Source (Debug version)
----------------------------------------------------
-- hint: you can have a debug and a release build side by side, the debug
-  version goes to "runtimed" and the release to "runtime".
-- requires VS 6 (tested with sp6) or VS 2008 (tested with sp1), VS2010 is reported
-  to work as well. For express editions or VS 2012 read notes in section 6.1.
-- VS 6.0 support is fading out, you will need to install the Windows Server 2003
-  February Edtion CORE SDK (the last one which worked with VS 6.0) and set the lib
-  and include path in the options (used for SHGetFolderPath etc.).
-- untar the archive into a path without whitespaces and special characters.
-- cd into the torcs-1.3.5 directory
-- run setup_win32_debug.bat
-- run setup_win32-data-from-CVS_debug.bat
-- select the TORCS workspace (TORCS.dsw for VS 6) or solution (TORCS.sln
-  for VS 2008), select the w32-Debug version
-- compile project (0 warnings)
-- cd into the "runtimed" directory.
-- run "wtorcs.exe"
-
-Command line arguments:
-* -s disable multitexturing, important for older graphics cards
-* -r pathtoraceconfigfile, run race from command line only, for testing and AI
-     training, see FAQ for details 
-
-
-## 8. Testing
-----------
-If you find problems which should be already fixed or new ones please report them
-to the torcs-users mailing list.
-
-
-## 9. Getting Help
----------------
-During the game press F1. For more in depth information visit www.torcs.org,
-you find there a lot of information, look at the documentation section on
-the left, have as well a look into the list of howto's. If you are stuck
-have a look into the FAQ to learn how and where to report a problem.
-
-
-## 10. Running under Valgrind with Linux
-------------------------------------
-First you need to build a debug version of TORCS, make sure that the CFLAGS,
-CPPFLAGS and CXXFLAGS environment variables are empty (usually they are). Then
-run "make distclean", then the configure script with the option --enable-debug
-and all other options which you require, build and install as usual.
-
-To find memory leaks run first (Valgrind must be available in the path):
-./torcs -g
-
-You will find the logfile valgrind.log in the .torcs directory. If you have
-"??" in the call stack, you can run TORCS with the -k option to avoid unloading
-the modules:
-./torcs -g -k
-
-You should use -k just to investigate the "??" in the call stacks, because the
-suppression of dlclose can hide problems related with module release and cause
-problems because modules are just recycled but not reloaded.
-
-Of course you can use this with the console (command line) mode as well, e.g.:
-./torcs -g -r ~/.torcs/config/raceman/champ.xml
-./torcs -g -k -r ~/.torcs/config/raceman/dtmrace.xml
-
-Some additional notes:
-- Valgrind (version 3.6.1) reports on systems with the ATI flgrx OpenGL driver (8.961)
-  lots of leaks, according AMD Valgrind misinterprets memory blocks handed over to the
-  kernel. When I wrote suppressions the flgrx driver hung the X Server up, conclusion:
-  Give it a try (maybe another Valgrind/driver/kernel combination does/will do better),
-  but if you run in the mentioned problems, just use the TORCS command line mode or
-  install temporarily the Open Source ATI driver alternative, maybe this does do better
-  (not tested, send me a report;-) )
-- You can edit the "torcs" script and add "--leak-check=full --show-reachable=yes"
-  to see what is still reachable at exit. This is useful to reduce the amount of cached
-  xml file handles or hunt down missing releases of handles (they are not reported
-  usually because they are reachable via the cache), beware, it is perfectly
-  fine that the GUI and some handles are held permanent.
-
-
-## 11. Changes
------------
-
-Changes since 1.3.6
--------------------
-- Added missing pictures for Doxygen generated documentation (Bernhard).
-- Fixed all Doxygen (version 1.8.2) warnings (Bernhard).
-- Adjusted Doxygen configuration (Bernhard).
-- Added architecture overview to documentation (Bernhard).
-- Updated documentation in params.cpp (Bernhard).
-- Improved some currently unused functions in params.cpp (Bernhard).
-- params.cpp cleanup (Bernhard).
-- Restructured/improved robottools documentation (Bernhard).
-- Improved documentation of interfaces (track, graphic, robot, simu) (Bernhard).
-- Improved pointer checking in RmLoadingScreenSetText (Bernhard).
-- Improved race manager API documentation (Bernhard).
-- Added RmGetCategoryName to race manager API, as the name suggests (Bernhard).
-- Removed obsolete file confscreens.h (Bernhard).
-- Enabled documentation client side (Javascript) search engine (Bernhard).
-- Improved ReApplyRaceTimePenalties for cases where drivers did not complete a
-  single lap or the car has been wrecked (Bernhard).
-- Removed some outdated files from human driver (Bernhard).
-- TORCS configuration and result files go now to correct place on Windows,
-  e.g. to AppData/Local/torcs on Windows 7 (Bernhard).
-- Result saving creates directory if not available, matters when creating
-  custom racemanagers or running custom batches with -r (Bernhard).
-- Improved -r on Windows, paths containing backslashes ('\') are now working
-  (Bernhard). 
-- Added ShFolder.lib to VS 6 project files (required for SHGetFolderPath).
-  For VS 6 builds you will need to install the Windows Server 2003 February
-  Edtion CORE SDK (the last one which worked with VS 6) and set the lib
-  and include path in the VS 6 options (Bernhard).
-- Fixed some gcc 4.8.1 warnings (Bernhard).
-- Disabled penalties after race finish, reported by MarkP (MarkP, Bernhard).
-- Added new options to trackgen for testing, see -i, -o (Bernhard).
-- Added a testsuite to generate a bulk of tracks ("test" directory) (Bernhard).
-- Added blacklisting of button events in player perferences, needed to set up
-  input devices which fire button and axis events on analogue buttons, e.g.
-  L2/R2 of playstation 4 controllers. Add in the drivers section of
-  preferences.xml e.g. <attstr name="blacklisted events" val="BTN7-0,BTN8-0"/>
-  (Bernhard).
-- Improved wheel velocity calculation (Bernhard).
-- Improved suspension code to catch damping spikes in extreme conditions and
-  setups, for TRB (Wolf-Dieter, Bernhard).
-- Added comments in susp.cpp (Bernhard).
-- Ensure that the third element just produces positive forces (Wolf-Dieter,
-  Bernhard).
-
-## 12. TODO/Notes
---------------
-
-TODO for 1.3.8 "worn & blown"
---------------
-- Z-Collision
-- Eventually Z calculation
-- Caster
-- Threshold and caster adjustable- Dynamic track
-- Wind/Temp
-- Tire Wear/Temp
-- Curb sound
-- Brake balance adjustable during ride
-- Eventually differential(s) adjustable during ride
-
-TODO for 1.3.9 "analysed"
---------------
-- Data recorder ("Telemetry")
-- Data analyser (high/low-pass filtering, comparison, etc.)
-- Speed/Shock
-- Replay?
-
-TODO for 1.3.10 "ruled"
----------------
-- Rules
-- Timed races (e.g. 24h).
-- Rules/Modes which do not requrie 1.4 changes
-
-TODO for 1.3.11 "tutored"
----------------
-- Starting/race modes (multi-class for TRB?)
-- VS update
-- Robot Tutorial update
-
-TODO for 1.3.12 "managed"
----------------
-- Document race manager XML
-- Expose secret settings in GUI (e.g. Button masking)
-
-TODO for 1.3.13 or 1.4.x "artistic"
-------------------------
-- Ingame track generation wizard (themed)
-- Ingame car livery design (themed)
-
-TODO for 1.3.14 or 1.4.x "everywhere"
-------------------------
-- Merge simuv3 parts into simuv2
-- Review and eventually apply mac os x build
-- Review MorphOS changes
-- Review WD's ABS suggestion, apply.
-- Review WD's 4WD analysis/patch.
-
-TODO for 1.3.15+
-----------------
-- Maintainance only, move development to 1.4
-- Compiler and library adoptions, fixes, compatible content updates
-
-
-TODO for 1.4.x
---------------
-- Robot interface adoptions (maybe askfeatures, callonce, grid, postprocess, we will see...)
-- More Rules.
-- Brake/Engine Wear (with cooling)
-- Apply SDL patch from Brian Gavin but moving directly to SDL 2.0.
-- Update OpenAL to 1.1, fix use of deprecated stuff.
-- Car asignment for human players.
-- Sound (alut depricated/scheduling for lots of cars)
-- Make it possible for a robot module to carry any arbitrary number of
-  drivers (instead of static 10).
-- Pace car and trucks to remove wrecks (remove "virtual" crane?).
-- Replace wav sounds with ogg?
-- Track extensions (crossings, split/join, variable width)
-- Replays
-- Skidmarks/shadows masking with stencil
-- Phong specular highlights/in shadow occlusion
-- Skidmarks to simu/persistency (get rid of frame rate dependency)
-- Review/reduce dynamic memory allocation/release during rendering
-- Store all graphics engine state in a context struct/object (to be able to render telemetry
-  in the car setup screen or during a running session)
-- track wall properties
-- Solve problems with side entering/exiting pit lane rules (repeated violations give
-  only one penalty under some conditions).
-
-TODO TRB
---------
-- RSS feed(s) (suggested by Quinten)
-- Race XML generation
-- Content exchange
-- E-Mail exchange
-
-TODO for Compliance
--------------------
-155-DTM -> replace with car10-trb1
-acura -> replace with car9-trb1
-mc-larenf1 -> replace with car10-trb1
-p406 -> replace with car1-trb4
-rework buggy, baja bug
-replace rally cars
-Remove invalid geometry from tracks 
-convert force units internally from lbs to lbf
-
-
-Later:
--------------------
-- Decide about plib (not maintained anymore?) -> integration of minimal subset as base
-  for own engine?
-- Refactor trackgen (left/right -> half the code, maybe more)
-- GUI for event blacklisting.
-- Ongoing for every release: rework free car models (several holes, no
-  emmissive color of lod (model becomes dark at a certain distance), single
-  sided, add cockpit, lods).
-- Ongoing for every release: Improve visual quality of some existing tracks.
-- Fix sound in split screen multiplayer.
-- Ongoing: Replace some defines with "static const" to be able to see the
-  symbol name when debugging.
-- move berniw/bt spline code into math to share it.
-- hunt down all glGet* crap during the simulation.
-- (Problem when driver list changes during championship.)
-- (add proper init/shutdown to every module which is not bound to anything else
-  but the loading/init/shutdown/unloading process.)
-- Blind mode should not load graphics engine.
-
-
-TODO for 1.9.x (pre 2.0 series, no release)
---------------
-- Design networking, how to embed it into TORCS?
-- Networking prototype.
-- Gaming modes suitable for online races.
-- Cockpit inside view.
-- Set up infrastructure for reading binary data files bit with and endianness independent.
-
-TODO for 2.0.0
---------------
-- Initial Networking.
-
-
-TODO LATER
-----------
-- Add validation for the case no driver selected, do not exit to
-  console.
-- Networking (2.0).
-- SMP simulaton core (for myself).
-- Replays.
-- Telemetry recorder/viewer.
-- Phong specular highlights (optional env, cube or GLSL).
-- Shadowmapped/Stenciled dynamic car shadows.
-- so/dll with libtool, common code?
-- 3d-grass.
-- Dynamic sky.
-- TRB integration.
-- Show just fitting resolutions for fullscreen/change for windowed mode.
-- Separate components more clean (e.g. ssgInit should go back to
-  ssggraph, etc.)
-- Avoid cameras cutting the landscape.
-- Start position marks on track (same technique like fake shadow, skids).
-- Start procedures (pace car, etc).
-- Better transparency for track objects.
-- More driving aids, switch to AI and back.
-- Opponent sets for human players (e.g 20 Open Wheel cars, etc.)
-- Free camera controlled with mouse and keys.
-
-
-IDEAS FOR MUCH LATER
---------------------
-- Weather.
-- Dynamic day/night-time, car lights.
-- Pit crew.
-- Dynamic "intelligent" Objects (e.g. Helicopter)
-- Solid/dynamic obstacles.
-- Nicer trees etc, terrain LOD.
-- Inside view.
-- Animated driver.
-- Dirt on cars, inside view.
-- free terrain.
-- Open track dynamically generated when driving.
-- Random track generator.
-- Separate pit path, Y segments, etc?
-- TORCS as benchmark or screensaver?
-- Force feedback.
-- Story mode with message.
-- Traffic simulator
+| 字段 | 范围 | 含义 |
+| --- | --- | --- |
+| `accel` | `[0, 1]` | 油门 |
+| `brake` | `[0, 1]` | 制动 |
+| `gear` | `-1, 0, 1...` | 倒挡、空挡或前进挡 |
+| `steer` | `[-1, 1]` | 转向 |
+| `clutch` | `[0, 1]` | 离合器 |
+| `focus` | `[-90, 90]` 度 | focus 中心方向；超出范围表示不请求 focus 数据 |
+| `meta` | `0` 或 `1` | `1` 请求重新开始比赛，通常使用 `0` |
+
+## 数据采集
+
+数据采集集成在 `human` 驾驶员模块中，不需要另外启动采集程序。每场比赛开始时，程序会为每个真人玩家创建一组日志；驾驶过程中按仿真时间定期采样，比赛结束或重新开始时关闭日志。
+
+默认采样率为 20 Hz。可以在启动 TORCS 前通过环境变量调整采集行为：
+
+```bash
+# 输出目录必须已经存在；不设置时使用 TORCS 进程的当前工作目录
+mkdir -p "$(pwd)/logs"
+export TORCS_PLAYER_LOG_DIR="$(pwd)/logs"
+
+# 采样率，单位 Hz
+export TORCS_PLAYER_LOG_HZ=20
+
+# 每条主日志记录还会以 UDP 数据报发送到这里
+export TORCS_PLAYER_UDP_HOST=127.0.0.1
+export TORCS_PLAYER_UDP_PORT=3101
+
+./BUILD/bin/torcs
+```
+
+采样受仿真步长限制，因此实际相邻记录的时间应以 `sim_time` 为准。UDP 内容与主 CSV 的数据行相同，但不发送表头；没有接收端也不影响 CSV 写入。
+
+### CSV 文件
+
+每个真人玩家每场比赛生成两个文件，`<player>` 是从 1 开始的玩家编号，`<timestamp>` 是开始采集时的 Unix 时间戳：
+
+- `player-<player>-<timestamp>.csv`：当前玩家的控制量、车辆状态和传感器数据，每个采样时刻一行。
+- `rankings-player-<player>-<timestamp>.csv`：同一采样时刻所有参赛车辆的位置和排名，每辆车一行。多人本地驾驶时，每个玩家各自生成一份排名文件。
+
+未设置 `TORCS_PLAYER_LOG_DIR` 时，文件写入进程当前工作目录。使用本仓库的 `./BUILD/bin/torcs` 启动脚本时，该目录通常是 `BUILD/share/games/torcs`；建议显式设置输出目录，以免依赖启动方式。
+
+### 主 CSV 字段
+
+| 字段 | 单位/范围 | 含义 |
+| --- | --- | --- |
+| `seq` | 从 0 开始 | 当前日志内的采样序号 |
+| `sim_time` | s | 本场比赛的仿真时间 |
+| `player` | 从 1 开始 | 真人玩家编号 |
+| `lap` | 圈 | 当前圈计数，起跑阶段通常为 0 |
+| `x`, `y` | m | 车辆在赛道世界坐标系中的平面位置 |
+| `yaw` | rad | 车辆在世界坐标系中的航向角 |
+| `accel_x`, `accel_y` | m/s² | 车辆纵向、横向加速度 |
+| `steer` | `[-1, 1]` | 转向指令；负值和正值分别代表两个转向方向 |
+| `throttle` | `[0, 1]` | 油门指令 |
+| `brake` | `[0, 1]` | 制动指令 |
+| `clutch` | `[0, 1]` | 离合器指令 |
+| `angle` | rad，`[-π, π]` | 赛道中心线切线方向与车辆航向之间的夹角 |
+| `curLapTime` | s | 当前圈已经用时 |
+| `damage` | 无量纲 | TORCS 累积车辆损伤值，越大表示损伤越严重 |
+| `distFromStart` | m | 沿赛道中心线到起终点的距离；每圈会回绕 |
+| `distRaced` | m | 从本次采集开始累计行驶的有符号赛道距离；跨越起终点时已做回绕修正 |
+| `fuel` | L | 剩余燃油量 |
+| `gear` | 整数 | 挡位；`-1` 为倒挡、`0` 为空挡、正数为前进挡 |
+| `lastLapTime` | s | 上一圈用时；尚未完成一圈时通常为 0 |
+| `racePos` | 从 1 开始 | 当前比赛名次 |
+| `rpm` | rpm | SCR 风格的发动机转速值，代码由 TORCS 内部发动机角速度乘以 10 得到 |
+| `speedX`, `speedY`, `speedZ` | km/h | 车辆自身坐标系中的纵向、横向、垂向速度 |
+| `trackPos` | 通常 `[-1, 1]` | 相对赛道中心的位置：`0` 为中心线，绝对值 `1` 为左右边界；超出该范围表示驶出赛道 |
+| `z` | m | 车身世界高度减去当前位置赛道表面高度 |
+| `opponent_0` … `opponent_35` | m，最大 200 | 环绕车辆一周的 36 路对手距离传感器，每路覆盖 10°；`opponent_18` 朝正前方，索引依次覆盖相对方向 `-180°` 到 `170°`。没有对手时为 200 |
+| `track_0` … `track_18` | m，最大 200 | 19 路赛道边界距离，方向相对车辆轴线从 `-90°` 到 `90°`、间隔 10°；`track_9` 朝正前方。车辆驶出赛道时全部为 `-1`，量程内未碰到边界时为 200 |
+| `wheelSpinVel_0` … `wheelSpinVel_3` | rad/s | 四个车轮的角速度；顺序是右前、左前、右后、左后 |
+| `focus_0` … `focus_4` | m，最大 200 | 车辆前向附近 `-2°`、`-1°`、`0°`、`1°`、`2°` 的赛道边界距离；车辆驶出赛道时为 `-1`，量程内未碰到边界时为 200 |
+
+说明：传感器角度遵循 SCR/TORCS 的坐标和正负方向约定。如果下游任务需要明确区分“左/右”，建议用一帧已知姿态数据验证所用坐标系，不要只根据索引名猜测。
+
+### 排名 CSV 字段
+
+| 字段 | 单位/范围 | 含义 |
+| --- | --- | --- |
+| `sim_time` | s | 采样时的比赛仿真时间；同一时刻的所有车辆具有相同值 |
+| `car_index` | 从 0 开始 | 车辆在当前 `tSituation` 车辆数组中的索引 |
+| `car_name` | 字符串 | 车辆或车手名称，按标准 CSV 规则使用双引号转义 |
+| `race_pos` | 从 1 开始 | 当前比赛名次 |
+| `laps` | 圈 | 当前圈计数 |
+| `dist_from_start` | m | 该车沿赛道中心线到起终点的距离 |
+
+## 常用启动参数
+
+- `-s`：禁用多重纹理，适用于部分旧显卡或图形兼容问题。
+- `-m`：显示 X 鼠标光标。
+- `-r <配置文件>`：使用指定的比赛配置文件启动，适用于测试或 AI 训练。
+- `-d`：在 GDB 下运行并在退出时打印调用栈，建议配合调试构建使用。
+- `-g`：在 Valgrind 下运行，建议配合调试构建使用。
+
+查看游戏内帮助请按 `F1`。
+
+## 许可证说明
+
+项目中的部分车辆素材并非 GPL 自由内容，具体许可信息请查看对应目录内的 `readme.txt`，主要包括：
+
+- `data/cars/models/pw-*`
+- `data/cars/models/kc-*`

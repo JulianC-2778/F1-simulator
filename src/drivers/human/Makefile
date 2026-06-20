@@ -24,7 +24,7 @@ MODULEDIR = drivers/${ROBOT}
 
 LIBS      =  -lplibul
 
-SOURCES   = ${ROBOT}.cpp pref.cpp player_logger.cpp
+SOURCES   = ${ROBOT}.cpp pref.cpp player_logger.cpp scr_sensors.cpp
 
 SHIPDIR   = drivers/${ROBOT}
 
