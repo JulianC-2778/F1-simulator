@@ -1,0 +1,86 @@
+# TORCS build output
+/BUILD/
+/build/
+/dist/
+/.libs/
+**/.libs/
+**/.deps/
+**/.depend
+
+# Compiler and linker output
+*.o
+*.obj
+*.lo
+*.slo
+*.la
+*.lai
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.d
+*.gch
+*.pch
+*.mod
+*.smod
+*-bin
+
+# Autotools/configure-generated files
+/autom4te.cache/
+/config.cache
+/config.log
+/config.status
+/config.h.tmp
+/libtool
+/stamp-h*
+src/tools/package/specfiles/*.spec
+
+# Runtime-generated files
+/player_logs/
+*.log
+*.pid
+*.csv
+*.dump
+*.core
+core
+core.*
+*.replay
+*.bak
+*~
+
+# Test and analysis output
+coverage/
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+
+# Editor and OS metadata
+.cache/
+.vscode/
+.idea/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# Python helpers
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
