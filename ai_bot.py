@@ -13,6 +13,7 @@ Steps implemented:
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import socket
@@ -22,8 +23,15 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from telemetry_common import clamp, parse_float, parse_int
+    from telemetry_common import (
+        clamp, parse_float, parse_int,
+        LatestTaskRunner, chat_completion_text, extract_json_object,
+        compact_track_profile, compact_opponent_profile,
+        connect_openai_compatible_model, print_connection_banner,
+    )
+    _TELEMETRY_AVAILABLE = True
 except ImportError:
+    _TELEMETRY_AVAILABLE = False
     # telemetry_common requires openai; define the three helpers locally
     # so tests can run without any extra dependencies installed.
     def parse_float(value: str, default: float = 0.0) -> float:  # type: ignore[misc]
@@ -40,6 +48,28 @@ except ImportError:
 
     def clamp(value: float, low: float, high: float) -> float:  # type: ignore[misc]
         return max(low, min(high, value))
+
+    def extract_json_object(text: str) -> dict[str, Any] | None:  # type: ignore[misc]
+        """Minimal fallback: find first {...} block and parse it."""
+        m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+        if not m:
+            return None
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            return None
+
+    def compact_track_profile(track: list[float]) -> dict[str, Any]:  # type: ignore[misc]
+        if not track:
+            return {}
+        return {"min": round(min(track), 1), "max": round(max(track), 1),
+                "fwd": round(track[9], 1) if len(track) > 9 else 0.0}
+
+    def compact_opponent_profile(opponents: list[float]) -> dict[str, Any]:  # type: ignore[misc]
+        if not opponents:
+            return {}
+        close = [o for o in opponents if o < 30.0]
+        return {"closest": round(min(opponents), 1), "close_count": len(close)}
 
 
 # ---------------------------------------------------------------------------
@@ -432,21 +462,27 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     track      = state.get("track",         [])
     wheel_vels = state.get("wheel_spin_vel", [])
 
+    # --- off-track recovery (before gear shifting so gear=-1 is never clobbered) ---
+    if abs(tpos) > 1.0:
+        max_lock = clamp(1.5 - abs(speed) * 0.01, 0.3, 1.0)
+        if speed > 5.0:
+            # Still rolling forward -> brake hard, steer toward centre
+            recovery_steer = clamp(-tpos * 0.8, -max_lock, max_lock)
+            return format_scr_control(accel=0.0, brake=0.8, gear=max(gear, 1), steer=recovery_steer)
+        else:
+            # Stopped or reversing -> reverse with steer INVERTED for backward motion
+            recovery_steer = clamp(tpos * 0.6, -max_lock, max_lock)
+            return format_scr_control(accel=0.6, brake=0.0, gear=-1, steer=recovery_steer)
+
     # --- gear (speed-based, from snakeoil.py) ---
     gear = _gear_from_speed(gear, speed)
 
-    # --- off-track recovery (overrides strategy entirely) ---
-    if abs(tpos) > 1.0:
-        # Limit steer at speed to avoid spinning during recovery
-        max_lock       = clamp(1.5 - speed * 0.01, 0.3, 1.0)
-        recovery_steer = clamp(-tpos * 0.8, -max_lock, max_lock)
-        if speed > 5.0:
-            return format_scr_control(accel=0.0, brake=0.8, gear=max(gear, 1), steer=recovery_steer)
-        else:
-            return format_scr_control(accel=0.7, brake=0.0, gear=-1, steer=recovery_steer)
-
-    # --- steering (snakeoil.py formula): angle in rad, directly usable ---
-    steer = angle * params.steer_gain - tpos * params.center_gain
+    # --- lookahead steering ---
+    # angle > 0 = car faces RIGHT -> will drift right -> tpos falls
+    # future_tpos = tpos - angle*L/halfwidth
+    _L     = 17.0 + 0.33 * speed / 3.6
+    _ftpos = tpos - angle * _L / 5.0
+    steer  = clamp(-_ftpos * params.center_gain, -1.0, 1.0)
 
     # --- corner speed limit: tight forward window (±5°, indices 8–10) ---
     # Using ±20° caused unnecessary braking when corner walls read short.
@@ -476,33 +512,227 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Step 5: Safety layer
+# ---------------------------------------------------------------------------
+
+# Thresholds — centralised here so they're easy to tune without touching logic.
+_FUEL_PIT      = 5.0    # litres: force PIT regardless of Granite's choice
+_FUEL_CAUTION  = 15.0   # litres: downgrade ATTACK → NORMAL (running low)
+_DMG_NO_ATTACK = 8000   # damage points: disallow ATTACK (car degraded)
+_DMG_DEFEND    = 9500   # damage points: force DEFEND even if Granite says NORMAL
+
+
+def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
+    """Map a Granite-supplied strategy to a safe strategy using hard rules.
+
+    Pure function — no I/O, no side effects.  Rules are checked in
+    descending priority; the first match wins and short-circuits the rest.
+
+    Args:
+        strategy: Raw strategy name from Granite, or None on timeout/error.
+        state:    Latest parsed SCR sensor dict from parse_scr_state().
+
+    Returns:
+        A strategy string guaranteed to be in _ALL_STRATEGIES.
+    """
+    fuel   = state.get("fuel",   50.0)
+    damage = state.get("damage",  0.0)
+
+    # Priority 1 — unknown / timed-out strategy → safe default
+    if strategy not in _ALL_STRATEGIES:
+        return NORMAL
+
+    # Priority 2 — almost out of fuel → pit now, no argument
+    if fuel < _FUEL_PIT:
+        return PIT
+
+    # Priority 3 — car is critically damaged → protect what's left
+    if damage >= _DMG_DEFEND:
+        return DEFEND
+
+    # Priority 4 — car is damaged but still drivable → no attacking
+    if damage >= _DMG_NO_ATTACK and strategy == ATTACK:
+        return NORMAL
+
+    # Priority 5 — fuel running low → conserve, don't attack
+    if fuel < _FUEL_CAUTION and strategy == ATTACK:
+        return NORMAL
+
+    return strategy
+
+
+# ---------------------------------------------------------------------------
+# Step 6: Granite strategy caller
+# ---------------------------------------------------------------------------
+
+_STRATEGY_INTERVAL = 5.0   # seconds between Granite requests
+_GRANITE_TIMEOUT   = 4.0   # seconds to wait for a single LLM response
+_GRANITE_MAX_TOK   = 80    # keep responses short and fast
+
+_SYSTEM_PROMPT = """\
+You are a race strategist for a TORCS simulation. \
+Given live sensor data, choose one driving strategy and explain in one sentence why.
+
+Respond with JSON only — no markdown, no extra text:
+{"strategy": "<one of ATTACK|NORMAL|DEFEND|SAVE_FUEL|PIT>", "reason": "<one sentence>"}
+
+Strategy guide:
+- ATTACK:    push hard, high risk, use when fuel ok and no damage and clear track
+- NORMAL:    balanced pace, default choice
+- DEFEND:    cautious, use when damaged or opponent close behind
+- SAVE_FUEL: economical, use when fuel < 20 L and many laps remain
+- PIT:       slow down for pit stop, use when fuel < 5 L or damage critical"""
+
+
+def _build_strategy_prompt(state: dict[str, Any]) -> str:
+    """Summarise the SCR state into a compact JSON payload for the prompt."""
+    track  = state.get("track", [])
+    opps   = state.get("opponents", [])
+
+    track_summary = compact_track_profile(track)   if track else {}
+    opp_summary   = compact_opponent_profile(opps) if opps  else {}
+
+    payload = {
+        "speed_kmh":   round(state.get("speed_x",      0.0), 1),
+        "fuel_L":      round(state.get("fuel",         50.0), 1),
+        "damage":      round(state.get("damage",        0.0), 0),
+        "track_pos":   round(state.get("track_pos",    0.0), 3),
+        "gear":              state.get("gear",            1),
+        "race_pos":          state.get("race_pos",        1),
+        "dist_raced_m":round(state.get("dist_raced",   0.0), 0),
+        "track":       track_summary,
+        "opponents":   opp_summary,
+    }
+    import json as _json
+    return _SYSTEM_PROMPT + "\n\nLive data:\n" + _json.dumps(payload, ensure_ascii=True)
+
+
+def _parse_strategy_response(text: str) -> tuple[str, str]:
+    """Extract (strategy, reason) from Granite's JSON reply.
+
+    Returns (NORMAL, reason) if the strategy field is missing or invalid.
+    """
+    parsed = extract_json_object(text)
+    if not parsed:
+        return NORMAL, "parse error"
+    raw_strategy = str(parsed.get("strategy", "")).strip().upper()
+    reason       = str(parsed.get("reason", "")).strip()
+    strategy = raw_strategy if raw_strategy in _ALL_STRATEGIES else NORMAL
+    return strategy, reason
+
+
+class GraniteStrategist:
+    """Async Granite strategy caller.
+
+    Submits a new strategy request to Granite every ``interval`` seconds
+    without blocking the main control loop.  The most recent completed
+    result is cached and returned on each ``tick()`` call.
+
+    Usage::
+
+        g = GraniteStrategist(connection)
+        # inside main loop:
+        raw_strategy, reason = g.tick(state)
+        safe_strategy = safety_filter(raw_strategy, state)
+        ctrl = compute_control(state, safe_strategy)
+    """
+
+    def __init__(self, connection: Any, interval: float = _STRATEGY_INTERVAL) -> None:
+        self._connection = connection
+        self._interval   = interval
+        self._runner     = LatestTaskRunner(self._call_granite, "granite-strategist")
+        self._last_strategy: str = NORMAL
+        self._last_reason:   str = "startup"
+        self._last_submit:   float = -interval   # trigger immediately on first tick
+
+    # ------------------------------------------------------------------ #
+
+    def tick(self, state: dict[str, Any]) -> tuple[str, str]:
+        """Call once per main-loop iteration.
+
+        Submits a new Granite request if the interval has elapsed, then
+        returns the most recent completed (strategy, reason) pair.
+        """
+        now = time.monotonic()
+        if now - self._last_submit >= self._interval:
+            self._runner.submit({"state": state}, priority=0)
+            self._last_submit = now
+
+        result = self._runner.pop_completed()
+        if result is not None:
+            if result.error:
+                print(f"[Granite] error: {result.error}")
+            else:
+                strategy, reason = result.output
+                self._last_strategy = strategy
+                self._last_reason   = reason
+                print(f"[Granite] {strategy}  — {reason}")
+
+        return self._last_strategy, self._last_reason
+
+    def last_strategy(self) -> str:
+        return self._last_strategy
+
+    # ------------------------------------------------------------------ #
+
+    def _call_granite(self, task: dict[str, Any]) -> tuple[str, str]:
+        """Worker: runs in background thread, calls LLM, returns (strategy, reason)."""
+        state  = task["state"]
+        prompt = _build_strategy_prompt(state)
+        text   = chat_completion_text(
+            self._connection,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=_GRANITE_MAX_TOK,
+            timeout=_GRANITE_TIMEOUT,
+        )
+        return _parse_strategy_response(text)
+
+
+# ---------------------------------------------------------------------------
 # Main drive loop
 # ---------------------------------------------------------------------------
 
 def run_bot(
-    host:     str  = "localhost",
-    port:     int  = 3001,
-    strategy: str  = NORMAL,
+    host:       str   = "localhost",
+    port:       int   = 3001,
+    strategy:   str   = NORMAL,
     *,
-    verbose:  bool = True,
+    use_granite: bool = False,
+    verbose:    bool  = True,
 ) -> None:
-    """Connect to TORCS and drive using compute_control with a fixed strategy.
+    """Connect to TORCS and drive.
 
-    In the full system (Steps 5–7) the strategy will be updated every few
-    seconds by Granite. For now it stays constant throughout the session.
+    With ``use_granite=True`` (Step 7), a GraniteStrategist is created and
+    queried every few seconds to update the driving strategy dynamically.
+    Without it, the fixed ``strategy`` argument is used throughout.
     """
     if strategy not in _ALL_STRATEGIES:
         print(f"Unknown strategy '{strategy}', falling back to NORMAL.")
         strategy = NORMAL
 
-    print(f"Connecting to TORCS at {host}:{port}  strategy={strategy}…")
+    # --- Step 7: optionally connect Granite ---
+    strategist: GraniteStrategist | None = None
+    if use_granite:
+        if not _TELEMETRY_AVAILABLE:
+            print("[warn] telemetry_common not available — falling back to fixed strategy.")
+        else:
+            try:
+                _conn = connect_openai_compatible_model()
+                print_connection_banner(_conn, "AI Bot — Granite Strategist")
+                strategist = GraniteStrategist(_conn)
+            except Exception as e:
+                print(f"[warn] Could not connect to Granite ({e}) — using fixed strategy.")
+
+    print(f"Connecting to TORCS at {host}:{port}  strategy={strategy}  granite={strategist is not None}…")
 
     with ScrClient(host, port) as client:
         client.connect()
         print("Identified! Entering drive loop. Press Ctrl-C to stop.\n")
 
-        step      = 0
-        last_ctrl = format_scr_control()  # idle
+        step             = 0
+        last_ctrl        = format_scr_control()   # idle
+        current_strategy = strategy               # updated by Granite each tick
 
         try:
             while True:
@@ -517,7 +747,14 @@ def run_bot(
                     client.send_control(last_ctrl)
                     continue
 
-                last_ctrl = compute_control(state, strategy)
+                # --- Step 7: Granite strategy update (non-blocking) ---
+                if strategist is not None:
+                    raw_strategy, _reason = strategist.tick(state)
+                    current_strategy = safety_filter(raw_strategy, state)
+                else:
+                    current_strategy = safety_filter(strategy, state)
+
+                last_ctrl = compute_control(state, current_strategy)
                 client.send_control(last_ctrl)
                 step += 1
 
@@ -528,7 +765,8 @@ def run_bot(
                     tpos  = state.get("track_pos", 0.0)
                     print(
                         f"  step={step:6d}  {speed:6.1f} km/h  "
-                        f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}"
+                        f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}  "
+                        f"strategy={current_strategy}"
                     )
 
         except KeyboardInterrupt:
@@ -668,11 +906,13 @@ def _run_tests() -> None:
     assert "(steer -0.700)" in cc_offt, f"FAIL off-track steer: {cc_offt}"
     print(f"compute_control off-track (moving)  ... OK  →  {cc_offt}")
 
-    # off-track + stopped → reverse gear
+    # off-track + stopped → reverse gear, steer INVERTED (tpos=1.5 → steer=+0.9)
+    # speed=0: max_lock=clamp(1.5,0.3,1.0)=1.0; recovery_steer=clamp(1.5*0.6,-1,1)=0.9
     cs_stuck = {**cs, "track_pos": 1.5, "speed_x": 0.0}
     cc_stuck = compute_control(cs_stuck, ATTACK)
     assert "(gear -1)"     in cc_stuck, f"FAIL stuck gear: {cc_stuck}"
-    assert "(accel 0.700)" in cc_stuck, f"FAIL stuck accel: {cc_stuck}"
+    assert "(accel 0.600)" in cc_stuck, f"FAIL stuck accel: {cc_stuck}"
+    assert "(steer 0.900)" in cc_stuck, f"FAIL stuck steer (should be inverted): {cc_stuck}"
     print(f"compute_control off-track (stuck)   ... OK  →  {cc_stuck}")
 
     # PIT + speed < 10 → meta=1
@@ -681,6 +921,89 @@ def _run_tests() -> None:
     assert "(meta 1)" in cc_pit, f"FAIL PIT meta: {cc_pit}"
     print(f"compute_control PIT       ... OK  →  {cc_pit}")
 
+    # ---- safety_filter ------------------------------------------------------
+    base = {"fuel": 50.0, "damage": 0.0}
+
+    # valid strategy + healthy car → pass through unchanged
+    assert safety_filter(ATTACK,    base) == ATTACK,    "FAIL: healthy ATTACK should pass"
+    assert safety_filter(NORMAL,    base) == NORMAL,    "FAIL: healthy NORMAL should pass"
+    assert safety_filter(SAVE_FUEL, base) == SAVE_FUEL, "FAIL: healthy SAVE_FUEL should pass"
+    print("safety_filter pass-through   ... OK")
+
+    # unknown / None → NORMAL
+    assert safety_filter(None,        base) == NORMAL, "FAIL: None → NORMAL"
+    assert safety_filter("TURBO",     base) == NORMAL, "FAIL: unknown → NORMAL"
+    assert safety_filter("",          base) == NORMAL, "FAIL: empty → NORMAL"
+    print("safety_filter unknown/None   ... OK")
+
+    # fuel < 5 → PIT (beats any strategy including ATTACK)
+    low_fuel = {**base, "fuel": 3.0}
+    assert safety_filter(ATTACK, low_fuel) == PIT, "FAIL: low fuel + ATTACK → PIT"
+    assert safety_filter(NORMAL, low_fuel) == PIT, "FAIL: low fuel + NORMAL → PIT"
+    print("safety_filter low fuel → PIT ... OK")
+
+    # damage >= 9500 → DEFEND
+    critical_dmg = {**base, "damage": 9600.0}
+    assert safety_filter(ATTACK, critical_dmg) == DEFEND, "FAIL: critical damage → DEFEND"
+    assert safety_filter(NORMAL, critical_dmg) == DEFEND, "FAIL: critical damage → DEFEND"
+    print("safety_filter critical damage → DEFEND ... OK")
+
+    # 8000 <= damage < 9500 → ATTACK blocked, others pass
+    high_dmg = {**base, "damage": 8500.0}
+    assert safety_filter(ATTACK, high_dmg) == NORMAL,  "FAIL: high damage + ATTACK → NORMAL"
+    assert safety_filter(NORMAL, high_dmg) == NORMAL,  "FAIL: high damage + NORMAL passes"
+    assert safety_filter(DEFEND, high_dmg) == DEFEND,  "FAIL: high damage + DEFEND should pass"
+    print("safety_filter high damage     ... OK")
+
+    # fuel < 15 → ATTACK blocked
+    caution_fuel = {**base, "fuel": 12.0}
+    assert safety_filter(ATTACK, caution_fuel) == NORMAL, "FAIL: caution fuel + ATTACK → NORMAL"
+    assert safety_filter(NORMAL, caution_fuel) == NORMAL, "FAIL: caution fuel + NORMAL passes"
+    print("safety_filter caution fuel    ... OK")
+
+    # ---- Step 6: _parse_strategy_response ----------------------------------
+    # valid JSON with known strategy
+    s, r = _parse_strategy_response('{"strategy": "ATTACK", "reason": "clear track ahead"}')
+    assert s == ATTACK, f"FAIL parse valid: {s}"
+    assert r == "clear track ahead", f"FAIL reason: {r}"
+    print(f"_parse_strategy_response valid   ... OK  ({s} / {r!r})")
+
+    # strategy field in wrong case → should normalise
+    s, r = _parse_strategy_response('{"strategy": "defend", "reason": "opponent close"}')
+    assert s == DEFEND, f"FAIL parse lower-case: {s}"
+    print(f"_parse_strategy_response lower   ... OK  ({s})")
+
+    # unknown strategy name → NORMAL
+    s, r = _parse_strategy_response('{"strategy": "TURBO", "reason": "go fast"}')
+    assert s == NORMAL, f"FAIL parse unknown: {s}"
+    print(f"_parse_strategy_response unknown → NORMAL ... OK")
+
+    # garbage text → NORMAL
+    s, r = _parse_strategy_response("Sorry, I cannot help with that.")
+    assert s == NORMAL, f"FAIL parse garbage: {s}"
+    print(f"_parse_strategy_response garbage → NORMAL ... OK")
+
+    # missing reason field → empty string, strategy still valid
+    s, r = _parse_strategy_response('{"strategy": "SAVE_FUEL"}')
+    assert s == SAVE_FUEL, f"FAIL parse no-reason: {s}"
+    assert r == "",         f"FAIL reason should be empty: {r!r}"
+    print(f"_parse_strategy_response no-reason ... OK  ({s})")
+
+    # ---- Step 6: _build_strategy_prompt ------------------------------------
+    sample_state = {
+        "speed_x": 120.0, "fuel": 18.0, "damage": 500.0,
+        "track_pos": 0.1, "gear": 4, "race_pos": 3,
+        "dist_raced": 1200.0,
+        "track":     [200.0] * 19,
+        "opponents": [200.0] * 36,
+    }
+    prompt = _build_strategy_prompt(sample_state)
+    assert "ATTACK" in prompt,     "FAIL: prompt missing strategy guide"
+    assert "120.0"  in prompt,     "FAIL: prompt missing speed"
+    assert "18.0"   in prompt,     "FAIL: prompt missing fuel"
+    assert "strategy" in prompt,   "FAIL: prompt missing JSON schema hint"
+    print("_build_strategy_prompt          ... OK  (prompt contains speed/fuel/strategy)")
+
     print("\nAll tests passed.")
 
 
@@ -688,12 +1011,16 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--bot":
         _host, _port, _strategy = "localhost", 3001, NORMAL
+        _granite = False
         positional: list[str] = []
         i = 1
         while i < len(args):
             if args[i] == "--strategy" and i + 1 < len(args):
                 _strategy = args[i + 1].upper()
                 i += 2
+            elif args[i] == "--granite":
+                _granite = True
+                i += 1
             else:
                 positional.append(args[i])
                 i += 1
@@ -703,6 +1030,6 @@ if __name__ == "__main__":
             _port = int(positional[1])
         elif len(positional) > 1:
             _strategy = positional[1].upper()
-        run_bot(_host, _port, _strategy)
+        run_bot(_host, _port, _strategy, use_granite=_granite)
     else:
         _run_tests()
