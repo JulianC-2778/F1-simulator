@@ -239,3 +239,180 @@ export TORCS_PLAYER_UDP_PORT=3101
 
 - `data/cars/models/pw-*`
 - `data/cars/models/kc-*`
+
+## Granite AI Features
+
+This project now includes two Granite-powered middleware scripts on top of the existing AI engineer flow:
+
+- `telemetry_analyzer.py` for Feature 2: telemetry analysis and driving guidance
+- `race_commentator.py` for Feature 3: procedural race commentary
+
+Both features follow the same architecture:
+
+```text
+TORCS UDP CSV -> Python middleware -> Granite endpoint -> text output
+```
+
+The middleware keeps TORCS-specific parsing local and sends a structured payload to an external Granite model through an OpenAI-compatible API.
+
+### Shared Setup
+
+Before launching TORCS, enable the built-in human driver telemetry export:
+
+```bash
+mkdir -p "$(pwd)/logs"
+export TORCS_PLAYER_LOG_DIR="$(pwd)/logs"
+export TORCS_PLAYER_LOG_HZ=20
+export TORCS_PLAYER_UDP_HOST=127.0.0.1
+export TORCS_PLAYER_UDP_PORT=3101
+```
+
+Then start your Granite-compatible model server and point the middleware at it:
+
+```bash
+export TORCS_AI_BASE_URL="http://<model-host>:<port>/v1"
+export TORCS_AI_MODEL="your-lm-studio-model-id"
+```
+
+If you are using LM Studio on the same computer, the default endpoint is already:
+
+```bash
+http://127.0.0.1:1234/v1
+```
+
+So on most machines you only need to:
+
+1. Open LM Studio
+2. Load a Granite model
+3. Start the local server from the Developer tab
+
+The middleware will then auto-detect the visible local model list from `GET /v1/models` and prefer a model whose identifier contains `granite`. You can still override the endpoint or exact model ID with environment variables if needed.
+
+Quick smoke test for the local connection:
+
+```bash
+python3 lmstudio_smoke_test.py
+```
+
+You can still override the endpoint per feature with the feature-specific environment variables shown below.
+
+### Feature 2: Telemetry Analysis and Guidance
+
+Run:
+
+```bash
+python3 telemetry_analyzer.py
+```
+
+Optional environment variables:
+
+```bash
+export TORCS_ANALYZER_BASE_URL="http://<model-host>:<port>/v1"
+export TORCS_ANALYZER_MODEL="granite"
+export TORCS_ANALYZER_INTERVAL=3.0
+export TORCS_ANALYZER_WINDOW_SECONDS=6.0
+export TORCS_ANALYZER_RETENTION_SECONDS=180
+export TORCS_ANALYZER_TTS=false
+```
+
+What the middleware does:
+
+1. Reads TORCS telemetry rows from UDP `3101`.
+2. Parses each row into structured fields such as speed, throttle, brake, RPM, track position, track sensors, and opponent sensors.
+3. Builds a rolling time window and computes summary metrics:
+   average speed, throttle usage, braking events, steering stability, track-position pressure, nearest opponent, and damage trend.
+4. Uses a local rule fast-path for urgent cases such as traffic danger, off-track risk, and critical pit windows.
+5. Sends a compact structured telemetry payload to Granite through an asynchronous worker so telemetry collection is not blocked by model latency.
+6. Drops stale model responses and suppresses repeated advice.
+7. Receives a structured response with:
+   analysis, focus area, one concrete action, and pit-stop advice.
+
+Student reproduction steps:
+
+1. Build and launch TORCS as described above.
+2. Start the Granite-compatible model endpoint.
+3. Optionally run `python3 lmstudio_smoke_test.py` to confirm the local model returns text.
+4. Export the telemetry environment variables.
+5. Run `python3 telemetry_analyzer.py`.
+6. Start driving with the human driver in TORCS.
+7. Observe:
+   live coaching feedback every few seconds and a lap review whenever a full lap is completed.
+
+Feature 2 payload shape:
+
+```json
+{
+  "task": "telemetry_coaching",
+  "analysis_type": "live_window",
+  "latest_state": {},
+  "window_summary": {},
+  "sensors": {}
+}
+```
+
+### Feature 3: Procedural Commentary
+
+Run:
+
+```bash
+python3 race_commentator.py
+```
+
+Optional environment variables:
+
+```bash
+export TORCS_COMMENTATOR_BASE_URL="http://<model-host>:<port>/v1"
+export TORCS_COMMENTATOR_MODEL="granite"
+export TORCS_COMMENTATOR_INTERVAL=5.0
+export TORCS_COMMENTATOR_WINDOW_SECONDS=8.0
+export TORCS_COMMENTATOR_EVENT_COOLDOWN=2.5
+export TORCS_COMMENTATOR_TTS=false
+```
+
+What the middleware does:
+
+1. Reads the same TORCS telemetry feed from UDP `3101`.
+2. Detects race events before calling Granite.
+3. Assigns event priority so important moments replace low-value updates.
+4. Builds a compact race-event payload and sends it through an asynchronous worker.
+5. Drops stale commentary and suppresses repeated lines.
+6. Asks Granite to generate one short piece of live commentary.
+
+Currently detected events:
+
+- Lap completion
+- Position change
+- Contact or damage spike
+- Off-track moment
+- Close battle with another car
+- Strong acceleration surge
+- Baseline pace update when no major event occurs
+
+Student reproduction steps:
+
+1. Reuse the shared telemetry export setup.
+2. Start the Granite-compatible model endpoint.
+3. Optionally run `python3 lmstudio_smoke_test.py "Give me one sentence to prove you are connected."`.
+4. Run `python3 race_commentator.py`.
+5. Launch TORCS and drive.
+6. Watch the terminal for short commentary lines whenever events are detected.
+
+Feature 3 payload shape:
+
+```json
+{
+  "task": "race_commentary",
+  "event_type": "battle",
+  "event_reason": "Nearest opponent is 8.2 meters away",
+  "current_state": {},
+  "window_summary": {},
+  "style": {}
+}
+```
+
+### Added Middleware Files
+
+- `telemetry_common.py`: shared telemetry parsing, buffering, summarization, async worker utilities, and TTS helpers
+- `telemetry_analyzer.py`: Feature 2 implementation
+- `race_commentator.py`: Feature 3 implementation
+- `lmstudio_smoke_test.py`: quick local LM Studio connection test
