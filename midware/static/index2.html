@@ -427,15 +427,39 @@ function initVoices() {
   function load() {
     voices = speechSynthesis.getVoices();
     const sel = document.getElementById('vsel');
-    sel.innerHTML = '<option value="">系统默认</option>';
+    sel.innerHTML = '';
+
+    const zhVoices = [], enVoices = [];
     voices.forEach((v, i) => {
-      const o = document.createElement('option');
-      o.value = i; o.textContent = `${v.name} (${v.lang})`;
-      if (v.lang.startsWith('zh')) o.style.fontWeight = 'bold';
-      sel.appendChild(o);
+      if (v.lang.startsWith('zh')) zhVoices.push({ v, i });
+      else if (v.lang.startsWith('en')) enVoices.push({ v, i });
     });
-    const zi = voices.findIndex(v => v.lang.startsWith('zh'));
-    if (zi >= 0) { sel.value = String(zi); syncVoice(); }
+
+    if (enVoices.length > 0) {
+      const g = document.createElement('optgroup');
+      g.label = 'English';
+      enVoices.forEach(({ v, i }) => {
+        const o = document.createElement('option');
+        o.value = i; o.textContent = `${v.name} (${v.lang})`;
+        g.appendChild(o);
+      });
+      sel.appendChild(g);
+    }
+
+    if (zhVoices.length > 0) {
+      const g = document.createElement('optgroup');
+      g.label = '中文';
+      zhVoices.forEach(({ v, i }) => {
+        const o = document.createElement('option');
+        o.value = i; o.textContent = `${v.name} (${v.lang})`;
+        g.appendChild(o);
+      });
+      sel.appendChild(g);
+    }
+
+    // 默认选第二个英文音色（index 1），没有则用第一个
+    const defaultIdx = enVoices.length >= 2 ? enVoices[1].i : enVoices.length >= 1 ? enVoices[0].i : null;
+    if (defaultIdx !== null) { sel.value = String(defaultIdx); syncVoice(); }
   }
   speechSynthesis.onvoiceschanged = load; load();
 }
@@ -453,8 +477,9 @@ function speak(text) {
   if (!voiceEnabled || !text || !('speechSynthesis' in window)) return;
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  if (selVoice) u.voice = selVoice;
-  u.lang = 'zh-CN'; u.rate = vRate; u.pitch = vPitch; u.volume = vVol;
+  if (selVoice) { u.voice = selVoice; u.lang = selVoice.lang; }
+  else { u.lang = 'en-US'; }
+  u.rate = vRate; u.pitch = vPitch; u.volume = vVol;
   speechSynthesis.speak(u);
 }
 function testVoice() { speak('这是语音测试，当前一切正常。'); }

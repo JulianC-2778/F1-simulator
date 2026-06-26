@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
+UI_FILE = "index.html"  # 可被启动参数覆盖
 
 # -- AI API 配置（可在 UI 中修改）--
 api_config: dict[str, Any] = {
@@ -294,10 +295,10 @@ async def _auto_commentary_loop():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    html_path = STATIC_DIR / "index.html"
+    html_path = STATIC_DIR / UI_FILE
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>请将 index.html 放入 static/ 目录</h1>")
+    return HTMLResponse(f"<h1>找不到 {UI_FILE}，请检查 static/ 目录</h1>")
 
 
 @app.get("/api/config")
@@ -519,4 +520,13 @@ async def startup():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=8765, reload=False)
+    import argparse
+    parser = argparse.ArgumentParser(description="TORCS 解说中间件")
+    parser.add_argument("--ui", choices=["text", "voice"], default="text",
+                        help="界面模式：text=文字解说(index.html)，voice=语音解说(index2.html)")
+    args = parser.parse_args()
+
+    UI_FILE = "index2.html" if args.ui == "voice" else "index.html"
+    log.info(f"界面模式: {args.ui} → {UI_FILE}")
+
+    uvicorn.run(app, host="0.0.0.0", port=8765, reload=False)
