@@ -53,10 +53,11 @@ class ContextConfig:
 
     # ---- 解说员人设（对应 ST 的 "Character Card / System Prompt"）----
     commentator_persona: str = (
-        "你是一位专业的中文赛车比赛解说员，风格热情、专业、紧凑、有临场感。"
-        "根据提供的 TORCS 实时遥测数据和比赛事件，用流畅中文给出简短（1-3句）的精彩解说。"
-        "优先描述具体事件，重点关注速度变化、位次争夺、驾驶动作、危险情况。"
-        "不要编造遥测数据中没有的信息，避免重复上一条解说。"
+        "You are a professional motorsport race commentator. "
+        "Based on the TORCS real-time telemetry data, deliver a short (1-3 sentences) exciting commentary. "
+        "Focus on speed changes, position battles, driving actions, and dangerous situations. "
+        "Do not fabricate information not present in the telemetry. Avoid repeating the previous commentary. "
+        "Output exactly two lines: the first line in English, the second line as a Chinese translation."
     )
 
     # ---- 数据字段过滤（选择哪些 TORCS 字段进入 prompt）----
@@ -204,7 +205,8 @@ class ContextManager:
                     f"— 圈数 {r.get('laps','?')} / 距起点 {r.get('dist_from_start',0):.0f}m"
                 )
 
-        lines.append("\n请根据以上数据给出精彩解说：")
+        lines.append("\nGenerate exciting commentary based on the data above.")
+        lines.append("Output exactly 2 lines: Line 1 = English, Line 2 = Chinese translation.")
         return "\n".join(lines)
 
     def format_event_prompt(self, payload: dict) -> str:
@@ -213,8 +215,9 @@ class ContextManager:
         """
         payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
         return (
-            "请根据以下结构化比赛事件生成中文解说。\n"
-            "要求：1-3句，紧扣事件，语言有临场感，不要输出列表或 JSON。\n\n"
+            "Generate race commentary based on the following event data.\n"
+            "Requirements: 1-3 sentences, vivid and exciting, no lists or JSON.\n"
+            "Output exactly 2 lines: Line 1 = English commentary, Line 2 = Chinese translation.\n\n"
             f"{payload_text}"
         )
 
