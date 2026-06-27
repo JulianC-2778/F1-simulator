@@ -267,7 +267,7 @@ TORCS human 数据采集器
   -> overlay-app Electron 字幕悬浮窗
 ```
 
-`midware` 负责接收 TORCS 遥测、检测比赛事件、调用模型、提供 REST 配置 API 和 WebSocket 解说流。`overlay-app` 是独立 Electron 应用：主窗口显示透明、无边框、始终置顶的游戏 HUD 风格字幕面板，并通过小设置按钮或应用菜单打开独立设置窗口。
+`midware` 负责接收 TORCS 遥测、检测比赛事件、调用模型、提供 REST 配置 API 和 WebSocket 解说流。`overlay-app` 是独立 Electron 应用，目前包含两个透明、无边框、始终置顶的字幕悬浮窗，共用同一个 WebSocket 连接和同一份设置：屏幕下方的解说字幕窗（`index.html` + `renderer.js`）和屏幕上方的工程师问答字幕窗（`engineer.html` + `engineer-renderer.js`，对应 Feature 1）。两个窗口都可以通过各自面板上的小设置按钮或应用菜单打开同一个设置窗口。消息通过 `source` 字段路由到对应窗口（无 `source` 或 `source: "commentary"` 进解说窗，`source: "engineer"` 进工程师窗），详见 `docs/display-layer-contract.md`。
 
 所有面向用户展示或朗读的 AI 输出都应复用这条链路，不要为单个 AI 功能单独创建字幕窗口、网页工具栏、Tkinter 窗口或终端-only 展示路径。显示层协议见：
 
@@ -553,6 +553,8 @@ export TORCS_ENGINEER_USE_FAKE_DATA=true   # force demo car_state data
 export TORCS_ENGINEER_UDP_PORT=3101        # live telemetry UDP port
 export TORCS_ENGINEER_HISTORY_TURNS=3      # how many past Q&A turns to keep as context
 export TORCS_ENGINEER_REFRESH_MS=500       # GUI only: status panel refresh interval (ms)
+export TORCS_ENGINEER_OVERLAY_BROADCAST=true               # set to false to disable the overlay broadcast below
+export TORCS_ENGINEER_OVERLAY_WS_URL="ws://127.0.0.1:8765/ws"  # midware WebSocket endpoint
 ```
 
 What the chatbot does:
@@ -563,6 +565,7 @@ What the chatbot does:
 4. `prompt_builder.py` formats the car state and question into a Chinese system+user prompt for Granite.
 5. `granite_client.py` sends the prompt to the Granite-compatible endpoint and returns the answer.
 6. Keeps a short rolling history of the last few Q&A turns so follow-up questions ("那我下一圈呢？") have context.
+7. Best-effort broadcasts each reply to the shared overlay display layer via `overlay_broadcast.py` (repo root), tagged `"source": "engineer"` so it shows up in the dedicated engineer floating window described above instead of the commentary one. This requires the optional `websocket-client` pip package (`pip3 install websocket-client`, add `--break-system-packages` if your environment is externally managed); if it is not installed, or `midware`/`overlay-app` are not running, this step silently does nothing -- the Tkinter GUI and CLI both keep working exactly as before. The Tkinter GUI itself is kept for local debugging per `docs/display-layer-contract.md` ("no Tkinter popups for user-facing display" applies to user-facing presentation -- this debug window is in addition to, not instead of, the overlay broadcast).
 
 Student reproduction steps:
 

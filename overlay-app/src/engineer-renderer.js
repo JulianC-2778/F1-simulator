@@ -1,3 +1,10 @@
+// engineer-renderer.js — second overlay window for Feature 1 (AI Racing
+// Engineer Chatbot). Clone of renderer.js, connecting to the same midware
+// WebSocket, but only displaying messages tagged "source": "engineer" (see
+// overlay_broadcast.py / docs/display-layer-contract.md). The generic
+// "connected" lifecycle message has no source and is shown regardless, so
+// this window still reports its own connection status.
+
 const caption = document.getElementById('caption');
 const settingsButton = document.getElementById('settingsButton');
 
@@ -103,23 +110,30 @@ function conciseMessage(message) {
 }
 
 function handleMessage(message) {
-  // Messages explicitly tagged for another feature (e.g. the Feature 1
-  // engineer chatbot, see overlay_broadcast.py) belong to that feature's
-  // own overlay window (engineer.html / engineer-renderer.js) -- ignore
-  // them here. The shared "connected" lifecycle message has no source and
-  // is unaffected by this check.
-  if (message && message.source && message.source !== 'commentary') {
+  if (!message) {
+    return;
+  }
+
+  // The connection-lifecycle message is shared by every feature and carries
+  // no "source" field -- always show it so this window reports its own
+  // connection status independently of the commentary window.
+  if (message.type === 'connected') {
+    setCaption('Waiting for engineer reply...');
+    return;
+  }
+
+  // Everything else (ai_start/token/ai_done/error) must be explicitly
+  // tagged for this feature, otherwise it belongs to another window
+  // (e.g. race commentary) and should be ignored here.
+  if (message.source !== 'engineer') {
     return;
   }
 
   switch (message.type) {
-    case 'connected':
-      setCaption('Waiting for commentary...');
-      break;
     case 'ai_start':
       pendingText = '';
       stopSpeech();
-      setCaption('Generating captions...');
+      setCaption('Generating engineer reply...');
       break;
     case 'token':
       if (typeof message.text === 'string') {
@@ -130,25 +144,22 @@ function handleMessage(message) {
       const finalText = typeof message.content === 'string' && message.content.trim()
         ? message.content.trim()
         : pendingText.trim();
-      setCaption(finalText || 'Waiting for commentary...');
+      setCaption(finalText || 'Waiting for engineer reply...');
       speak(finalText);
       break;
     }
     case 'error': {
       const detail = conciseMessage(message.message);
-      setCaption(detail ? `Commentary error: ${detail}` : 'Commentary error');
+      setCaption(detail ? `Engineer error: ${detail}` : 'Engineer error');
       break;
     }
-    case 'telemetry_update':
-    case 'event_detected':
-      break;
     default:
       break;
   }
 }
 
 function connect() {
-  setCaption('Connecting to commentary service...');
+  setCaption('Connecting to engineer service...');
   clearTimers();
 
   if (socket) {
@@ -171,7 +182,7 @@ function connect() {
     if (socket !== nextSocket) {
       return;
     }
-    setCaption('Waiting for commentary...');
+    setCaption('Waiting for engineer reply...');
     startPing();
   });
 
@@ -182,7 +193,7 @@ function connect() {
     try {
       handleMessage(JSON.parse(event.data));
     } catch {
-      setCaption('Commentary error');
+      setCaption('Engineer error');
     }
   });
 

@@ -26,6 +26,7 @@ import os
 from typing import Any
 
 import granite_client
+import overlay_broadcast
 import prompt_builder
 from car_state_source import (
     CarStateSource,
@@ -96,13 +97,16 @@ def main() -> None:
             break
 
         messages = prompt_builder.build_messages(car_state, user_question, history=history)
+        overlay_broadcast.broadcast_engineer_start()
         try:
             answer = granite_client.ask_engineer(connection, messages)
         except Exception as exc:
             print(f"[ChatEngineer] Granite 请求失败：{exc}")
+            overlay_broadcast.broadcast_engineer_error(str(exc))
             continue
 
         print(f"AI工程师：{answer}")
+        overlay_broadcast.broadcast_engineer_reply(answer)
         history.append({"role": "user", "content": user_question})
         history.append({"role": "assistant", "content": answer})
         history[:] = trim_history(history, HISTORY_TURNS)

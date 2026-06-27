@@ -31,6 +31,7 @@ from tkinter import scrolledtext
 from typing import Any
 
 import granite_client
+import overlay_broadcast
 import prompt_builder
 from car_state_source import (
     CarStateSource,
@@ -196,11 +197,18 @@ class ChatEngineerApp:
 
     def _ask_worker(self, question: str, messages: list[dict[str, str]]) -> None:
         """Runs on a background thread. Only touches the thread-safe queue,
-        never the Tkinter widgets directly."""
+        never the Tkinter widgets directly. Also best-effort broadcasts the
+        reply to the shared overlay display layer (see overlay_broadcast.py
+        / docs/display-layer-contract.md) -- that call never raises and
+        never blocks long, even if midware/overlay-app are not running."""
+        overlay_broadcast.broadcast_engineer_start()
         try:
             answer = granite_client.ask_engineer(self.connection, messages)
         except Exception as exc:
             answer = f"[Granite 请求失败：{exc}]"
+            overlay_broadcast.broadcast_engineer_error(str(exc))
+        else:
+            overlay_broadcast.broadcast_engineer_reply(answer)
         self.result_queue.put((question, answer))
 
     def _poll_results(self) -> None:
