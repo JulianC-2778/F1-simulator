@@ -6,6 +6,8 @@
 
 ## 安装依赖
 
+TORCS 编译依赖：
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
@@ -23,6 +25,35 @@ sudo apt-get install -y \
   libpng-dev \
   libvorbis-dev
 ```
+
+实时解说 `midware` 与 Electron overlay 依赖：
+
+```bash
+sudo apt-get install -y \
+  python3-venv \
+  python3-pip \
+  curl \
+  nodejs \
+  npm \
+  libatk-bridge2.0-0 \
+  libgtk-3-0 \
+  libnss3 \
+  libxss1 \
+  libasound2 \
+  libdrm2 \
+  libgbm1 \
+  speech-dispatcher \
+  espeak-ng
+```
+
+WSL 中请确认使用 Linux 版 Node/npm：
+
+```bash
+which node
+which npm
+```
+
+如果路径指向 `/mnt/c/...` 或 `/mnt/d/...`，请改用 WSL 内的 Linux Node/npm，例如通过 `nvm` 安装 LTS 版本；否则 Electron 安装可能因为 Windows UNC 路径失败。
 
 ## 编译与安装
 
@@ -223,6 +254,186 @@ export TORCS_PLAYER_UDP_PORT=3101
 | `laps` | 圈 | 当前圈计数 |
 | `dist_from_start` | m | 该车沿赛道中心线到起终点的距离 |
 
+## 实时 AI 解说与桌面字幕 Overlay
+
+当前实时解说链路由 `midware/` 和 `overlay-app/` 组成：
+
+```text
+TORCS human 数据采集器
+  -> UDP 127.0.0.1:3101
+  -> midware/commentary.py
+  -> OpenAI-compatible API / LM Studio
+  -> WebSocket ws://127.0.0.1:8765/ws
+  -> overlay-app Electron 字幕悬浮窗
+```
+
+`midware` 负责接收 TORCS 遥测、检测比赛事件、调用模型、提供 REST 配置 API 和 WebSocket 解说流。`overlay-app` 是独立 Electron 应用：主窗口显示透明、无边框、始终置顶的游戏 HUD 风格字幕面板，并通过小设置按钮或应用菜单打开独立设置窗口。
+
+所有面向用户展示或朗读的 AI 输出都应复用这条链路，不要为单个 AI 功能单独创建字幕窗口、网页工具栏、Tkinter 窗口或终端-only 展示路径。显示层协议见：
+
+```text
+docs/display-layer-contract.md
+```
+
+### 1. 启动模型服务
+
+如果使用 LM Studio：
+
+1. 打开 LM Studio。
+2. 加载模型，例如 `granite-4.1-8b`。
+3. 进入 Developer / Local Server。
+4. 启动本地 server。
+
+如果 LM Studio 运行在 Windows，而 TORCS/midware 运行在 WSL，先在 WSL 中找 Windows 主机 IP：
+
+```bash
+ip route | awk '/default/ {print $3}'
+```
+
+测试模型服务：
+
+```bash
+curl http://$(ip route | awk '/default/ {print $3}'):1234/v1/models
+```
+
+能返回模型列表后，网页配置中的 Base URL 通常填写：
+
+```text
+http://<Windows-host-ip>:1234/v1
+```
+
+API Key 可填任意非空字符串，例如：
+
+```text
+lm-studio
+```
+
+### 2. 启动 midware
+
+第一次运行：
+
+```bash
+cd ~/test/torcs-1.3.7/midware
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+以后启动：
+
+```bash
+cd ~/test/torcs-1.3.7/midware
+source .venv/bin/activate
+python commentary.py
+```
+
+服务地址：
+
+```text
+http://localhost:8765
+ws://127.0.0.1:8765/ws
+```
+
+打开 `http://localhost:8765`，保存 AI 配置，并把自动解说设置为：
+
+```text
+模式: 事件 + 间隔
+解说间隔: 10
+事件窗口: 6
+事件冷却: 1
+```
+
+### 3. 启动 Electron 字幕悬浮窗
+
+第一次运行：
+
+```bash
+cd ~/test/torcs-1.3.7/overlay-app
+npm install
+```
+
+启动：
+
+```bash
+cd ~/test/torcs-1.3.7/overlay-app
+npm start
+```
+
+连接成功后显示：
+
+```text
+Waiting for commentary...
+```
+
+如果显示：
+
+```text
+Connection lost
+```
+
+说明 `midware/commentary.py` 未运行，或 `ws://127.0.0.1:8765/ws` 无法连接。Overlay 会每 3 秒自动重连。
+
+字幕窗口右上角的设置按钮或应用菜单会打开设置窗口。应用菜单里的 `Show Overlay` 可以恢复/显示 overlay。设置窗口支持：
+
+- Overlay WebSocket URL、重连间隔、ping 间隔。
+- 语音解说开关、音色、语速、音调、音量和试听。
+- 模型 API provider、Base URL、API Key、模型名、temperature、streaming。
+- 解说员 system prompt、上下文 tokens、回复 tokens。
+- 自动解说模式、间隔、事件窗口、冷却、去重和最大词数。
+- CSV 读取、演示数据注入、手动触发解说、清空上下文历史。
+
+如果 Electron 没有枚举到浏览器 voice，overlay 会自动使用系统 `speech-dispatcher` 的 `spd-say` 作为配音 fallback。可先用下面命令确认系统 TTS：
+
+```bash
+spd-say "TORCS voice test"
+```
+
+WSL 中请使用 Linux 版 Node/npm。如果 `which npm` 指向 `/mnt/c/...` 或 `/mnt/d/...`，Electron 安装可能因 Windows UNC 路径失败。
+
+完整 overlay 测试文档见：
+
+```text
+overlay-app/TESTING.md
+```
+
+### 4. 从 TORCS 开始完整运行
+
+开三个终端，按顺序运行。
+
+终端 1：启动 `midware`。
+
+```bash
+cd ~/test/torcs-1.3.7/midware
+source .venv/bin/activate
+python commentary.py
+```
+
+终端 2：启动 overlay。
+
+```bash
+cd ~/test/torcs-1.3.7/overlay-app
+npm start
+```
+
+终端 3：启动 TORCS，并把 human 数据采集器的 UDP 输出指向 `midware`。
+
+```bash
+cd ~/test/torcs-1.3.7
+
+export TORCS_PLAYER_UDP_HOST=127.0.0.1
+export TORCS_PLAYER_UDP_PORT=3101
+export TORCS_PLAYER_LOG_DIR="$(pwd)/logs"
+mkdir -p logs
+
+./BUILD/bin/torcs
+```
+
+进入 TORCS 比赛并开始驾驶后，正常现象是：
+
+- `http://localhost:8765` 页面中遥测数据变化。
+- 自动解说或手动解说触发时，overlay 显示 `Generating captions...`。
+- 模型返回完成后，overlay 显示最终解说文本。
+
 ## 常用启动参数
 
 - `-s`：禁用多重纹理，适用于部分旧显卡或图形兼容问题。
@@ -361,4 +572,4 @@ Student reproduction steps:
 4. Ask questions like "我的轮胎状态怎么样？" / "现在该不该进站？" / "为什么我刚才过弯慢？".
 5. Type `exit` to quit.
 
-Swapping in A's real data: once A delivers a module that produces a dict mat
+Swapping in A's real data: once A delivers a module that produces a dict matching the `car_state` contract above, replace `LiveCarStateSource` in `car_state_source.py` or adapt it behind the same interface so `chat_engineer.py` and `chat_engineer_gui.py` do not need to change.
