@@ -41,7 +41,9 @@ sudo apt-get install -y \
   libxss1 \
   libasound2 \
   libdrm2 \
-  libgbm1
+  libgbm1 \
+  speech-dispatcher \
+  espeak-ng
 ```
 
 WSL 中请确认使用 Linux 版 Node/npm：
@@ -265,7 +267,7 @@ TORCS human 数据采集器
   -> overlay-app Electron 字幕悬浮窗
 ```
 
-`midware` 负责接收 TORCS 遥测、检测比赛事件、调用模型、提供网页配置界面和 WebSocket 解说流。`overlay-app` 是独立 Electron 应用，只负责显示一个透明、无边框、始终置顶的游戏 HUD 风格字幕面板。
+`midware` 负责接收 TORCS 遥测、检测比赛事件、调用模型、提供 REST 配置 API 和 WebSocket 解说流。`overlay-app` 是独立 Electron 应用：主窗口显示透明、无边框、始终置顶的游戏 HUD 风格字幕面板，并通过小设置按钮或应用菜单打开独立设置窗口。
 
 ### 1. 启动模型服务
 
@@ -364,6 +366,21 @@ Connection lost
 ```
 
 说明 `midware/commentary.py` 未运行，或 `ws://127.0.0.1:8765/ws` 无法连接。Overlay 会每 3 秒自动重连。
+
+字幕窗口右上角的设置按钮或应用菜单会打开设置窗口。应用菜单里的 `Show Overlay` 可以恢复/显示 overlay。设置窗口支持：
+
+- Overlay WebSocket URL、重连间隔、ping 间隔。
+- 语音解说开关、音色、语速、音调、音量和试听。
+- 模型 API provider、Base URL、API Key、模型名、temperature、streaming。
+- 解说员 system prompt、上下文 tokens、回复 tokens。
+- 自动解说模式、间隔、事件窗口、冷却、去重和最大词数。
+- CSV 读取、演示数据注入、手动触发解说、清空上下文历史。
+
+如果 Electron 没有枚举到浏览器 voice，overlay 会自动使用系统 `speech-dispatcher` 的 `spd-say` 作为配音 fallback。可先用下面命令确认系统 TTS：
+
+```bash
+spd-say "TORCS voice test"
+```
 
 WSL 中请使用 Linux 版 Node/npm。如果 `which npm` 指向 `/mnt/c/...` 或 `/mnt/d/...`，Electron 安装可能因 Windows UNC 路径失败。
 

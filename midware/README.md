@@ -66,7 +66,10 @@ overlay-app/
 ├── src/
 │   ├── index.html         # 字幕面板 DOM
 │   ├── styles.css         # 游戏 HUD 风格
-│   └── renderer.js        # WebSocket 状态机
+│   ├── renderer.js        # WebSocket 状态机和语音播放
+│   ├── settings.html      # 独立设置窗口
+│   ├── settings.css
+│   └── settings.js
 └── TESTING.md             # Overlay 完整测试文档
 ```
 
@@ -245,7 +248,7 @@ ws://127.0.0.1:8765/ws
 
 ## 四、启动 Electron 字幕悬浮窗
 
-`overlay-app` 是独立 Electron 应用，显示一个透明、无边框、始终置顶的英文状态/字幕 HUD。它不负责配置 AI，也不启动 Python 后端；后端仍然由 `midware/commentary.py` 提供。
+`overlay-app` 是独立 Electron 应用，显示一个透明、无边框、始终置顶的英文状态/字幕 HUD。它不启动 Python 后端；后端仍然由 `midware/commentary.py` 提供。主字幕窗口右上角有一个小设置按钮，也可以通过应用菜单打开独立设置窗口。
 
 第一次运行安装依赖：
 
@@ -275,7 +278,9 @@ npm start
 
 - Overlay UI 文案是英文；最终字幕内容来自后端 `ai_done.content`。
 - 要保持最终字幕为英文，请在网页配置、prompt 或模型输出侧要求英文解说。
-- 按 `Esc` 会隐藏 overlay；当前版本没有托盘和全局快捷键，隐藏后需要重新运行 `npm start`。
+- 设置窗口可以配置 overlay 连接、语音解说、模型 API、解说员人设、自动解说、CSV 读取和演示数据注入。
+- 配音默认关闭；开启后 overlay 在收到 `ai_done` 最终解说时朗读，`ai_start` 会停止上一句语音。如果 Electron 没有可用浏览器 voice，会自动回退到系统 `speech-dispatcher` 的 `spd-say`。
+- 可以通过应用菜单隐藏或恢复 overlay，并打开设置窗口。
 - WSL 中请使用 Linux 版 Node/npm。若 `which npm` 指向 `/mnt/c/...` 或 `/mnt/d/...`，Electron 安装可能因为 Windows UNC 路径失败。
 
 ## 五、运行前检查

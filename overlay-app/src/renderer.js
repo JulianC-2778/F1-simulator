@@ -1,13 +1,24 @@
-const WS_URL = 'ws://127.0.0.1:8765/ws';
-const RECONNECT_DELAY_MS = 3000;
-const PING_INTERVAL_MS = 15000;
-
 const caption = document.getElementById('caption');
+const settingsButton = document.getElementById('settingsButton');
 
 let socket = null;
 let reconnectTimer = null;
 let pingTimer = null;
 let pendingText = '';
+let settings = {
+  connection: {
+    wsUrl: 'ws://127.0.0.1:8765/ws',
+    reconnectDelayMs: 3000,
+    pingIntervalMs: 15000
+  },
+  voice: {
+    enabled: false,
+    voiceURI: '',
+    rate: 1.1,
+    pitch: 1.0,
+    volume: 1.0
+  }
+};
 
 function setCaption(text) {
   caption.textContent = text;
@@ -17,6 +28,11 @@ function clearTimers() {
   if (pingTimer) {
     clearInterval(pingTimer);
     pingTimer = null;
+  }
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
 }
 
@@ -28,16 +44,49 @@ function scheduleReconnect() {
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null;
     connect();
-  }, RECONNECT_DELAY_MS);
+  }, settings.connection.reconnectDelayMs);
 }
 
 function startPing() {
-  clearTimers();
+  if (pingTimer) {
+    clearInterval(pingTimer);
+  }
   pingTimer = window.setInterval(() => {
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send('ping');
     }
-  }, PING_INTERVAL_MS);
+  }, settings.connection.pingIntervalMs);
+}
+
+function stopSpeech() {
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+  window.torcsOverlay?.stopSpeech();
+}
+
+function speak(text) {
+  if (!settings.voice.enabled || !text) {
+    return;
+  }
+
+  stopSpeech();
+  const voices = 'speechSynthesis' in window ? window.speechSynthesis.getVoices() : [];
+  const selectedVoice = voices.find((voice) => voice.voiceURI === settings.voice.voiceURI);
+
+  if (!selectedVoice) {
+    window.torcsOverlay?.speak(text, settings.voice);
+    return;
+  }
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.voice = selectedVoice;
+  utterance.lang = selectedVoice.lang;
+
+  utterance.rate = settings.voice.rate;
+  utterance.pitch = settings.voice.pitch;
+  utterance.volume = settings.voice.volume;
+  window.speechSynthesis.speak(utterance);
 }
 
 function conciseMessage(message) {
@@ -60,6 +109,7 @@ function handleMessage(message) {
       break;
     case 'ai_start':
       pendingText = '';
+      stopSpeech();
       setCaption('Generating captions...');
       break;
     case 'token':
@@ -72,6 +122,7 @@ function handleMessage(message) {
         ? message.content.trim()
         : pendingText.trim();
       setCaption(finalText || 'Waiting for commentary...');
+      speak(finalText);
       break;
     }
     case 'error': {
@@ -91,14 +142,34 @@ function connect() {
   setCaption('Connecting to commentary service...');
   clearTimers();
 
-  socket = new WebSocket(WS_URL);
+  if (socket) {
+    const oldSocket = socket;
+    socket = null;
+    oldSocket.close();
+  }
 
-  socket.addEventListener('open', () => {
+  let nextSocket;
+  try {
+    nextSocket = new WebSocket(settings.connection.wsUrl);
+  } catch {
+    setCaption('Connection lost');
+    scheduleReconnect();
+    return;
+  }
+  socket = nextSocket;
+
+  nextSocket.addEventListener('open', () => {
+    if (socket !== nextSocket) {
+      return;
+    }
     setCaption('Waiting for commentary...');
     startPing();
   });
 
-  socket.addEventListener('message', (event) => {
+  nextSocket.addEventListener('message', (event) => {
+    if (socket !== nextSocket) {
+      return;
+    }
     try {
       handleMessage(JSON.parse(event.data));
     } catch {
@@ -106,21 +177,42 @@ function connect() {
     }
   });
 
-  socket.addEventListener('error', () => {
+  nextSocket.addEventListener('error', () => {
+    if (socket !== nextSocket) {
+      return;
+    }
     setCaption('Connection lost');
   });
 
-  socket.addEventListener('close', () => {
+  nextSocket.addEventListener('close', () => {
+    if (socket !== nextSocket) {
+      return;
+    }
     clearTimers();
     setCaption('Connection lost');
     scheduleReconnect();
   });
 }
 
-window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && window.torcsOverlay) {
-    window.torcsOverlay.hide();
+async function loadSettings() {
+  if (window.torcsOverlay) {
+    settings = await window.torcsOverlay.getSettings();
   }
+}
+
+function applySettings(nextSettings) {
+  const previousUrl = settings.connection.wsUrl;
+  settings = nextSettings;
+
+  if (settings.connection.wsUrl !== previousUrl) {
+    connect();
+  }
+}
+
+settingsButton.addEventListener('click', () => {
+  window.torcsOverlay?.openSettings();
 });
 
-connect();
+window.torcsOverlay?.onSettingsUpdated(applySettings);
+
+loadSettings().finally(connect);

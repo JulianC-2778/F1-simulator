@@ -14,10 +14,12 @@ Use this guide to verify:
 
 - The Electron app installs and starts.
 - The window is frameless, transparent, always on top, and positioned near the bottom center.
-- The UI shows only caption/status text, with no toolbar or buttons.
+- The UI shows the caption/status text plus a small settings button.
 - The WebSocket state flow works correctly.
 - The app reconnects when the commentary service is unavailable.
-- The `Esc` key hides the overlay.
+- The settings button opens the settings window.
+- The app menu can show or hide the overlay.
+- Voice commentary can be enabled and tested from settings.
 
 ## 2. Expected Project Files
 
@@ -37,6 +39,9 @@ overlay-app/electron/preload.js
 overlay-app/src/index.html
 overlay-app/src/styles.css
 overlay-app/src/renderer.js
+overlay-app/src/settings.html
+overlay-app/src/settings.css
+overlay-app/src/settings.js
 overlay-app/TESTING.md
 ```
 
@@ -170,6 +175,7 @@ Expected result:
 - It is around `900px` wide and `160px` tall.
 - It is near the bottom center of the primary display.
 - It has no title bar, toolbar, close button, or visible browser chrome.
+- It has a small settings button in the caption panel.
 - It shows:
 
 ```text
@@ -213,11 +219,70 @@ When the backend sends commentary events, the expected UI states are:
 | `{ "type": "telemetry_update", ... }` | Ignored |
 | `{ "type": "event_detected", ... }` | Ignored |
 
-## 8. Manual WebSocket Mock Test
+## 8. Settings Window Test
+
+Start the backend and overlay:
+
+```bash
+cd /home/ubu/test/torcs-1.3.7/midware
+source .venv/bin/activate
+python commentary.py
+```
+
+```bash
+cd /home/ubu/test/torcs-1.3.7/overlay-app
+npm start
+```
+
+Open settings using either method:
+
+- Click the small settings button in the overlay.
+- Use the application menu and choose `TORCS AI Overlay` -> `Settings`.
+
+Verify the settings window includes:
+
+- Connection: WebSocket URL, reconnect interval, ping interval.
+- Model API: provider, Base URL, API Key, model, temperature, streaming.
+- Commentator persona: context tokens, response tokens, system prompt.
+- Voice: enable voice, voice selection, rate, pitch, volume, test voice.
+- Auto commentary: mode, baseline interval, event window, cooldown, dedupe window, max words.
+- Data source and actions: CSV path, rankings CSV path, load CSV, inject demo data, trigger commentary, clear history.
+
+Click `Reload` and verify backend configuration loads from `midware`.
+
+Save each section after making a small change, then restart the overlay and confirm local overlay settings such as WebSocket URL and voice settings persist.
+
+## 9. Voice Test
+
+Open the settings window.
+
+1. Enable `Enable voice commentary`.
+2. Select a voice, or keep `System default`.
+3. Click `Test Voice`.
+4. Click `Save Voice`.
+5. Trigger commentary from settings or from the backend UI.
+
+Expected result:
+
+- The test sentence is spoken.
+- During real commentary, `ai_start` stops any previous speech.
+- When `ai_done` arrives, the final commentary text is spoken once.
+- `Connection lost`, `Waiting for commentary...`, and `Commentary error` are not spoken.
+
+If the voice dropdown only shows `System default`, install and verify the native Linux TTS fallback:
+
+```bash
+sudo apt-get install -y speech-dispatcher espeak-ng
+spd-say "TORCS voice test"
+```
+
+If that command speaks, restart the overlay. `Test Voice` and final commentary should use `spd-say` automatically.
+
+## 10. Manual WebSocket Mock Test
 
 Use this when the real backend is not ready or when you want predictable test messages.
 
-### 8.1 Install Python Test Dependency
+### 10.1 Install Python Test Dependency
 
 From anywhere:
 
@@ -227,7 +292,7 @@ python3 -m pip install websockets
 
 If you use a virtual environment, activate it first.
 
-### 8.2 Create A Temporary Mock Server
+### 10.2 Create A Temporary Mock Server
 
 Create this file outside `overlay-app`, for example:
 
@@ -295,7 +360,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### 8.3 Run The Mock Server
+### 10.3 Run The Mock Server
 
 In terminal 1:
 
@@ -310,7 +375,7 @@ Expected terminal output:
 Mock WebSocket server running at ws://127.0.0.1:8765/ws
 ```
 
-### 8.4 Run The Overlay
+### 10.4 Run The Overlay
 
 In terminal 2:
 
@@ -336,7 +401,7 @@ Received ping from overlay
 
 This confirms the 15-second ping behavior.
 
-## 9. Reconnect Test
+## 11. Reconnect Test
 
 Use either the real backend or the mock backend.
 
@@ -363,7 +428,7 @@ Connection lost
 Waiting for commentary...
 ```
 
-## 10. Window Behavior Test
+## 12. Window Behavior Test
 
 Start the overlay:
 
@@ -378,13 +443,15 @@ Verify:
 - The window has no browser controls.
 - The UI contains no close button.
 - The UI contains no toolbar.
+- The settings button opens the settings window.
+- The application menu opens the settings window.
+- The application menu can show or hide the overlay.
 - The panel can be dragged by dragging the caption area.
 - The overlay stays above normal application windows.
-- Pressing `Esc` hides the overlay.
 
-Note: after pressing `Esc`, the current version has no tray icon or global shortcut to bring the window back. Restart with `npm start` if needed.
+Note: the current version has no tray icon. Use the app menu or restart with `npm start` if the hidden overlay needs to be shown again.
 
-## 11. Visual Design Test
+## 13. Visual Design Test
 
 Verify the overlay visually:
 
@@ -398,9 +465,10 @@ Verify the overlay visually:
 - Caption font weight is bold.
 - Long English captions wrap inside the panel.
 - There is no Chinese UI text.
+- The only visible control is the small settings button.
 - There are no controls such as `Translate`, `Show original`, `Font size`, or `Expand subtitles`.
 
-## 12. Long Caption Test
+## 14. Long Caption Test
 
 Use the mock server or real backend to send a long `ai_done` message:
 
@@ -418,7 +486,7 @@ Expected result:
 - Text does not overflow out of the panel.
 - No scrollbar appears.
 
-## 13. Security Check
+## 15. Security Check
 
 Inspect `electron/main.js`:
 
@@ -443,7 +511,7 @@ cat electron/preload.js
 
 Expected behavior:
 
-- Only a minimal `hide` API is exposed.
+- Only minimal overlay/settings IPC methods are exposed.
 - No broad Node.js APIs are exposed to the renderer.
 
 Inspect `src/renderer.js`:
@@ -457,7 +525,7 @@ Expected result:
 - `textContent` is used for display.
 - `innerHTML` is not used.
 
-## 14. Troubleshooting
+## 16. Troubleshooting
 
 ### npm install fails with UNC path errors
 
@@ -528,17 +596,30 @@ Recommended approach:
 - On Windows 11 with WSLg, use Linux Node/npm inside WSL and run `npm start`.
 - Otherwise, run the app from native Windows Node in a Windows filesystem path, not from `\\wsl.localhost\...`.
 
-### Esc hides the window and it cannot be restored
+### Test Voice has no sound
 
-This is expected for the current version. There is no system tray and no global shortcut yet.
+The settings window first tries browser speech voices. If none are available, it falls back to native Linux `spd-say`.
 
-Restart the app:
+Verify native TTS:
+
+```bash
+sudo apt-get install -y speech-dispatcher espeak-ng
+spd-say "TORCS voice test"
+```
+
+If `spd-say` speaks but the overlay does not, restart `npm start` so Electron picks up the native TTS tools.
+
+### Overlay is hidden
+
+Use the application menu and choose `TORCS AI Overlay` -> `Show Overlay`.
+
+If the menu is unavailable, restart the app:
 
 ```bash
 npm start
 ```
 
-## 15. Final Acceptance Checklist
+## 17. Final Acceptance Checklist
 
 Mark the overlay as passing if all items are true:
 
@@ -549,6 +630,9 @@ Mark the overlay as passing if all items are true:
 - The window appears near the bottom center.
 - The caption panel is draggable.
 - The UI has no toolbar, no close button, and no browser chrome.
+- The small settings button opens the settings window.
+- The application menu opens the settings window.
+- The application menu can show and hide the overlay.
 - Initial connected state shows `Waiting for commentary...`.
 - Missing backend state shows `Connection lost`.
 - `ai_start` shows `Generating captions...`.
@@ -557,5 +641,6 @@ Mark the overlay as passing if all items are true:
 - `error` shows `Commentary error` with a concise message when available.
 - `telemetry_update` and `event_detected` do not change the caption.
 - Long English captions wrap cleanly.
-- Pressing `Esc` hides the overlay.
+- Voice can be enabled, tested, saved, and used for final commentary.
+- Settings can save model API, context, auto commentary, data source actions, and overlay connection.
 - No Chinese text appears in the overlay UI.
