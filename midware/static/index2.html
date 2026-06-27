@@ -119,23 +119,12 @@ body::after {
 #subtitle.show { opacity: 1; }
 
 #sub-zh {
-  font-size: 30px;
+  font-size: 26px;
   font-weight: 500;
   color: #ffffff;
   line-height: 1.55;
   text-shadow: 0 2px 20px rgba(0,0,0,1), 0 0 50px rgba(0,0,0,.8);
   letter-spacing: .01em;
-}
-
-#sub-en {
-  font-size: 18px;
-  font-weight: 400;
-  color: rgba(180,205,225,.82);
-  font-style: italic;
-  line-height: 1.45;
-  margin-top: 6px;
-  text-shadow: 0 1px 12px rgba(0,0,0,1);
-  display: none;
 }
 
 /* ─── Bottom bar ──────────────────────────────────────── */
@@ -273,7 +262,6 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   </div>
   <div id="subtitle">
     <p id="sub-zh"></p>
-    <p id="sub-en"></p>
   </div>
 </div>
 
@@ -473,35 +461,55 @@ function syncVoice() {
   selVoice = i !== '' ? voices[parseInt(i)] : null;
 }
 
-function speak(text) {
-  if (!voiceEnabled || !text || !('speechSynthesis' in window)) return;
-  speechSynthesis.cancel();
+let sentenceQueue = [], sentenceTimer = null;
+
+function splitSentences(text) {
+  const parts = text.match(/[^.!?]+[.!?]+\s*/g);
+  return parts ? parts.map(s => s.trim()).filter(Boolean) : [text.trim()];
+}
+
+function stopSpeech() {
+  sentenceQueue = [];
+  if (sentenceTimer) { clearTimeout(sentenceTimer); sentenceTimer = null; }
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+}
+
+function speakSentence(text) {
+  if (!voiceEnabled || !text || !('speechSynthesis' in window)) {
+    sentenceTimer = setTimeout(playNextSentence, text.split(' ').length * 300 + 500);
+    return;
+  }
   const u = new SpeechSynthesisUtterance(text);
   if (selVoice) { u.voice = selVoice; u.lang = selVoice.lang; }
   else { u.lang = 'en-US'; }
   u.rate = vRate; u.pitch = vPitch; u.volume = vVol;
+  u.onend = () => playNextSentence();
   speechSynthesis.speak(u);
 }
-function testVoice() { speak('这是语音测试，当前一切正常。'); }
 
-// ── Subtitle ──────────────────────────────────────────────
-function parseBilingual(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  return lines.length >= 2 ? [lines[0], lines.slice(1).join(' ')] : [text.trim(), ''];
+function playNextSentence() {
+  if (sentenceQueue.length === 0) return;
+  const sentence = sentenceQueue.shift();
+  showSubtitle(sentence);
+  speakSentence(sentence);
 }
 
-function showSubtitle(zh, en) {
+function speak(text) { /* legacy, kept for test button */
+  stopSpeech();
+  sentenceQueue = splitSentences(text);
+  playNextSentence();
+}
+
+function testVoice() { speak('Testing voice. Everything is working correctly.'); }
+
+// ── Subtitle ──────────────────────────────────────────────
+function showSubtitle(text) {
   const box  = document.getElementById('subtitle');
   const zhEl = document.getElementById('sub-zh');
-  const enEl = document.getElementById('sub-en');
 
-  // Fade out → update → fade in
   box.classList.remove('show');
-
   setTimeout(() => {
-    zhEl.textContent = zh;
-    if (en) { enEl.textContent = en; enEl.style.display = ''; }
-    else    { enEl.style.display = 'none'; }
+    zhEl.textContent = text;
     box.classList.add('show');
   }, 320);
 }
@@ -550,10 +558,10 @@ function onMsg(msg) {
 
     case 'ai_done':
       showLoading(false);
-      const [zh, en] = parseBilingual(pendingText);
-      // Show subtitle and speak at the exact same time
-      showSubtitle(zh, en);
-      speak(zh);
+      const newSentences = splitSentences(pendingText.trim());
+      const wasEmpty = sentenceQueue.length === 0;
+      sentenceQueue.push(...newSentences);
+      if (wasEmpty) playNextSentence();
       updateStats(msg.stats);
       pendingText = '';
       break;

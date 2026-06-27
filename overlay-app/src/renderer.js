@@ -5,6 +5,8 @@ let socket = null;
 let reconnectTimer = null;
 let pingTimer = null;
 let pendingText = '';
+let sentenceQueue = [];
+let sentenceTimer = null;
 let settings = {
   connection: {
     wsUrl: 'ws://127.0.0.1:8765/ws',
@@ -22,6 +24,49 @@ let settings = {
 
 function setCaption(text) {
   caption.textContent = text;
+  requestAnimationFrame(() => {
+    window.torcsOverlay?.resizeWindow(document.body.scrollHeight);
+  });
+}
+
+function splitSentences(text) {
+  const parts = text.match(/[^.!?]+[.!?]+\s*/g);
+  return parts ? parts.map(s => s.trim()).filter(Boolean) : [text.trim()];
+}
+
+function playNextSentence() {
+  if (sentenceQueue.length === 0) return;
+  const sentence = sentenceQueue.shift();
+  setCaption(sentence);
+  speakSentence(sentence);
+}
+
+function speakSentence(text) {
+  if (!settings.voice.enabled || !text) {
+    const wordCount = text.split(' ').length;
+    sentenceTimer = setTimeout(playNextSentence, wordCount * 300 + 500);
+    return;
+  }
+
+  const voices = 'speechSynthesis' in window ? window.speechSynthesis.getVoices() : [];
+  const selectedVoice = voices.find(v => v.voiceURI === settings.voice.voiceURI);
+
+  if (!selectedVoice) {
+    window.torcsOverlay?.speak(text, settings.voice);
+    const wordCount = text.split(' ').length;
+    const ms = (wordCount / (settings.voice.rate * 2.5)) * 1000 + 600;
+    sentenceTimer = setTimeout(playNextSentence, ms);
+    return;
+  }
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.voice = selectedVoice;
+  utterance.lang = selectedVoice.lang;
+  utterance.rate = settings.voice.rate;
+  utterance.pitch = settings.voice.pitch;
+  utterance.volume = settings.voice.volume;
+  utterance.onend = () => playNextSentence();
+  window.speechSynthesis.speak(utterance);
 }
 
 function clearTimers() {
@@ -59,9 +104,9 @@ function startPing() {
 }
 
 function stopSpeech() {
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
+  sentenceQueue = [];
+  if (sentenceTimer) { clearTimeout(sentenceTimer); sentenceTimer = null; }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   window.torcsOverlay?.stopSpeech();
 }
 
@@ -103,15 +148,6 @@ function conciseMessage(message) {
 }
 
 function handleMessage(message) {
-  // Messages explicitly tagged for another feature (e.g. the Feature 1
-  // engineer chatbot, see overlay_broadcast.py) belong to that feature's
-  // own overlay window (engineer.html / engineer-renderer.js) -- ignore
-  // them here. The shared "connected" lifecycle message has no source and
-  // is unaffected by this check.
-  if (message && message.source && message.source !== 'commentary') {
-    return;
-  }
-
   switch (message.type) {
     case 'connected':
       setCaption('Waiting for commentary...');
@@ -130,8 +166,10 @@ function handleMessage(message) {
       const finalText = typeof message.content === 'string' && message.content.trim()
         ? message.content.trim()
         : pendingText.trim();
-      setCaption(finalText || 'Waiting for commentary...');
-      speak(finalText);
+      const newSentences = splitSentences(finalText || 'Waiting for commentary...');
+      const wasEmpty = sentenceQueue.length === 0;
+      sentenceQueue.push(...newSentences);
+      if (wasEmpty) playNextSentence();
       break;
     }
     case 'error': {
