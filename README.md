@@ -6,6 +6,8 @@
 
 ## 安装依赖
 
+TORCS 编译依赖：
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
@@ -23,6 +25,33 @@ sudo apt-get install -y \
   libpng-dev \
   libvorbis-dev
 ```
+
+实时解说 `midware` 与 Electron overlay 依赖：
+
+```bash
+sudo apt-get install -y \
+  python3-venv \
+  python3-pip \
+  curl \
+  nodejs \
+  npm \
+  libatk-bridge2.0-0 \
+  libgtk-3-0 \
+  libnss3 \
+  libxss1 \
+  libasound2 \
+  libdrm2 \
+  libgbm1
+```
+
+WSL 中请确认使用 Linux 版 Node/npm：
+
+```bash
+which node
+which npm
+```
+
+如果路径指向 `/mnt/c/...` 或 `/mnt/d/...`，请改用 WSL 内的 Linux Node/npm，例如通过 `nvm` 安装 LTS 版本；否则 Electron 安装可能因为 Windows UNC 路径失败。
 
 ## 编译与安装
 
