@@ -57,7 +57,7 @@ class ContextConfig:
         "Based on the TORCS real-time telemetry data, deliver a short (1-3 sentences) exciting commentary. "
         "Focus on speed changes, position battles, driving actions, and dangerous situations. "
         "Do not fabricate information not present in the telemetry. Avoid repeating the previous commentary. "
-        "Output exactly two lines: the first line in English, the second line as a Chinese translation."
+        "Output in English only."
     )
 
     # ---- 数据字段过滤（选择哪些 TORCS 字段进入 prompt）----
@@ -205,8 +205,7 @@ class ContextManager:
                     f"— 圈数 {r.get('laps','?')} / 距起点 {r.get('dist_from_start',0):.0f}m"
                 )
 
-        lines.append("\nGenerate exciting commentary based on the data above.")
-        lines.append("Output exactly 2 lines: Line 1 = English, Line 2 = Chinese translation.")
+        lines.append("\nGenerate exciting commentary based on the data above. English only.")
         return "\n".join(lines)
 
     def format_event_prompt(self, payload: dict) -> str:
@@ -216,8 +215,7 @@ class ContextManager:
         payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
         return (
             "Generate race commentary based on the following event data.\n"
-            "Requirements: 1-3 sentences, vivid and exciting, no lists or JSON.\n"
-            "Output exactly 2 lines: Line 1 = English commentary, Line 2 = Chinese translation.\n\n"
+            "Requirements: 1-3 sentences, vivid and exciting, no lists or JSON. English only.\n\n"
             f"{payload_text}"
         )
 
