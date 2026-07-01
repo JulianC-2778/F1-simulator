@@ -73,6 +73,8 @@ commentary_engine = CommentaryEngine(
     )
 )
 _auto_task: asyncio.Task | None = None
+_commentary_task: asyncio.Task | None = None
+_commentary_priority: int = 0
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -257,14 +259,27 @@ async def generate_commentary(
 # 自动解说定时任务
 # ---------------------------------------------------------------------------
 
+async def _run_commentary(decision, t, r):
+    try:
+        reply = await generate_commentary(t, r, event_payload=decision.payload, history_mode="summary")
+        if not commentary_engine.should_emit_text(reply, float(decision.payload.get("event_time", 0.0))):
+            log.info("重复解说已被去重记录标记")
+    except asyncio.CancelledError:
+        log.info(f"解说被新事件中断: {decision.event.get('event_type')}")
+        raise
+    except Exception as e:
+        log.warning(f"自动解说失败: {e}")
+
+
 async def _auto_commentary_loop():
+    global _commentary_task, _commentary_priority
     while True:
         cfg = commentary_engine.config
         if cfg.mode == "off":
             await asyncio.sleep(1)
             continue
 
-        await asyncio.sleep(0.5 if cfg.mode in ("event", "hybrid") else max(1.0, cfg.baseline_interval))
+        await asyncio.sleep(0.5)
 
         t, r = telemetry_store.latest()
         if t is None:
@@ -276,15 +291,19 @@ async def _auto_commentary_loop():
             if decision is None:
                 continue
 
+            new_priority = decision.event.get("priority", 0)
+
+            if _commentary_task and not _commentary_task.done():
+                if new_priority >= _commentary_priority:
+                    _commentary_task.cancel()
+                    await asyncio.sleep(0)
+                else:
+                    continue
+
             await broadcast({"type": "event_detected", "event": decision.event, "payload": decision.payload})
-            reply = await generate_commentary(
-                t,
-                r,
-                event_payload=decision.payload,
-                history_mode="summary",
-            )
-            if not commentary_engine.should_emit_text(reply, float(decision.payload.get("event_time", 0.0))):
-                log.info("重复解说已被去重记录标记")
+            _commentary_priority = new_priority
+            _commentary_task = asyncio.create_task(_run_commentary(decision, t, r))
+
         except Exception as e:
             log.warning(f"自动解说失败: {e}")
 

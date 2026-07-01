@@ -549,6 +549,7 @@ function onMsg(msg) {
 
     case 'ai_start':
       pendingText = '';
+      stopSpeech();
       showLoading(true);
       break;
 
