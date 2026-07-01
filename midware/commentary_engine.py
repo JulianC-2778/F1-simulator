@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from event_payload_config import EVENT_FIELDS
+
 
 EVENT_PRIORITIES = {
     "contact": 5,
@@ -329,6 +331,73 @@ def detect_event(
     return max(candidates, key=lambda event: event["priority"])
 
 
+def _collision_direction(opp: dict[str, float]) -> str:
+    gaps = {"front": opp["front_gap"], "left": opp["left_gap"],
+            "right": opp["right_gap"], "rear": opp["rear_gap"]}
+    return min(gaps, key=gaps.get)
+
+
+def _infer_collision_partner(
+    latest: dict[str, Any],
+    direction: str,
+    rankings: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not rankings:
+        return None
+    player_dist = float(latest.get("dist_from_start", 0.0))
+    player_pos = int(latest.get("race_pos", 99))
+    others = [r for r in rankings if int(r.get("race_pos", 99)) != player_pos]
+    if not others:
+        return None
+    if direction == "front":
+        candidates = [r for r in others if r.get("dist_from_start", 0) >= player_dist]
+        if candidates:
+            c = min(candidates, key=lambda r: r.get("dist_from_start", 0) - player_dist)
+            return {"car_name": c.get("car_name", "?"), "race_pos": c.get("race_pos", "?")}
+    elif direction == "rear":
+        candidates = [r for r in others if r.get("dist_from_start", 0) <= player_dist]
+        if candidates:
+            c = min(candidates, key=lambda r: player_dist - r.get("dist_from_start", 0))
+            return {"car_name": c.get("car_name", "?"), "race_pos": c.get("race_pos", "?")}
+    c = min(others, key=lambda r: abs(r.get("dist_from_start", 0) - player_dist))
+    return {"car_name": c.get("car_name", "?"), "race_pos": c.get("race_pos", "?")}
+
+
+def _extract_fields(
+    field_names: list[str],
+    latest: dict[str, Any],
+    summary: dict[str, Any],
+    event: dict[str, Any],
+    rankings: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    opp = compact_opponent_profile(latest["opponents"])
+    col_dir = _collision_direction(opp)
+
+    registry: dict[str, Any] = {
+        "race_pos":            int(latest["race_pos"]),
+        "lap":                 int(latest["lap"]),
+        "gear":                int(latest["gear"]),
+        "track_pos":           round(latest["track_pos"], 3),
+        "fuel_remaining":      round(latest["fuel"], 3),
+        "total_damage":        round(latest["damage"], 3),
+        "damage_delta":        round(summary.get("damage_delta", 0.0), 3),
+        "last_lap_time":       round(latest.get("last_lap_time", 0.0), 3),
+        "front_gap":           round(opp["front_gap"], 3),
+        "rear_gap":            round(opp["rear_gap"], 3),
+        "nearest_gap":         round(opp["nearest_gap"], 3),
+        "direction":           "up" if "up" in event.get("reason", "") else "down",
+        "new_pos":             int(latest["race_pos"]),
+        "side":                "right" if "right" in event.get("reason", "") else "left",
+        "completed_lap":       event.get("completed_lap", int(latest["lap"]) - 1),
+        "collision_direction": col_dir,
+        "collision_partner":   _infer_collision_partner(latest, col_dir, rankings),
+        "rankings":            [{"car_name": r.get("car_name", "?"),
+                                 "race_pos": r.get("race_pos", "?")}
+                                for r in (rankings or [])],
+    }
+    return {k: registry[k] for k in field_names if k in registry}
+
+
 def build_commentary_payload(
     frames: list[dict[str, Any]],
     summary: dict[str, Any],
@@ -337,33 +406,19 @@ def build_commentary_payload(
     max_words: int,
 ) -> dict[str, Any]:
     latest = frames[-1]
-    return {
+    event_type = event["event_type"]
+    field_names = EVENT_FIELDS.get(event_type, ["race_pos", "lap"])
+
+    payload: dict[str, Any] = {
         "task": "race_commentary",
-        "event_type": event["event_type"],
+        "event_type": event_type,
         "event_reason": event["reason"],
         "event_time": round(latest["sim_time"], 3),
-        "current_state": {
-            "sim_time": round(latest["sim_time"], 3),
-            "lap": latest["lap"],
-            "race_pos": latest["race_pos"],
-            "speed_x": round(latest["speed_x"], 3),
-            "gear": latest["gear"],
-            "track_pos": round(latest["track_pos"], 3),
-            "damage": round(latest["damage"], 3),
-            "fuel": round(latest["fuel"], 3),
-        },
-        "window_summary": {
-            "avg_speed": round(summary.get("avg_speed", 0.0), 3),
-            "speed_delta": round(summary.get("speed_delta", 0.0), 3),
-            "damage_delta": round(summary.get("damage_delta", 0.0), 3),
-            "nearest_opponent_now": round(summary.get("nearest_opponent_now", 200.0), 3),
-        },
-        "track_profile": compact_track_profile(latest["track"]),
-        "opponent_profile": compact_opponent_profile(latest["opponents"]),
-        "rankings": rankings or [],
-        "style": {
-            "language": "zh-CN",
-            "tone": "professional, vivid, concise",
-            "max_words": max_words,
-        },
     }
+    payload.update(_extract_fields(field_names, latest, summary, event, rankings))
+    payload["style"] = {
+        "language": "zh-CN",
+        "tone": "professional, vivid, concise",
+        "max_words": max_words,
+    }
+    return payload
