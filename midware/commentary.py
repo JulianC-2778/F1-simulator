@@ -41,14 +41,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 UI_FILE = "index.html"  # 可被启动参数覆盖
 
-# -- AI API 配置（可在 UI 中修改）--
+# -- AI API config (editable from UI) --
 api_config: dict[str, Any] = {
-    "provider":  "openai",          # "openai" | "anthropic" | "ollama"
-    "base_url":  "https://api.openai.com/v1",
-    "api_key":   "",
-    "model":     "gpt-4o-mini",
+    "base_url":    "http://localhost:1234/v1",
+    "api_key":     "",
+    "model":       "gpt-4o-mini",
     "temperature": 0.8,
-    "stream":    True,
+    "stream":      True,
 }
 
 # -- Context 配置 --
@@ -103,11 +102,7 @@ async def broadcast(msg: dict):
 # ---------------------------------------------------------------------------
 
 async def call_ai(messages: list[dict]) -> str:
-    """
-    调用 AI API 并返回完整回复文本。
-    同时通过 WebSocket 流式推送 token。
-    """
-    provider = api_config["provider"]
+    """Call the OpenAI-compatible API and return full reply text, streaming tokens via WebSocket."""
     key      = api_config["api_key"]
     base_url = api_config["base_url"].rstrip("/")
     model    = api_config["model"]
@@ -115,35 +110,17 @@ async def call_ai(messages: list[dict]) -> str:
     do_stream = api_config["stream"]
 
     headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
 
-    # ---- Anthropic ----
-    if provider == "anthropic":
-        headers["x-api-key"] = key
-        headers["anthropic-version"] = "2023-06-01"
-        system_content = next((m["content"] for m in messages if m["role"] == "system"), "")
-        filtered = [m for m in messages if m["role"] != "system"]
-        payload = {
-            "model": model,
-            "max_tokens": ctx_cfg.max_response_tokens,
-            "temperature": temp,
-            "system": system_content,
-            "messages": filtered,
-            "stream": do_stream,
-        }
-        url = f"{base_url}/messages"
-
-    # ---- OpenAI-compatible / Ollama ----
-    else:
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        payload = {
-            "model": model,
-            "max_tokens": ctx_cfg.max_response_tokens,
-            "temperature": temp,
-            "messages": messages,
-            "stream": do_stream,
-        }
-        url = f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "max_tokens": ctx_cfg.max_response_tokens,
+        "temperature": temp,
+        "messages": messages,
+        "stream": do_stream,
+    }
+    url = f"{base_url}/chat/completions"
 
     full_text = ""
 
@@ -154,7 +131,7 @@ async def call_ai(messages: list[dict]) -> str:
                     body = await resp.aread()
                     raise RuntimeError(f"API {resp.status_code}: {body.decode()[:300]}")
                 async for line in resp.aiter_lines():
-                    token = _extract_stream_token(line, provider)
+                    token = _extract_stream_token(line)
                     if token:
                         full_text += token
                         await broadcast({"type": "token", "text": token})
@@ -163,17 +140,14 @@ async def call_ai(messages: list[dict]) -> str:
             if resp.status_code != 200:
                 raise RuntimeError(f"API {resp.status_code}: {resp.text[:300]}")
             data = resp.json()
-            if provider == "anthropic":
-                full_text = data["content"][0]["text"]
-            else:
-                full_text = data["choices"][0]["message"]["content"]
+            full_text = data["choices"][0]["message"]["content"]
             await broadcast({"type": "token", "text": full_text})
 
     return full_text
 
 
-def _extract_stream_token(line: str, provider: str) -> str:
-    """从 SSE 数据行提取单个 token 文本。"""
+def _extract_stream_token(line: str) -> str:
+    """Extract a single token from an SSE data line."""
     if not line.startswith("data:"):
         return ""
     chunk = line[5:].strip()
@@ -181,11 +155,7 @@ def _extract_stream_token(line: str, provider: str) -> str:
         return ""
     try:
         data = json.loads(chunk)
-        if provider == "anthropic":
-            if data.get("type") == "content_block_delta":
-                return data.get("delta", {}).get("text", "")
-        else:
-            return data["choices"][0].get("delta", {}).get("content", "") or ""
+        return data["choices"][0].get("delta", {}).get("content", "") or ""
     except Exception:
         return ""
 
@@ -204,10 +174,7 @@ async def generate_commentary(
     """
     构建上下文 → 调用 AI → 存入历史 → 广播。
     """
-    if not api_config["api_key"] and api_config["provider"] != "ollama":
-        raise ValueError("API Key 未设置")
-
-    # 1. 构造 user message
+    # 1. Build user message
     if event_payload:
         user_content = ctx_mgr.format_event_prompt(event_payload)
         history_content = ctx_mgr.format_event_history_entry(event_payload)
@@ -347,8 +314,7 @@ async def get_config():
 
 @app.post("/api/config/api")
 async def update_api_config(body: dict):
-    """更新 AI API 配置（POST JSON）。"""
-    for k in ("provider","base_url","api_key","model","temperature","stream"):
+    for k in ("base_url", "api_key", "model", "temperature", "stream"):
         if k in body:
             api_config[k] = body[k]
     return {"ok": True}
