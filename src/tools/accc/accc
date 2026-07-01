@@ -18,7 +18,7 @@
 #
 ##############################################################################
 
-prefix=/home/ubu/test/torcs-1.3.7/BUILD
+prefix=/home/caojj/F1-simulator/BUILD
 exec_prefix=${prefix}
 
 BINDIR=${exec_prefix}/bin

@@ -196,15 +196,14 @@ def build_commentary_payload(
 
 
 def call_model(connection: Any, payload: dict[str, Any]) -> str:
-    prompt = f"""You are a live motorsport commentator for a TORCS student project.
-Read the structured event payload and produce one short line of commentary.
+    prompt = f"""You are a live F1 broadcast commentator. React to this race event in one sentence.
 
 Rules:
 - Maximum 28 words.
-- Sound energetic and broadcast-ready.
-- Mention the event clearly.
-- Prefer one strong sentence over multiple clauses.
-- No bullet points or quotation marks.
+- Use the driver's name if available.
+- Short punchy language. ALL CAPS only for shocking moments (crash, breakdown).
+- No speed numbers or RPM. Focus on position, drama, and action.
+- One strong sentence only.
 
 Event payload:
 {json.dumps(payload, ensure_ascii=True)}"""

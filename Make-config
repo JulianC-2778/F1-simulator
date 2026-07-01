@@ -22,7 +22,7 @@ SHELL = /bin/bash
 srcdir = .
 top_srcdir = ${TORCS_BASE}
 
-prefix = /home/ubu/test/torcs-1.3.7/BUILD
+prefix = /home/caojj/F1-simulator/BUILD
 exec_prefix = ${prefix}
 
 bindir = ${exec_prefix}/bin

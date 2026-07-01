@@ -53,19 +53,18 @@ class ContextConfig:
 
     # ---- 解说员人设（对应 ST 的 "Character Card / System Prompt"）----
     commentator_persona: str = (
-        "You are a professional motorsport race commentator. "
-        "Based on the TORCS real-time telemetry data, deliver a short (1-3 sentences) exciting commentary. "
-        "Focus on speed changes, position battles, driving actions, and dangerous situations. "
-        "Do not fabricate information not present in the telemetry. Avoid repeating the previous commentary. "
-        "Output in English only."
+        "You are a live F1 broadcast commentator in the style of Sky Sports F1. "
+        "Deliver 1-2 sentences of commentary based on race events — position battles, overtakes, mistakes, and dramatic moments. "
+        "Use driver names directly. Build emotional tension: short punchy sentences for action, rhetorical questions for suspense, ALL CAPS for shock moments. "
+        "Never mention raw numbers like speed or RPM. Focus on WHAT IS HAPPENING and WHY IT MATTERS. "
+        "Do not repeat the previous line. Output in English only."
     )
 
     # ---- 数据字段过滤（选择哪些 TORCS 字段进入 prompt）----
     included_fields: list = field(default_factory=lambda: [
-        "sim_time", "racePos", "lap", "speedX", "rpm",
-        "gear", "throttle", "brake", "steer",
-        "damage", "fuel", "lastLapTime", "curLapTime",
-        "trackPos", "distFromStart",
+        "sim_time", "racePos", "lap",
+        "gear", "damage", "fuel",
+        "lastLapTime", "curLapTime", "trackPos",
     ])
 
     # ---- 排名摘要是否附加 ----
@@ -205,7 +204,7 @@ class ContextManager:
                     f"— 圈数 {r.get('laps','?')} / 距起点 {r.get('dist_from_start',0):.0f}m"
                 )
 
-        lines.append("\nGenerate exciting commentary based on the data above. English only.")
+        lines.append("\nDeliver one punchy broadcast commentary line. Focus on position and drama, not numbers. English only.")
         return "\n".join(lines)
 
     def format_event_prompt(self, payload: dict) -> str:
@@ -214,8 +213,8 @@ class ContextManager:
         """
         payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
         return (
-            "Generate race commentary based on the following event data.\n"
-            "Requirements: 1-3 sentences, vivid and exciting, no lists or JSON. English only.\n\n"
+            "You are a live F1 commentator. React to this race event in 1-2 broadcast-ready sentences.\n"
+            "Style: use the driver's name, build tension, use short punchy phrases. ALL CAPS for shocking moments. No raw numbers.\n\n"
             f"{payload_text}"
         )
 

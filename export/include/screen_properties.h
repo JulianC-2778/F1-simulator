@@ -1,1 +1,1 @@
-/home/ubu/test/torcs-1.3.7/src/libs/tgfclient/screen_properties.h
+/home/caojj/F1-simulator/src/libs/tgfclient/screen_properties.h

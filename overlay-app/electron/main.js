@@ -190,9 +190,13 @@ function speakNative(text, voiceSettings = {}) {
     return { ok: false, message: 'No text to speak.' };
   }
 
-  stopNativeSpeech();
+  if (speechProcess && !speechProcess.killed) {
+    speechProcess.kill();
+  }
+  speechProcess = null;
 
   const args = [
+    '-P', 'important',
     '-r', String(toSpeechDispatcherRate(voiceSettings.rate)),
     '-p', String(toSpeechDispatcherPitch(voiceSettings.pitch)),
     '-i', String(toSpeechDispatcherVolume(voiceSettings.volume)),
