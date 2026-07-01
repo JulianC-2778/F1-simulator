@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TORCS 比赛解说中间件</title>
+<title>TORCS Commentary Middleware</title>
 <style>
-  /* ─── 整体 ─────────────────────────────────────────── */
+  /* ─── Global ───────────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
@@ -34,7 +34,7 @@
     font-size: 14px;
   }
 
-  /* ─── 左侧面板 (SillyTavern 风格配置区) ────────────── */
+  /* ─── Sidebar ───────────────────────────────────────────── */
   #sidebar {
     width: var(--sidebar);
     min-width: var(--sidebar);
@@ -105,12 +105,10 @@
   .row { display: flex; gap: 6px; }
   .row > * { flex: 1; }
 
-  /* 范围滑块 */
   .slider-wrap { display: flex; align-items: center; gap: 8px; }
   .slider-wrap input[type=range] { flex: 1; accent-color: var(--accent); }
   .slider-val { font-size: 12px; color: var(--accent); min-width: 40px; text-align: right; }
 
-  /* 按钮 */
   button {
     padding: 7px 14px;
     border: none;
@@ -126,7 +124,6 @@
   .btn-sm       { padding: 4px 10px; font-size: 12px; }
   button:disabled { opacity: .4; cursor: default; }
 
-  /* 状态徽章 */
   .badge {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 2px 8px; border-radius: 99px; font-size: 11px;
@@ -135,7 +132,7 @@
   .badge-warn  { background: #3a2a1a; color: #f0a060; }
   .badge-error { background: #3a1a1a; color: #e05c6e; }
 
-  /* ─── 主内容区 ──────────────────────────────────────── */
+  /* ─── Main area ─────────────────────────────────────────── */
   #main {
     flex: 1;
     display: flex;
@@ -143,7 +140,6 @@
     overflow: hidden;
   }
 
-  /* 顶栏 */
   #topbar {
     padding: 10px 16px;
     background: var(--surface);
@@ -155,7 +151,6 @@
   }
   #topbar h1 { font-size: 15px; font-weight: 600; flex: 1; }
 
-  /* 遥测状态条 */
   #telemetry-bar {
     background: var(--surface2);
     border-bottom: 1px solid var(--border);
@@ -169,7 +164,6 @@
   }
   .tele-item strong { color: var(--accent2); }
 
-  /* 上下文预算条（对应 ST 的 Token Counter）*/
   #token-bar {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
@@ -191,7 +185,6 @@
   }
   #token-label { color: var(--text-dim); }
 
-  /* 对话区 */
   #chat {
     flex: 1;
     overflow-y: auto;
@@ -237,7 +230,6 @@
   }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* 底部输入栏 */
   #bottom-bar {
     border-top: 1px solid var(--border);
     padding: 12px 16px;
@@ -260,7 +252,6 @@
     font-size: 13px;
   }
 
-  /* 系统消息 */
   .sys-msg {
     align-self: center;
     font-size: 11px;
@@ -270,12 +261,10 @@
     background: var(--surface2);
   }
 
-  /* 滚动条 */
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
 
-  /* 连接指示灯 */
   .dot {
     width: 8px; height: 8px; border-radius: 50%;
     display: inline-block;
@@ -284,10 +273,8 @@
   }
   .dot.connected { background: var(--accent2); }
 
-  /* 折叠 tag */
   details > summary { cursor: pointer; }
 
-  /* 字段多选 */
   .field-grid {
     display: flex; flex-wrap: wrap; gap: 4px;
   }
@@ -300,7 +287,6 @@
     background: #2d2060; border-color: var(--accent); color: var(--accent);
   }
 
-  /* 自动解说指示 */
   #auto-indicator {
     font-size: 11px; color: var(--text-dim);
     padding: 2px 8px; border-radius: 99px;
@@ -310,37 +296,29 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════════════ 左侧面板 ══ -->
+<!-- ══════════════════════════════════════════════════════════ Sidebar ══ -->
 <div id="sidebar">
   <div class="sidebar-header">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
     </svg>
-    TORCS 解说中间件
+    TORCS Commentary
   </div>
 
-  <!-- ── AI API 配置 ── -->
+  <!-- ── AI API Config ── -->
   <div class="section">
-    <div class="section-title" onclick="toggleSection(this)">AI API 配置</div>
+    <div class="section-title" onclick="toggleSection(this)">AI API Config</div>
     <div class="section-body">
       <div>
-        <label>提供商</label>
-        <select id="api-provider" onchange="onProviderChange()">
-          <option value="openai">OpenAI / 兼容接口</option>
-          <option value="anthropic">Anthropic Claude</option>
-          <option value="ollama">Ollama (本地)</option>
-        </select>
-      </div>
-      <div>
         <label>Base URL</label>
-        <input type="text" id="api-base-url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1">
+        <input type="text" id="api-base-url" value="http://localhost:1234/v1" placeholder="http://localhost:1234/v1">
       </div>
       <div>
         <label>API Key</label>
-        <input type="password" id="api-key" placeholder="sk-...">
+        <input type="password" id="api-key" placeholder="Leave blank for local servers">
       </div>
       <div>
-        <label>模型</label>
+        <label>Model</label>
         <input type="text" id="api-model" value="gpt-4o-mini" placeholder="gpt-4o-mini">
       </div>
       <div>
@@ -352,39 +330,39 @@
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <input type="checkbox" id="api-stream" checked>
-        <label for="api-stream" style="margin:0;cursor:pointer">流式输出 (streaming)</label>
+        <label for="api-stream" style="margin:0;cursor:pointer">Streaming output</label>
       </div>
-      <button class="btn-primary" onclick="saveApiConfig()">保存 API 配置</button>
+      <button class="btn-primary" onclick="saveApiConfig()">Save API config</button>
     </div>
   </div>
 
-  <!-- ── 上下文控制 (SillyTavern 核心) ── -->
+  <!-- ── Context Control ── -->
   <div class="section">
-    <div class="section-title" onclick="toggleSection(this)">上下文控制</div>
+    <div class="section-title" onclick="toggleSection(this)">Context Control</div>
     <div class="section-body">
       <div>
-        <label>上下文窗口 (tokens): <span id="ctx-tokens-val">4096</span></label>
+        <label>Context window (tokens): <span id="ctx-tokens-val">4096</span></label>
         <div class="slider-wrap">
           <input type="range" min="512" max="32768" step="256" value="4096" id="ctx-tokens"
             oninput="document.getElementById('ctx-tokens-val').textContent=this.value">
         </div>
       </div>
       <div>
-        <label>回复预留 (tokens): <span id="resp-tokens-val">512</span></label>
+        <label>Response budget (tokens): <span id="resp-tokens-val">512</span></label>
         <div class="slider-wrap">
           <input type="range" min="128" max="4096" step="64" value="512" id="resp-tokens"
             oninput="document.getElementById('resp-tokens-val').textContent=this.value">
         </div>
       </div>
       <div>
-        <label>裁剪策略</label>
+        <label>Trim strategy</label>
         <select id="trim-strategy">
-          <option value="oldest_first">裁剪最旧消息 (推荐)</option>
-          <option value="newest_first">裁剪最新消息</option>
+          <option value="oldest_first">Oldest first (recommended)</option>
+          <option value="newest_first">Newest first</option>
         </select>
       </div>
       <div>
-        <label>聊天模板</label>
+        <label>Chat template</label>
         <select id="chat-template">
           <option value="chatml">ChatML</option>
           <option value="instruct">Instruct</option>
@@ -392,71 +370,71 @@
         </select>
       </div>
       <div>
-        <label>解说员人设 (System Prompt)</label>
-        <textarea id="commentator-persona" rows="5">你是一位专业的赛车比赛解说员，风格热情、专业、带有临场感。根据提供的实时遥测数据，用流畅的中文给出简短（2-4句）的精彩解说。重点关注：速度变化、位次争夺、驾驶动作、危险情况。</textarea>
+        <label>Commentator persona (System Prompt)</label>
+        <textarea id="commentator-persona" rows="5">You are a live F1 broadcast commentator in the style of Sky Sports F1. Deliver 1-2 sentences of commentary based on race events — position battles, overtakes, mistakes, and dramatic moments. Use driver names directly. Build emotional tension: short punchy sentences for action, rhetorical questions for suspense, ALL CAPS for shock moments. Never mention raw numbers like speed or RPM. Focus on WHAT IS HAPPENING and WHY IT MATTERS. Do not repeat the previous line. Output in English only.</textarea>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <input type="checkbox" id="include-rankings" checked>
-        <label for="include-rankings" style="margin:0;cursor:pointer">附加排名信息</label>
+        <label for="include-rankings" style="margin:0;cursor:pointer">Include rankings</label>
       </div>
-      <button class="btn-primary" onclick="saveContextConfig()">保存上下文配置</button>
-      <button class="btn-secondary btn-sm" onclick="clearHistory()">清除对话历史</button>
+      <button class="btn-primary" onclick="saveContextConfig()">Save context config</button>
+      <button class="btn-secondary btn-sm" onclick="clearHistory()">Clear history</button>
     </div>
   </div>
 
-  <!-- ── 遥测字段选择 ── -->
+  <!-- ── Telemetry field filter ── -->
   <div class="section">
-    <div class="section-title" onclick="toggleSection(this)">遥测字段过滤</div>
+    <div class="section-title" onclick="toggleSection(this)">Telemetry field filter</div>
     <div class="section-body">
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">
-        点击选择/取消要发给 AI 的字段
+        Click to toggle fields sent to AI
       </div>
       <div class="field-grid" id="field-grid"></div>
-      <button class="btn-secondary btn-sm" style="margin-top:6px" onclick="saveContextConfig()">应用字段设置</button>
+      <button class="btn-secondary btn-sm" style="margin-top:6px" onclick="saveContextConfig()">Apply field settings</button>
     </div>
   </div>
 
-  <!-- ── 数据源 ── -->
+  <!-- ── Data source ── -->
   <div class="section">
-    <div class="section-title" onclick="toggleSection(this)">数据源</div>
+    <div class="section-title" onclick="toggleSection(this)">Data source</div>
     <div class="section-body">
       <div>
-        <label>📡 UDP 监听</label>
-        <span class="badge badge-ok">自动监听 :3101</span>
+        <label>📡 UDP listen</label>
+        <span class="badge badge-ok">Auto-listening :3101</span>
       </div>
       <hr style="border:none;border-top:1px solid var(--border)">
       <div>
-        <label>📂 加载 CSV 文件</label>
+        <label>📂 Load CSV file</label>
         <input type="text" id="csv-path" placeholder="/path/to/player-1-*.csv">
       </div>
       <div>
-        <label>排名 CSV (可选)</label>
+        <label>Rankings CSV (optional)</label>
         <input type="text" id="csv-rank-path" placeholder="/path/to/rankings-player-1-*.csv">
       </div>
-      <button class="btn-secondary" onclick="loadCsv()">读取 CSV 并解说</button>
+      <button class="btn-secondary" onclick="loadCsv()">Load CSV &amp; commentate</button>
       <hr style="border:none;border-top:1px solid var(--border)">
       <div>
-        <label>🔧 手动注入测试数据</label>
-        <button class="btn-secondary btn-sm" onclick="injectDemo()">注入演示数据</button>
+        <label>🔧 Inject test data</label>
+        <button class="btn-secondary btn-sm" onclick="injectDemo()">Inject demo data</button>
       </div>
     </div>
   </div>
 
-  <!-- ── 自动解说 ── -->
+  <!-- ── Auto commentary ── -->
   <div class="section">
-    <div class="section-title" onclick="toggleSection(this)">自动解说</div>
+    <div class="section-title" onclick="toggleSection(this)">Auto commentary</div>
     <div class="section-body">
       <div>
-        <label>模式</label>
+        <label>Mode</label>
         <select id="commentary-mode">
-          <option value="off">关闭</option>
-          <option value="interval">固定间隔</option>
-          <option value="event">事件驱动</option>
-          <option value="hybrid">事件 + 间隔</option>
+          <option value="off">Off</option>
+          <option value="interval">Fixed interval</option>
+          <option value="event">Event-driven</option>
+          <option value="hybrid">Event + interval</option>
         </select>
       </div>
       <div>
-        <label>解说间隔 (秒，0=关闭): <span id="auto-interval-val">0</span></label>
+        <label>Commentary interval (s, 0=off): <span id="auto-interval-val">0</span></label>
         <div class="slider-wrap">
           <input type="range" min="0" max="60" step="1" value="0" id="auto-interval"
             oninput="document.getElementById('auto-interval-val').textContent=this.value">
@@ -464,59 +442,54 @@
       </div>
       <div class="row">
         <div>
-          <label>事件窗口 (秒)</label>
+          <label>Event window (s)</label>
           <input type="number" min="2" max="30" step="1" id="event-window" value="6">
         </div>
         <div>
-          <label>事件冷却 (秒)</label>
+          <label>Event cooldown (s)</label>
           <input type="number" min="0" max="10" step="0.5" id="event-cooldown" value="1">
         </div>
       </div>
-      <button class="btn-primary" onclick="saveAutoInterval()">应用</button>
-      <div id="auto-indicator">自动解说：未启动</div>
+      <button class="btn-primary" onclick="saveAutoInterval()">Apply</button>
+      <div id="auto-indicator">Auto commentary: off</div>
     </div>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ 主内容区 ══ -->
+<!-- ══════════════════════════════════════════════════════════ Main area ══ -->
 <div id="main">
-  <!-- 顶栏 -->
   <div id="topbar">
-    <h1>🏎️ 比赛解说</h1>
-    <span class="dot" id="ws-dot" title="WebSocket 连接状态"></span>
-    <span id="ws-label" style="font-size:12px;color:var(--text-dim)">未连接</span>
+    <h1>🏎️ Race Commentary</h1>
+    <span class="dot" id="ws-dot" title="WebSocket connection status"></span>
+    <span id="ws-label" style="font-size:12px;color:var(--text-dim)">Disconnected</span>
   </div>
 
-  <!-- 遥测状态条 -->
   <div id="telemetry-bar">
-    <span>等待遥测数据…</span>
+    <span>Waiting for telemetry...</span>
   </div>
 
-  <!-- Token 预算条 -->
   <div id="token-bar">
-    <span style="font-size:11px;color:var(--text-dim)">上下文</span>
+    <span style="font-size:11px;color:var(--text-dim)">Context</span>
     <div id="token-progress"><div id="token-fill" style="width:0%"></div></div>
     <span id="token-label">0 / 4096 tokens</span>
   </div>
 
-  <!-- 对话区 -->
   <div id="chat">
-    <div class="sys-msg">连接后将在此显示比赛解说</div>
+    <div class="sys-msg">Commentary will appear here after connecting</div>
   </div>
 
-  <!-- 底部输入栏 -->
   <div id="bottom-bar">
-    <textarea id="manual-input" placeholder="手动输入问题或情境（留空则使用最新遥测数据）…"
+    <textarea id="manual-input" placeholder="Enter custom prompt, or leave blank to use latest telemetry..."
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendManual()}"></textarea>
     <div style="display:flex;flex-direction:column;gap:6px">
-      <button class="btn-primary" id="send-btn" onclick="sendManual()">▶ 解说</button>
-      <button class="btn-secondary btn-sm" onclick="clearHistory()">清除</button>
+      <button class="btn-primary" id="send-btn" onclick="sendManual()">▶ Comment</button>
+      <button class="btn-secondary btn-sm" onclick="clearHistory()">Clear</button>
     </div>
   </div>
 </div>
 
 <script>
-// ─── 状态 ──────────────────────────────────────────────────────────────
+// ─── State ─────────────────────────────────────────────────────────────
 let ws = null;
 let streamingBubble = null;
 let streamingText = '';
@@ -534,20 +507,20 @@ let activeFields = new Set([
   "lastLapTime","curLapTime","trackPos","distFromStart",
 ]);
 
-// ─── 初始化 ────────────────────────────────────────────────────────────
+// ─── Init ───────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
   buildFieldGrid();
   connectWS();
   loadConfig();
 });
 
-// ─── 侧栏折叠 ──────────────────────────────────────────────────────────
+// ─── Sidebar collapse ───────────────────────────────────────────────────
 function toggleSection(el) {
   el.classList.toggle('collapsed');
   el.nextElementSibling.classList.toggle('collapsed');
 }
 
-// ─── WebSocket ─────────────────────────────────────────────────────────
+// ─── WebSocket ──────────────────────────────────────────────────────────
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -570,7 +543,7 @@ function connectWS() {
 
 function setWsStatus(ok) {
   document.getElementById('ws-dot').className = 'dot' + (ok ? ' connected' : '');
-  document.getElementById('ws-label').textContent = ok ? '已连接' : '重连中…';
+  document.getElementById('ws-label').textContent = ok ? 'Connected' : 'Reconnecting...';
 }
 
 function ping() {
@@ -580,12 +553,12 @@ function ping() {
   }
 }
 
-// ─── WS 消息处理 ───────────────────────────────────────────────────────
+// ─── WS message handler ─────────────────────────────────────────────────
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'connected':
       updateStats(msg.stats);
-      sysMsg('WebSocket 已连接');
+      sysMsg('WebSocket connected');
       break;
 
     case 'pong': break;
@@ -595,7 +568,7 @@ function handleWsMessage(msg) {
       break;
 
     case 'event_detected':
-      sysMsg(`事件：${msg.event.event_type} — ${msg.event.reason}`);
+      sysMsg(`Event: ${msg.event.event_type} — ${msg.event.reason}`);
       break;
 
     case 'user_msg':
@@ -633,7 +606,7 @@ function handleWsMessage(msg) {
   }
 }
 
-// ─── 聊天 UI ───────────────────────────────────────────────────────────
+// ─── Chat UI ────────────────────────────────────────────────────────────
 function appendMsg(role, content, streaming = false) {
   const chat = document.getElementById('chat');
   const wrap = document.createElement('div');
@@ -641,7 +614,7 @@ function appendMsg(role, content, streaming = false) {
 
   const label = document.createElement('div');
   label.className = 'msg-label';
-  label.textContent = role === 'user' ? '📊 遥测数据' : '🎙️ 解说员';
+  label.textContent = role === 'user' ? '📊 Telemetry' : '🎙️ Commentator';
 
   const bubble = document.createElement('div');
   bubble.className = 'msg-bubble' + (streaming ? ' streaming' : '');
@@ -664,7 +637,7 @@ function sysMsg(text, isError = false) {
   chat.scrollTop = chat.scrollHeight;
 }
 
-// ─── Token 预算条 ──────────────────────────────────────────────────────
+// ─── Token bar ──────────────────────────────────────────────────────────
 function updateStats(stats) {
   if (!stats) return;
   currentStats = stats;
@@ -678,27 +651,27 @@ function updateStats(stats) {
     `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
 }
 
-// ─── 遥测状态条 ────────────────────────────────────────────────────────
+// ─── Telemetry bar ──────────────────────────────────────────────────────
 function updateTelemetryBar(t) {
   if (!t) return;
   const bar = document.getElementById('telemetry-bar');
   const items = [
-    ['P', t.racePos],
-    ['圈', t.lap],
-    ['速度', t.speedX != null ? t.speedX.toFixed(1) + ' km/h' : '--'],
-    ['油门', t.throttle != null ? (t.throttle * 100).toFixed(0) + '%' : '--'],
-    ['制动', t.brake    != null ? (t.brake    * 100).toFixed(0) + '%' : '--'],
-    ['挡位', t.gear],
-    ['RPM', t.rpm != null ? Math.round(t.rpm) : '--'],
-    ['损伤', t.damage != null ? t.damage.toFixed(0) : '--'],
-    ['T', t.sim_time != null ? t.sim_time.toFixed(1) + 's' : '--'],
+    ['P',    t.racePos],
+    ['Lap',  t.lap],
+    ['Speed', t.speedX != null ? t.speedX.toFixed(1) + ' km/h' : '--'],
+    ['Thr',  t.throttle != null ? (t.throttle * 100).toFixed(0) + '%' : '--'],
+    ['Brk',  t.brake    != null ? (t.brake    * 100).toFixed(0) + '%' : '--'],
+    ['Gear', t.gear],
+    ['RPM',  t.rpm != null ? Math.round(t.rpm) : '--'],
+    ['Dmg',  t.damage != null ? t.damage.toFixed(0) : '--'],
+    ['T',    t.sim_time != null ? t.sim_time.toFixed(1) + 's' : '--'],
   ];
   bar.innerHTML = items.map(([k, v]) =>
     `<span>${k}: <strong>${v ?? '--'}</strong></span>`
   ).join('');
 }
 
-// ─── 手动发送 ──────────────────────────────────────────────────────────
+// ─── Manual send ────────────────────────────────────────────────────────
 async function sendManual() {
   const prompt = document.getElementById('manual-input').value.trim();
   document.getElementById('manual-input').value = '';
@@ -710,7 +683,7 @@ async function sendManual() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ prompt: prompt || null }),
     });
-  } catch(e) { sysMsg('请求失败: ' + e.message, true); }
+  } catch(e) { sysMsg('Request failed: ' + e.message, true); }
 
   setTimeout(() => document.getElementById('send-btn').disabled = false, 500);
 }
@@ -718,16 +691,15 @@ async function sendManual() {
 async function clearHistory() {
   await fetch('/api/commentary/clear', { method: 'POST' });
   document.getElementById('chat').innerHTML = '';
-  sysMsg('对话历史已清除');
+  sysMsg('History cleared');
   const r = await fetch('/api/stats');
   updateStats(await r.json());
 }
 
-// ─── 配置保存 ──────────────────────────────────────────────────────────
+// ─── Config ─────────────────────────────────────────────────────────────
 async function saveApiConfig() {
   const rangeEl = document.querySelector('#sidebar input[type=range]');
   const body = {
-    provider:    document.getElementById('api-provider').value,
     base_url:    document.getElementById('api-base-url').value,
     api_key:     document.getElementById('api-key').value,
     model:       document.getElementById('api-model').value,
@@ -738,7 +710,7 @@ async function saveApiConfig() {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify(body),
   });
-  sysMsg(r.ok ? '✅ API 配置已保存' : '❌ 保存失败');
+  sysMsg(r.ok ? '✅ API config saved' : '❌ Save failed');
 }
 
 async function saveContextConfig() {
@@ -756,7 +728,7 @@ async function saveContextConfig() {
     body: JSON.stringify(body),
   });
   const data = await r.json();
-  sysMsg(r.ok ? '✅ 上下文配置已保存' : '❌ 保存失败');
+  sysMsg(r.ok ? '✅ Context config saved' : '❌ Save failed');
   if (data.stats) updateStats(data.stats);
 }
 
@@ -774,10 +746,10 @@ async function saveAutoInterval() {
   });
   const ind = document.getElementById('auto-indicator');
   if (v > 0 && mode !== 'off') {
-    ind.textContent = `自动解说：${mode} / ${v} 秒`;
+    ind.textContent = `Auto: ${mode} / ${v}s`;
     ind.classList.add('active');
   } else {
-    ind.textContent = '自动解说：未启动';
+    ind.textContent = 'Auto commentary: off';
     ind.classList.remove('active');
   }
 }
@@ -789,11 +761,9 @@ async function loadConfig() {
     const api = cfg.api;
     const ctx = cfg.context;
 
-    document.getElementById('api-provider').value = api.provider;
     document.getElementById('api-base-url').value = api.base_url;
     document.getElementById('api-model').value    = api.model;
     document.getElementById('api-stream').checked = api.stream;
-    // temperature
     const tempRange = document.querySelector('#sidebar input[type=range]');
     tempRange.value = api.temperature;
     document.getElementById('temp-val').textContent = api.temperature;
@@ -817,36 +787,27 @@ async function loadConfig() {
       document.getElementById('event-cooldown').value = cfg.commentary.event_cooldown;
     }
     if (cfg.auto_interval > 0 && (!cfg.commentary || cfg.commentary.mode !== 'off')) {
-      document.getElementById('auto-indicator').textContent = `自动解说：${cfg.commentary?.mode || 'interval'} / ${cfg.auto_interval} 秒`;
+      document.getElementById('auto-indicator').textContent = `Auto: ${cfg.commentary?.mode || 'interval'} / ${cfg.auto_interval}s`;
       document.getElementById('auto-indicator').classList.add('active');
     }
-  } catch(e) { console.warn('loadConfig 失败', e); }
+  } catch(e) { console.warn('loadConfig failed', e); }
 }
 
-function onProviderChange() {
-  const p = document.getElementById('api-provider').value;
-  const urlEl = document.getElementById('api-base-url');
-  const modelEl = document.getElementById('api-model');
-  if (p === 'openai')     { urlEl.value = 'https://api.openai.com/v1'; modelEl.value = 'gpt-4o-mini'; }
-  if (p === 'anthropic')  { urlEl.value = 'https://api.anthropic.com'; modelEl.value = 'claude-3-haiku-20240307'; }
-  if (p === 'ollama')     { urlEl.value = 'http://localhost:11434/v1'; modelEl.value = 'qwen2.5:7b'; }
-}
-
-// ─── CSV 加载 ──────────────────────────────────────────────────────────
+// ─── CSV load ───────────────────────────────────────────────────────────
 async function loadCsv() {
   const path = document.getElementById('csv-path').value.trim();
   const rpath = document.getElementById('csv-rank-path').value.trim();
-  if (!path) { sysMsg('请输入 CSV 路径', true); return; }
+  if (!path) { sysMsg('Please enter a CSV path', true); return; }
   const r = await fetch('/api/csv/load', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ path, rankings_path: rpath || null }),
   });
   const data = await r.json();
   if (data.error) sysMsg('❌ ' + data.error, true);
-  else sysMsg(`✅ 已加载 ${data.rows_loaded} 行，sim_time=${data.latest_sim_time?.toFixed(1)}s`);
+  else sysMsg(`✅ Loaded ${data.rows_loaded} rows, sim_time=${data.latest_sim_time?.toFixed(1)}s`);
 }
 
-// ─── 演示数据注入 ──────────────────────────────────────────────────────
+// ─── Demo data ──────────────────────────────────────────────────────────
 async function injectDemo() {
   const telemetry = {
     seq: 42, sim_time: 87.4, player: 1, lap: 2,
@@ -870,10 +831,10 @@ async function injectDemo() {
     body: JSON.stringify({ telemetry, rankings }),
   });
   updateTelemetryBar(telemetry);
-  sysMsg('✅ 演示数据已注入，点击"解说"生成解说');
+  sysMsg('✅ Demo data injected — click "Comment" to generate');
 }
 
-// ─── 字段多选 ──────────────────────────────────────────────────────────
+// ─── Field chips ────────────────────────────────────────────────────────
 function buildFieldGrid() {
   const grid = document.getElementById('field-grid');
   ALL_FIELDS.forEach(f => {
