@@ -250,9 +250,9 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   <div style="display:flex;align-items:center">
     <div class="ws-row">
       <span class="ws-dot" id="ws-dot"></span>
-      <span id="ws-lbl">未连接</span>
+      <span id="ws-lbl">Disconnected</span>
     </div>
-    <button id="s-btn" onclick="openDrawer()" title="设置">⚙</button>
+    <button id="s-btn" onclick="openDrawer()" title="Settings">⚙</button>
   </div>
 </div>
 
@@ -266,8 +266,8 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 </div>
 
 <div id="bar">
-  <button class="bar-btn" onclick="manual()">▶ 解说</button>
-  <button class="bar-btn" onclick="clearAll()">清除</button>
+  <button class="bar-btn" onclick="manual()">▶ Commentary</button>
+  <button class="bar-btn" onclick="clearAll()">Clear</button>
   <div class="tok-wrap">
     <div class="tok-track"><div class="tok-fill" id="tok-fill" style="width:0%"></div></div>
     <span id="tok-lbl">0 tokens</span>
@@ -278,25 +278,17 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
 <aside id="drawer">
   <div class="d-hd">
-    <h2>⚙ 设置</h2>
+    <h2>⚙ Settings</h2>
     <button class="d-cl" onclick="closeDrawer()">✕</button>
   </div>
   <div class="d-bd">
 
     <div class="s-sec">
-      <div class="s-hd" onclick="togSec(this)">AI 模型配置 <span class="s-ar">▾</span></div>
+      <div class="s-hd" onclick="togSec(this)">AI Model Config <span class="s-ar">▾</span></div>
       <div class="s-bd">
-        <div>
-          <label>提供商</label>
-          <select id="pv" onchange="onPvChange()">
-            <option value="openai">OpenAI / 兼容接口</option>
-            <option value="anthropic">Anthropic Claude</option>
-            <option value="ollama">Ollama / LM Studio</option>
-          </select>
-        </div>
-        <div><label>Base URL</label><input type="text" id="url" placeholder="http://192.168.56.1:1234/v1"></div>
-        <div><label>API Key</label><input type="password" id="key" placeholder="留空或任意填写"></div>
-        <div><label>模型名称</label><input type="text" id="mdl" placeholder="granite-4.1-8b"></div>
+        <div><label>Base URL</label><input type="text" id="url" placeholder="http://localhost:1234/v1"></div>
+        <div><label>API Key</label><input type="password" id="key" placeholder="Leave blank for local servers"></div>
+        <div><label>Model</label><input type="text" id="mdl" placeholder="granite-4.1-8b"></div>
         <div>
           <label>Temperature: <span id="tv">0.80</span></label>
           <div class="sl-row">
@@ -306,99 +298,96 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
         </div>
         <div class="tog">
           <input type="checkbox" id="st" checked>
-          <label for="st">流式输出 (Streaming)</label>
+          <label for="st">Streaming output</label>
         </div>
-        <button class="btn bp" onclick="saveApi()">保存模型配置</button>
+        <button class="btn bp" onclick="saveApi()">Save model config</button>
         <div class="n" id="n1"></div>
       </div>
     </div>
 
     <div class="s-sec">
-      <div class="s-hd cl" onclick="togSec(this)">解说员人设 <span class="s-ar">▾</span></div>
+      <div class="s-hd cl" onclick="togSec(this)">Commentator persona <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
         <div>
-          <label>上下文 (tokens): <span id="ctv">4096</span></label>
+          <label>Context (tokens): <span id="ctv">4096</span></label>
           <div class="sl-row">
             <input type="range" min="512" max="32768" step="256" value="4096" id="ctr"
               oninput="document.getElementById('ctv').textContent=this.value">
           </div>
         </div>
         <div>
-          <label>回复长度 (tokens): <span id="rtv">512</span></label>
+          <label>Reply length (tokens): <span id="rtv">512</span></label>
           <div class="sl-row">
             <input type="range" min="128" max="4096" step="64" value="512" id="rtr"
               oninput="document.getElementById('rtv').textContent=this.value">
           </div>
         </div>
         <div><label>System Prompt</label><textarea id="persona" rows="6"></textarea></div>
-        <div class="tip">
-          <strong>双语字幕：</strong>让 AI 输出两行——第一行中文、第二行英文，页面自动识别分层显示。
-        </div>
-        <button class="btn bp" onclick="saveCtx()">保存</button>
+        <button class="btn bp" onclick="saveCtx()">Save</button>
         <div class="n" id="n2"></div>
       </div>
     </div>
 
     <div class="s-sec">
-      <div class="s-hd cl" onclick="togSec(this)">语音设置 <span class="s-ar">▾</span></div>
+      <div class="s-hd cl" onclick="togSec(this)">Voice settings <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
         <div class="tog">
           <input type="checkbox" id="ve" checked onchange="syncVoice()">
-          <label for="ve">启用语音解说</label>
+          <label for="ve">Enable voice commentary</label>
         </div>
         <div>
-          <label>音色</label>
-          <select id="vsel" onchange="syncVoice()"><option value="">系统默认</option></select>
+          <label>Voice</label>
+          <select id="vsel" onchange="syncVoice()"><option value="">System default</option></select>
         </div>
         <div>
-          <label>语速: <span id="vrv">1.1</span></label>
+          <label>Speed: <span id="vrv">1.1</span></label>
           <div class="sl-row">
             <input type="range" min="0.5" max="2" step="0.1" value="1.1" id="vrr"
               oninput="document.getElementById('vrv').textContent=parseFloat(this.value).toFixed(1);syncVoice()">
           </div>
         </div>
         <div>
-          <label>音调: <span id="vpv">1.0</span></label>
+          <label>Pitch: <span id="vpv">1.0</span></label>
           <div class="sl-row">
             <input type="range" min="0.5" max="2" step="0.1" value="1.0" id="vpr"
               oninput="document.getElementById('vpv').textContent=parseFloat(this.value).toFixed(1);syncVoice()">
           </div>
         </div>
         <div>
-          <label>音量: <span id="vvv">1.0</span></label>
+          <label>Volume: <span id="vvv">1.0</span></label>
           <div class="sl-row">
             <input type="range" min="0" max="1" step="0.05" value="1.0" id="vvr"
               oninput="document.getElementById('vvv').textContent=parseFloat(this.value).toFixed(2);syncVoice()">
           </div>
         </div>
-        <button class="btn bs" onclick="testVoice()">🔊 试听</button>
+        <button class="btn bs" onclick="testVoice()">🔊 Test voice</button>
       </div>
     </div>
 
     <div class="s-sec">
-      <div class="s-hd cl" onclick="togSec(this)">自动解说 <span class="s-ar">▾</span></div>
+      <div class="s-hd cl" onclick="togSec(this)">Auto commentary <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
         <div>
-          <label>间隔 (秒，0 = 关闭): <span id="av">0</span></label>
+          <label>Interval (s, 0 = off): <span id="av">0</span></label>
           <div class="sl-row">
             <input type="range" min="0" max="60" step="1" value="0" id="ar"
               oninput="document.getElementById('av').textContent=this.value">
           </div>
         </div>
-        <button class="btn bp" onclick="saveAuto()">应用</button>
+        <button class="btn bp" onclick="saveAuto()">Apply</button>
         <div class="n" id="n3"></div>
       </div>
     </div>
 
     <div class="s-sec">
-      <div class="s-hd cl" onclick="togSec(this)">数据源 <span class="s-ar">▾</span></div>
+      <div class="s-hd cl" onclick="togSec(this)">Data source <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
-        <div class="tip" style="color:var(--green)">📡 UDP 自动监听 :3101</div>
+        <div class="tip" style="color:var(--green)">📡 Auto-listening :3101</div>
         <hr class="sep">
-        <div><label>CSV 路径</label><input type="text" id="csvp" placeholder="/path/to/player.csv"></div>
-        <button class="btn bs" onclick="loadCsv()">读取 CSV 并解说</button>
+        <div><label>CSV path</label><input type="text" id="csvp" placeholder="/path/to/player.csv"></div>
+        <button class="btn bs" onclick="loadCsv()">Load CSV &amp; commentate</button>
         <hr class="sep">
-        <button class="btn bs" onclick="injectDemo()">注入演示数据</button>
+        <button class="btn bs" onclick="injectDemo()">Inject demo data</button>
         <div class="n" id="n4"></div>
       </div>
     </div>
@@ -436,7 +425,7 @@ function initVoices() {
 
     if (zhVoices.length > 0) {
       const g = document.createElement('optgroup');
-      g.label = '中文';
+      g.label = 'Chinese';
       zhVoices.forEach(({ v, i }) => {
         const o = document.createElement('option');
         o.value = i; o.textContent = `${v.name} (${v.lang})`;
@@ -445,7 +434,6 @@ function initVoices() {
       sel.appendChild(g);
     }
 
-    // 默认选第二个英文音色（index 1），没有则用第一个
     const defaultIdx = enVoices.length >= 2 ? enVoices[1].i : enVoices.length >= 1 ? enVoices[0].i : null;
     if (defaultIdx !== null) { sel.value = String(defaultIdx); syncVoice(); }
   }
@@ -536,7 +524,7 @@ function connectWS() {
 
 function setWS(ok) {
   document.getElementById('ws-dot').className = 'ws-dot' + (ok ? ' on' : '');
-  document.getElementById('ws-lbl').textContent = ok ? '已连接' : '重连中…';
+  document.getElementById('ws-lbl').textContent = ok ? 'Connected' : 'Reconnecting...';
 }
 function pingLoop() {
   if (ws && ws.readyState === WebSocket.OPEN) { ws.send('ping'); setTimeout(pingLoop, 15000); }
@@ -597,7 +585,6 @@ async function loadConfig() {
   try {
     const r = await fetch('/api/config'), c = await r.json();
     const a = c.api, x = c.context;
-    document.getElementById('pv').value    = a.provider;
     document.getElementById('url').value   = a.base_url;
     document.getElementById('mdl').value   = a.model;
     document.getElementById('st').checked  = a.stream;
@@ -614,13 +601,6 @@ async function loadConfig() {
   } catch(e) { console.warn('loadConfig:', e); }
 }
 
-function onPvChange() {
-  const p = document.getElementById('pv').value;
-  const u = document.getElementById('url'), m = document.getElementById('mdl');
-  if (p === 'openai')    { u.value = 'https://api.openai.com/v1'; m.placeholder = 'gpt-4o-mini'; }
-  if (p === 'anthropic') { u.value = 'https://api.anthropic.com'; m.placeholder = 'claude-3-haiku-20240307'; }
-  if (p === 'ollama')    { u.value = 'http://192.168.56.1:1234/v1'; m.placeholder = 'granite-4.1-8b'; }
-}
 
 function note(id, txt, ok) {
   const el = document.getElementById(id);
@@ -632,7 +612,6 @@ async function saveApi() {
   const r = await fetch('/api/config/api', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({
-      provider: document.getElementById('pv').value,
       base_url: document.getElementById('url').value,
       api_key:  document.getElementById('key').value,
       model:    document.getElementById('mdl').value,
@@ -640,7 +619,7 @@ async function saveApi() {
       stream:   document.getElementById('st').checked,
     }),
   });
-  note('n1', r.ok ? '✓ 已保存' : '✗ 失败', r.ok);
+  note('n1', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
 }
 
 async function saveCtx() {
@@ -654,7 +633,7 @@ async function saveCtx() {
   });
   const d = await r.json();
   if (d.stats) updateStats(d.stats);
-  note('n2', r.ok ? '✓ 已保存' : '✗ 失败', r.ok);
+  note('n2', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
 }
 
 async function clearAll() {
@@ -671,18 +650,18 @@ async function saveAuto() {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ interval: v }),
   });
-  note('n3', r.ok ? (v > 0 ? `✓ 每 ${v} 秒` : '✓ 已关闭') : '✗ 失败', r.ok);
+  note('n3', r.ok ? (v > 0 ? `✓ Every ${v}s` : '✓ Disabled') : '✗ Failed', r.ok);
 }
 
 async function loadCsv() {
   const p = document.getElementById('csvp').value.trim();
-  if (!p) { note('n4', '请输入路径', false); return; }
+  if (!p) { note('n4', 'Please enter a path', false); return; }
   const r = await fetch('/api/csv/load', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ path: p }),
   });
   const d = await r.json();
-  note('n4', d.error ? '✗ ' + d.error : `✓ 已加载 ${d.rows_loaded} 行`, !d.error);
+  note('n4', d.error ? '✗ ' + d.error : `✓ Loaded ${d.rows_loaded} rows`, !d.error);
 }
 
 async function injectDemo() {
@@ -699,7 +678,7 @@ async function injectDemo() {
       ],
     }),
   });
-  note('n4', '✓ 演示数据已注入', true);
+  note('n4', '✓ Demo data injected', true);
 }
 
 async function manual() {
