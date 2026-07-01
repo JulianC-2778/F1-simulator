@@ -1,6 +1,6 @@
 const ids = [
   'backendStatus', 'reloadBackend', 'wsUrl', 'reconnectDelayMs', 'pingIntervalMs',
-  'saveOverlay', 'overlayNote', 'provider', 'baseUrl', 'apiKey', 'model',
+  'saveOverlay', 'overlayNote', 'baseUrl', 'apiKey', 'model',
   'temperature', 'temperatureValue', 'stream', 'saveApi', 'apiNote',
   'contextTokens', 'contextTokensValue', 'responseTokens', 'responseTokensValue',
   'persona', 'saveContext', 'contextNote', 'voiceEnabled', 'voiceSelect',
@@ -155,7 +155,6 @@ async function loadBackendConfig() {
     const config = await request('/api/config');
     const commentary = config.commentary || {};
 
-    el.provider.value = config.api.provider || 'openai';
     el.baseUrl.value = config.api.base_url || '';
     el.apiKey.value = '';
     el.model.value = config.api.model || '';
@@ -197,7 +196,6 @@ async function saveOverlaySettings() {
 async function saveApi() {
   try {
     const payload = {
-      provider: el.provider.value,
       base_url: el.baseUrl.value.trim(),
       model: el.model.value.trim(),
       temperature: Number(el.temperature.value),
