@@ -1,0 +1,1208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TORCS Telemetry Guidance</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --bg-deep: #e8ebf0;
+      --surface: rgba(255, 255, 255, 0.78);
+      --surface-strong: rgba(255, 255, 255, 0.92);
+      --surface-muted: rgba(248, 249, 251, 0.72);
+      --border: rgba(18, 24, 38, 0.08);
+      --border-strong: rgba(18, 24, 38, 0.12);
+      --text: #111827;
+      --text-soft: #4b5563;
+      --text-faint: #6b7280;
+      --accent: #0f6fff;
+      --accent-soft: rgba(15, 111, 255, 0.12);
+      --teal: #0e9f8c;
+      --amber: #c78515;
+      --red: #c23f3f;
+      --shadow: 0 26px 80px rgba(19, 33, 68, 0.08);
+      --shadow-soft: 0 18px 40px rgba(19, 33, 68, 0.06);
+      --radius-xl: 32px;
+      --radius-lg: 24px;
+      --radius-md: 18px;
+      --radius-sm: 14px;
+      --content: 1280px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(15,111,255,0.11), transparent 24%),
+        radial-gradient(circle at 88% 8%, rgba(14,159,140,0.14), transparent 22%),
+        linear-gradient(180deg, #f8f9fb 0%, #f2f4f7 42%, #eceff3 100%);
+      color: var(--text);
+      font-family: "SF Pro Display", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto;
+      width: 34rem;
+      height: 34rem;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.55;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    body::before {
+      top: -14rem;
+      left: -8rem;
+      background: rgba(15, 111, 255, 0.14);
+    }
+
+    body::after {
+      right: -8rem;
+      bottom: -14rem;
+      background: rgba(14, 159, 140, 0.12);
+    }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: 28px 24px 56px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 44px;
+      padding: 14px 20px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(255, 255, 255, 0.46);
+      border-radius: 999px;
+      backdrop-filter: blur(22px);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 40px;
+      height: 40px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #101828, #1d4ed8);
+      color: white;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      box-shadow: 0 12px 28px rgba(29, 78, 216, 0.22);
+    }
+
+    .brand-copy strong,
+    .eyebrow-value {
+      display: block;
+      font-size: 0.98rem;
+      line-height: 1.2;
+    }
+
+    .brand-copy span,
+    .status-note,
+    .meta-note,
+    .small-label,
+    .chart-meta {
+      color: var(--text-faint);
+      font-size: 0.84rem;
+      line-height: 1.35;
+    }
+
+    .topbar-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.82);
+      border: 1px solid var(--border);
+      color: var(--text-soft);
+      font-size: 0.85rem;
+      font-weight: 500;
+      backdrop-filter: blur(18px);
+    }
+
+    .status-pill::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: #b7c1d1;
+      box-shadow: 0 0 0 4px rgba(183, 193, 209, 0.18);
+    }
+
+    .status-pill.live::before {
+      background: var(--teal);
+      box-shadow: 0 0 0 4px rgba(14, 159, 140, 0.16);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.18fr 0.82fr;
+      gap: 24px;
+      margin-bottom: 26px;
+    }
+
+    .panel {
+      position: relative;
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid rgba(255, 255, 255, 0.48);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(28px);
+    }
+
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.48), rgba(255,255,255,0));
+      pointer-events: none;
+    }
+
+    .hero-card {
+      padding: 34px 34px 30px;
+      min-height: 420px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      background:
+        radial-gradient(circle at top right, rgba(15,111,255,0.12), transparent 28%),
+        radial-gradient(circle at left bottom, rgba(14,159,140,0.1), transparent 26%),
+        var(--surface);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+
+    .hero-copy {
+      max-width: 40rem;
+    }
+
+    .hero-copy h1 {
+      margin: 0 0 14px;
+      font-size: clamp(2.4rem, 5vw, 4.4rem);
+      line-height: 0.98;
+      letter-spacing: -0.045em;
+      font-weight: 700;
+    }
+
+    .hero-copy p {
+      margin: 0;
+      font-size: 1.02rem;
+      line-height: 1.72;
+      color: var(--text-soft);
+      max-width: 36rem;
+    }
+
+    .guidance-card {
+      position: relative;
+      padding: 24px;
+      border-radius: 26px;
+      background: linear-gradient(145deg, rgba(255,255,255,0.88), rgba(248,249,252,0.7));
+      border: 1px solid rgba(17, 24, 39, 0.06);
+      box-shadow: 0 22px 34px rgba(17, 24, 39, 0.08);
+    }
+
+    .guidance-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .guidance-top h2 {
+      margin: 4px 0 0;
+      font-size: clamp(1.45rem, 2.2vw, 2.1rem);
+      line-height: 1.08;
+      letter-spacing: -0.03em;
+    }
+
+    .priority {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      background: rgba(17, 24, 39, 0.06);
+      color: var(--text-soft);
+      white-space: nowrap;
+    }
+
+    .priority.high { background: rgba(194, 63, 63, 0.12); color: var(--red); }
+    .priority.medium { background: rgba(199, 133, 21, 0.12); color: var(--amber); }
+    .priority.low { background: rgba(14, 159, 140, 0.12); color: var(--teal); }
+
+    .action-line {
+      margin: 0 0 14px;
+      font-size: clamp(1.12rem, 1.8vw, 1.36rem);
+      line-height: 1.45;
+      letter-spacing: -0.02em;
+      font-weight: 600;
+    }
+
+    .analysis-copy,
+    .pit-copy {
+      margin: 0;
+      color: var(--text-soft);
+      line-height: 1.64;
+      font-size: 0.98rem;
+    }
+
+    .pit-copy { margin-top: 10px; }
+
+    .overlay-block {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(17, 24, 39, 0.08);
+    }
+
+    .overlay-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px;
+      color: var(--text-faint);
+      font-size: 0.82rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .overlay-status::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .overlay-status.ready { color: var(--teal); }
+    .overlay-status.pending { color: var(--amber); }
+    .overlay-status.error { color: var(--red); }
+
+    .guidance-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .meta-block {
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(17, 24, 39, 0.05);
+    }
+
+    .meta-block strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 1.08rem;
+      letter-spacing: -0.02em;
+    }
+
+    .snapshot {
+      padding: 26px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 16px;
+      min-height: 420px;
+    }
+
+    .snapshot h2,
+    .section-head h2,
+    .stack-card h3 {
+      margin: 0;
+      letter-spacing: -0.03em;
+    }
+
+    .snapshot h2 {
+      font-size: 1.52rem;
+    }
+
+    .snapshot-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .stat-tile {
+      padding: 20px;
+      border-radius: 22px;
+      background: var(--surface-strong);
+      border: 1px solid rgba(17, 24, 39, 0.06);
+      box-shadow: var(--shadow-soft);
+      min-height: 126px;
+    }
+
+    .stat-tile strong {
+      display: block;
+      margin: 18px 0 6px;
+      font-size: clamp(1.5rem, 2vw, 2.2rem);
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .stat-tile span:last-child {
+      color: var(--text-faint);
+      font-size: 0.9rem;
+    }
+
+    .signal-strip {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .signal-tile {
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.84);
+      border: 1px solid rgba(17, 24, 39, 0.05);
+    }
+
+    .signal-tone {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 0.76rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .signal-tone::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .signal-tone.good { color: var(--teal); }
+    .signal-tone.warn { color: var(--amber); }
+    .signal-tone.danger { color: var(--red); }
+
+    .signal-value {
+      display: block;
+      font-size: 1.32rem;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+    }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
+      gap: 24px;
+      margin-top: 10px;
+    }
+
+    .chart-panel,
+    .stack-card,
+    .timeline-card {
+      padding: 26px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .section-head h2 {
+      font-size: 1.5rem;
+    }
+
+    .chart-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 8.4;
+      background: linear-gradient(180deg, rgba(250,251,253,0.74), rgba(244,246,249,0.62));
+      border-radius: 24px;
+      border: 1px solid rgba(17, 24, 39, 0.05);
+      overflow: hidden;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.68);
+      border: 1px solid rgba(17, 24, 39, 0.05);
+      color: var(--text-soft);
+      font-size: 0.84rem;
+      font-weight: 500;
+    }
+
+    .legend-item::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--legend-color);
+      box-shadow: 0 0 0 5px color-mix(in srgb, var(--legend-color) 16%, white);
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .stack-card {
+      background: var(--surface);
+      border-radius: 28px;
+      border: 1px solid rgba(255,255,255,0.46);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .stack-card h3 {
+      font-size: 1.18rem;
+      margin-bottom: 16px;
+    }
+
+    .metric-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: minmax(100px, 0.8fr) 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .metric-row strong {
+      font-size: 0.94rem;
+      font-weight: 600;
+    }
+
+    .meter {
+      position: relative;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(17, 24, 39, 0.08);
+      overflow: hidden;
+    }
+
+    .meter > span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, rgba(15,111,255,0.78), rgba(14,159,140,0.72));
+    }
+
+    .metric-value {
+      min-width: 62px;
+      text-align: right;
+      color: var(--text-soft);
+      font-size: 0.88rem;
+      font-weight: 500;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .summary-chip {
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid rgba(17, 24, 39, 0.05);
+    }
+
+    .summary-chip strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 1.12rem;
+      letter-spacing: -0.03em;
+    }
+
+    .timeline-card ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .timeline-card li {
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid rgba(17, 24, 39, 0.05);
+      display: grid;
+      gap: 6px;
+    }
+
+    .timeline-card li strong {
+      font-size: 0.96rem;
+    }
+
+    .timeline-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      color: var(--text-faint);
+      font-size: 0.8rem;
+    }
+
+    .placeholder {
+      display: grid;
+      place-items: center;
+      min-height: 280px;
+      text-align: center;
+      color: var(--text-faint);
+      padding: 32px;
+      line-height: 1.7;
+    }
+
+    .footer-note {
+      margin-top: 20px;
+      color: var(--text-faint);
+      font-size: 0.84rem;
+      text-align: right;
+    }
+
+    .fade-up {
+      animation: fadeUp 540ms ease both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .fade-up { animation: none; }
+      * { scroll-behavior: auto; }
+    }
+
+    @media (max-width: 1120px) {
+      .hero,
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .snapshot,
+      .hero-card {
+        min-height: auto;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .shell { padding: 16px 14px 40px; }
+      .topbar { border-radius: 28px; padding: 14px 16px; }
+      .topbar,
+      .brand,
+      .topbar-meta,
+      .section-head {
+        align-items: flex-start;
+      }
+      .topbar,
+      .section-head,
+      .guidance-top {
+        flex-direction: column;
+      }
+      .snapshot-grid,
+      .signal-strip,
+      .guidance-meta,
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+      .metric-row {
+        grid-template-columns: 1fr;
+      }
+      .metric-value { text-align: left; min-width: 0; }
+      .hero-card,
+      .snapshot,
+      .chart-panel,
+      .stack-card,
+      .timeline-card {
+        padding: 22px 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar fade-up">
+      <div class="brand">
+        <div class="brand-mark">F2</div>
+        <div class="brand-copy">
+          <strong>TORCS Telemetry Guidance</strong>
+          <span>Feature 2 live analysis console</span>
+        </div>
+      </div>
+      <div class="topbar-meta">
+        <div id="liveStatus" class="status-pill">Waiting for telemetry</div>
+        <div class="status-note" id="statusNote">Polling local telemetry at 350 ms</div>
+      </div>
+    </header>
+
+    <main id="app">
+      <section class="hero">
+        <article class="panel hero-card fade-up">
+          <div class="hero-copy">
+            <h1>Telemetry-first coaching for every live window.</h1>
+            <p>
+              A dedicated feature 2 surface for short-interval telemetry, structured guidance,
+              and stable decision support. High-frequency vehicle data stays live, while coaching
+              remains readable and action-oriented.
+            </p>
+          </div>
+
+          <div id="guidanceCard" class="guidance-card">
+            <div class="guidance-top">
+              <div>
+                <div class="small-label">Current guidance</div>
+                <h2 id="guidanceHeadline">Waiting for live telemetry</h2>
+              </div>
+              <div id="priorityPill" class="priority">Pending</div>
+            </div>
+
+            <p id="guidanceAction" class="action-line">
+              Start TORCS and the local telemetry feed to see live driving instructions here.
+            </p>
+            <p id="guidanceAnalysis" class="analysis-copy">
+              The page is ready for fixed-schema guidance. Once data arrives, it will surface a
+              stable headline, action, focus area, and confidence score without depending on
+              free-form model text.
+            </p>
+            <div class="overlay-block">
+              <div class="small-label">Async model supplement</div>
+              <p id="overlayStatus" class="overlay-status pending">Pending</p>
+              <p id="overlayAnalysis" class="analysis-copy">
+                Rule guidance appears immediately. An additional model explanation will load in the background when available.
+              </p>
+            </div>
+            <p id="pitAdvice" class="pit-copy">Pit advice will appear here when relevant.</p>
+
+            <div class="guidance-meta">
+              <div class="meta-block">
+                <span class="small-label">Focus area</span>
+                <strong id="focusArea">-</strong>
+              </div>
+              <div class="meta-block">
+                <span class="small-label">Confidence</span>
+                <strong id="confidenceValue">0%</strong>
+              </div>
+              <div class="meta-block">
+                <span class="small-label">Window time</span>
+                <strong id="simTime">--</strong>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <aside class="panel snapshot fade-up">
+          <div>
+            <div class="small-label">Live vehicle state</div>
+            <h2>Real-time pace snapshot</h2>
+          </div>
+
+          <div class="snapshot-grid">
+            <div class="stat-tile">
+              <span class="small-label">Speed</span>
+              <strong id="speedValue">--</strong>
+              <span>km/h</span>
+            </div>
+            <div class="stat-tile">
+              <span class="small-label">Gear</span>
+              <strong id="gearValue">--</strong>
+              <span>current transmission</span>
+            </div>
+            <div class="stat-tile">
+              <span class="small-label">Fuel</span>
+              <strong id="fuelValue">--</strong>
+              <span>litres remaining</span>
+            </div>
+            <div class="stat-tile">
+              <span class="small-label">Track position</span>
+              <strong id="trackValue">--</strong>
+              <span>centreline relative</span>
+            </div>
+          </div>
+
+          <div id="signals" class="signal-strip"></div>
+        </aside>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="panel chart-panel fade-up">
+          <div class="section-head">
+            <div>
+              <div class="small-label">Recent telemetry history</div>
+              <h2>Short-window trend view</h2>
+            </div>
+            <div class="chart-meta" id="chartMeta">16-second local history</div>
+          </div>
+
+          <div class="chart-wrap">
+            <canvas id="trendChart" aria-label="Telemetry trend chart"></canvas>
+          </div>
+
+          <div class="legend">
+            <span class="legend-item" style="--legend-color:#0f6fff">Speed</span>
+            <span class="legend-item" style="--legend-color:#0e9f8c">Throttle</span>
+            <span class="legend-item" style="--legend-color:#f59e0b">Brake</span>
+            <span class="legend-item" style="--legend-color:#7c3aed">Track position</span>
+          </div>
+        </article>
+
+        <div class="stack fade-up">
+          <article class="stack-card">
+            <div class="section-head">
+              <div>
+                <div class="small-label">Track & traffic</div>
+                <h3>Spatial signals</h3>
+              </div>
+            </div>
+            <div class="metric-list" id="spatialMetrics"></div>
+          </article>
+
+          <article class="stack-card">
+            <div class="section-head">
+              <div>
+                <div class="small-label">Control quality</div>
+                <h3>Window summary</h3>
+              </div>
+            </div>
+            <div class="summary-grid" id="summaryGrid"></div>
+          </article>
+
+          <article class="stack-card timeline-card">
+            <div class="section-head">
+              <div>
+                <div class="small-label">Recent outputs</div>
+                <h3>Guidance memory</h3>
+              </div>
+            </div>
+            <ul id="guidanceHistory"></ul>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <div class="footer-note" id="footerNote">Local data path ready</div>
+  </div>
+
+  <script>
+    const POLL_MS = 350;
+    const state = {
+      lastGuidanceKey: "",
+      guidanceHistory: [],
+      chartHistory: {},
+    };
+
+    const els = {
+      liveStatus: document.getElementById("liveStatus"),
+      statusNote: document.getElementById("statusNote"),
+      guidanceHeadline: document.getElementById("guidanceHeadline"),
+      guidanceAction: document.getElementById("guidanceAction"),
+      guidanceAnalysis: document.getElementById("guidanceAnalysis"),
+      overlayStatus: document.getElementById("overlayStatus"),
+      overlayAnalysis: document.getElementById("overlayAnalysis"),
+      pitAdvice: document.getElementById("pitAdvice"),
+      priorityPill: document.getElementById("priorityPill"),
+      focusArea: document.getElementById("focusArea"),
+      confidenceValue: document.getElementById("confidenceValue"),
+      simTime: document.getElementById("simTime"),
+      speedValue: document.getElementById("speedValue"),
+      gearValue: document.getElementById("gearValue"),
+      fuelValue: document.getElementById("fuelValue"),
+      trackValue: document.getElementById("trackValue"),
+      signals: document.getElementById("signals"),
+      chartMeta: document.getElementById("chartMeta"),
+      spatialMetrics: document.getElementById("spatialMetrics"),
+      summaryGrid: document.getElementById("summaryGrid"),
+      guidanceHistory: document.getElementById("guidanceHistory"),
+      footerNote: document.getElementById("footerNote"),
+      trendChart: document.getElementById("trendChart"),
+    };
+
+    function formatNumber(value, digits = 1) {
+      if (value == null || Number.isNaN(Number(value))) return "--";
+      return Number(value).toFixed(digits);
+    }
+
+    function formatPercent(value, digits = 0) {
+      if (value == null || Number.isNaN(Number(value))) return "--";
+      return `${(Number(value) * 100).toFixed(digits)}%`;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function priorityClass(priority) {
+      const key = String(priority || "").toLowerCase();
+      return key === "high" || key === "medium" || key === "low" ? key : "";
+    }
+
+    function toneLabel(tone) {
+      if (tone === "danger") return "Critical";
+      if (tone === "warn") return "Watch";
+      return "Stable";
+    }
+
+    function normalizeGuidanceKey(guidance) {
+      return [
+        guidance?.state_id || "",
+        guidance?.headline || "",
+        guidance?.action || "",
+      ].join("|");
+    }
+
+    function overlayStatusLabel(status) {
+      if (status === "ready") return "Ready";
+      if (status === "error") return "Unavailable";
+      return "Pending";
+    }
+
+    function renderOverlay(overlay) {
+      const status = overlay?.status || "pending";
+      els.overlayStatus.className = `overlay-status ${status}`;
+      els.overlayStatus.textContent = overlayStatusLabel(status);
+
+      if (status === "ready") {
+        const parts = [overlay.analysis, overlay.coach_note].filter(Boolean);
+        els.overlayAnalysis.textContent = parts.join(" ");
+        return;
+      }
+
+      if (status === "error") {
+        els.overlayAnalysis.textContent = "Rule guidance remains active. The background model explanation did not complete for this state.";
+        return;
+      }
+
+      els.overlayAnalysis.textContent = "Rule guidance appears immediately. An additional model explanation is loading in the background.";
+    }
+
+    function updateHero(payload) {
+      const { guidance, latest_state: latest, status } = payload;
+
+      if (!guidance || !latest || !status?.has_telemetry) {
+        els.liveStatus.textContent = "Waiting for telemetry";
+        els.liveStatus.classList.remove("live");
+        els.statusNote.textContent = "Polling local telemetry at 350 ms";
+        els.priorityPill.className = "priority";
+        els.priorityPill.textContent = "Pending";
+        els.guidanceHeadline.textContent = "Waiting for live telemetry";
+        els.guidanceAction.textContent = "Start TORCS and the local telemetry feed to see live driving instructions here.";
+        els.guidanceAnalysis.textContent = "The page is ready for fixed-schema guidance. Once data arrives, it will surface a stable headline, action, focus area, and confidence score without depending on free-form model text.";
+        renderOverlay(null);
+        els.pitAdvice.textContent = "Pit advice will appear here when relevant.";
+        els.focusArea.textContent = "-";
+        els.confidenceValue.textContent = "0%";
+        els.simTime.textContent = "--";
+        els.speedValue.textContent = "--";
+        els.gearValue.textContent = "--";
+        els.fuelValue.textContent = "--";
+        els.trackValue.textContent = "--";
+        els.footerNote.textContent = "Local data path ready";
+        return;
+      }
+
+      els.liveStatus.textContent = "Telemetry live";
+      els.liveStatus.classList.add("live");
+      els.statusNote.textContent = `Window ${formatNumber(status.window_seconds, 0)} s • ${status.frame_count} frames`;
+      els.priorityPill.className = `priority ${priorityClass(guidance.priority)}`;
+      els.priorityPill.textContent = guidance.priority || "Priority";
+      els.guidanceHeadline.textContent = guidance.headline || "Guidance ready";
+      els.guidanceAction.textContent = guidance.action || "No action available.";
+      els.guidanceAnalysis.textContent = guidance.analysis || "No analysis available.";
+      renderOverlay(guidance.async_overlay);
+      els.pitAdvice.textContent = guidance.pit_advice || "No pit guidance.";
+      els.focusArea.textContent = guidance.focus_area || "-";
+      els.confidenceValue.textContent = `${Math.round((guidance.confidence || 0) * 100)}%`;
+      els.simTime.textContent = `${formatNumber(guidance.sim_time, 1)} s`;
+      els.speedValue.textContent = formatNumber(latest.speed_x, 1);
+      els.gearValue.textContent = latest.gear ?? "--";
+      els.fuelValue.textContent = formatNumber(latest.fuel, 1);
+      els.trackValue.textContent = latest.track_pos == null ? "--" : `${Number(latest.track_pos).toFixed(2)}`;
+      const overlayState = guidance.async_overlay?.status || "pending";
+      els.footerNote.textContent = `Latest sim time ${formatNumber(status.latest_sim_time, 1)} s • ${guidance.source} • overlay ${overlayState}`;
+    }
+
+    function renderSignals(signals) {
+      els.signals.innerHTML = "";
+      (signals || []).forEach(signal => {
+        const tile = document.createElement("div");
+        tile.className = "signal-tile";
+        tile.innerHTML = `
+          <span class="signal-tone ${signal.tone || "good"}">${toneLabel(signal.tone)}</span>
+          <strong class="signal-value">${signal.display || "--"}</strong>
+          <span class="small-label">${signal.label || "-"}</span>
+        `;
+        els.signals.appendChild(tile);
+      });
+    }
+
+    function renderSpatialMetrics(trackProfile, opponentProfile) {
+      const metrics = [
+        ["Left opening", trackProfile?.left_opening ?? 0, 120, `${formatNumber(trackProfile?.left_opening, 1)} m`],
+        ["Centre opening", trackProfile?.center_opening ?? 0, 120, `${formatNumber(trackProfile?.center_opening, 1)} m`],
+        ["Right opening", trackProfile?.right_opening ?? 0, 120, `${formatNumber(trackProfile?.right_opening, 1)} m`],
+        ["Front gap", opponentProfile?.front_gap ?? 0, 200, `${formatNumber(opponentProfile?.front_gap, 1)} m`],
+        ["Left gap", opponentProfile?.left_gap ?? 0, 200, `${formatNumber(opponentProfile?.left_gap, 1)} m`],
+        ["Rear gap", opponentProfile?.rear_gap ?? 0, 200, `${formatNumber(opponentProfile?.rear_gap, 1)} m`],
+      ];
+
+      els.spatialMetrics.innerHTML = "";
+      metrics.forEach(([label, value, max, display]) => {
+        const row = document.createElement("div");
+        row.className = "metric-row";
+        row.innerHTML = `
+          <strong>${label}</strong>
+          <div class="meter"><span style="width:${clamp((Number(value) / max) * 100, 0, 100)}%"></span></div>
+          <span class="metric-value">${display}</span>
+        `;
+        els.spatialMetrics.appendChild(row);
+      });
+    }
+
+    function renderSummary(summary) {
+      const chips = [
+        ["Avg speed", `${formatNumber(summary?.avg_speed, 1)} km/h`],
+        ["Brake events", `${summary?.brake_events ?? 0}`],
+        ["Avg throttle", formatPercent(summary?.avg_throttle, 0)],
+        ["Avg brake", formatPercent(summary?.avg_brake, 0)],
+        ["Steering stddev", formatNumber(summary?.steering_stddev, 2)],
+        ["Damage delta", formatNumber(summary?.damage_delta, 1)],
+      ];
+
+      els.summaryGrid.innerHTML = "";
+      chips.forEach(([label, value]) => {
+        const chip = document.createElement("div");
+        chip.className = "summary-chip";
+        chip.innerHTML = `
+          <span class="small-label">${label}</span>
+          <strong>${value}</strong>
+        `;
+        els.summaryGrid.appendChild(chip);
+      });
+    }
+
+    function maybeRecordGuidance(guidance) {
+      if (!guidance) return;
+      const key = normalizeGuidanceKey(guidance);
+      if (!key || key === state.lastGuidanceKey) return;
+
+      state.lastGuidanceKey = key;
+      state.guidanceHistory.unshift({
+        headline: guidance.headline,
+        action: guidance.action,
+        focus: guidance.focus_area,
+        priority: guidance.priority,
+        simTime: guidance.sim_time,
+      });
+      state.guidanceHistory = state.guidanceHistory.slice(0, 6);
+      renderGuidanceHistory();
+    }
+
+    function renderGuidanceHistory() {
+      els.guidanceHistory.innerHTML = "";
+      if (state.guidanceHistory.length === 0) {
+        els.guidanceHistory.innerHTML = `
+          <li>
+            <strong>History will build automatically</strong>
+            <span class="small-label">Each distinct guidance update will be stored here for quick comparison.</span>
+          </li>
+        `;
+        return;
+      }
+
+      state.guidanceHistory.forEach(item => {
+        const li = document.createElement("li");
+        li.innerHTML = `
+          <strong>${item.headline}</strong>
+          <span>${item.action}</span>
+          <div class="timeline-meta">
+            <span>${item.focus}</span>
+            <span>${item.priority}</span>
+            <span>${formatNumber(item.simTime, 1)} s</span>
+          </div>
+        `;
+        els.guidanceHistory.appendChild(li);
+      });
+    }
+
+    function drawTrendChart(history) {
+      const canvas = els.trendChart;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(320, Math.floor(rect.width));
+      const height = Math.max(220, Math.floor(rect.height));
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const series = [
+        { key: "speed_x", color: "#0f6fff", scale: 240 },
+        { key: "throttle", color: "#0e9f8c", scale: 1 },
+        { key: "brake", color: "#f59e0b", scale: 1 },
+        { key: "track_pos", color: "#7c3aed", scale: 2.2 },
+      ];
+
+      const padding = { top: 20, right: 18, bottom: 26, left: 18 };
+      const chartW = width - padding.left - padding.right;
+      const chartH = height - padding.top - padding.bottom;
+
+      ctx.strokeStyle = "rgba(17, 24, 39, 0.08)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padding.top + (chartH / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+      }
+
+      series.forEach(item => {
+        const points = history?.[item.key] || [];
+        if (points.length < 2) return;
+
+        const values = points.map(point => Number(point.value) || 0);
+        const min = item.key === "track_pos" ? -item.scale : 0;
+        const max = item.key === "speed_x"
+          ? Math.max(item.scale, Math.max(...values) * 1.05)
+          : item.key === "track_pos"
+            ? item.scale
+            : 1;
+
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          const x = padding.left + (chartW * index) / (points.length - 1);
+          const raw = Number(point.value) || 0;
+          const normalized = clamp((raw - min) / (max - min || 1), 0, 1);
+          const y = padding.top + chartH - normalized * chartH;
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+
+        ctx.strokeStyle = item.color;
+        ctx.lineWidth = item.key === "speed_x" ? 2.6 : 1.8;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.stroke();
+      });
+    }
+
+    function renderPlaceholder() {
+      renderSignals([]);
+      els.spatialMetrics.innerHTML = `
+        <div class="placeholder">Telemetry-dependent track and traffic metrics will appear here once the local feed becomes available.</div>
+      `;
+      els.summaryGrid.innerHTML = `
+        <div class="placeholder">The short-window summary will start computing as soon as frames arrive.</div>
+      `;
+      renderGuidanceHistory();
+      state.chartHistory = {};
+      drawTrendChart(state.chartHistory);
+    }
+
+    async function loadDashboard() {
+      try {
+        const response = await fetch("/api/feature2/dashboard?window_seconds=6&history_seconds=16", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+
+        updateHero(payload);
+        renderSignals(payload.signals || []);
+
+        if (!payload.status?.has_telemetry) {
+          els.chartMeta.textContent = "Waiting for telemetry";
+          renderPlaceholder();
+          return;
+        }
+
+        els.chartMeta.textContent = `${formatNumber(payload.status.history_seconds, 0)}-second local history • ${payload.status.frame_count} frames`;
+        renderSpatialMetrics(payload.track_profile, payload.opponent_profile);
+        renderSummary(payload.window_summary);
+        maybeRecordGuidance(payload.guidance);
+        state.chartHistory = payload.history || {};
+        drawTrendChart(state.chartHistory);
+      } catch (error) {
+        els.liveStatus.textContent = "Connection issue";
+        els.liveStatus.classList.remove("live");
+        els.statusNote.textContent = "Unable to load feature 2 data";
+        els.footerNote.textContent = error.message;
+      }
+    }
+
+    renderPlaceholder();
+    loadDashboard();
+    setInterval(loadDashboard, POLL_MS);
+    window.addEventListener("resize", () => drawTrendChart(state.chartHistory));
+  </script>
+</body>
+</html>
