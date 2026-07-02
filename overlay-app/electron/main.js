@@ -322,13 +322,25 @@ ipcMain.handle('voice:stop', () => {
   return { ok: true };
 });
 
-ipcMain.handle('overlay:resize', (_event, contentHeight) => {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  const { x, y, width, height: screenH } = screen.getPrimaryDisplay().workArea;
-  const bounds = overlayWindow.getBounds();
+ipcMain.handle('overlay:resize', (event, contentHeight) => {
+  const { y, height: screenH } = screen.getPrimaryDisplay().workArea;
   const newH = Math.max(80, Math.min(Math.ceil(contentHeight) + 24, 400));
-  overlayWindow.setSize(bounds.width, newH);
-  overlayWindow.setPosition(bounds.x, Math.round(y + screenH - newH - 56));
+
+  // Commentary window: bottom edge stays put, grows upward.
+  if (overlayWindow && !overlayWindow.isDestroyed() && event.sender === overlayWindow.webContents) {
+    const bounds = overlayWindow.getBounds();
+    overlayWindow.setSize(bounds.width, newH);
+    overlayWindow.setPosition(bounds.x, Math.round(y + screenH - newH - 56));
+    return;
+  }
+
+  // Engineer window: top edge stays put, grows downward (mirror of the above).
+  if (engineerWindow && !engineerWindow.isDestroyed() && event.sender === engineerWindow.webContents) {
+    const bounds = engineerWindow.getBounds();
+    engineerWindow.setSize(bounds.width, newH);
+    engineerWindow.setPosition(bounds.x, Math.round(y + 56));
+    return;
+  }
 });
 
 app.on('window-all-closed', () => {

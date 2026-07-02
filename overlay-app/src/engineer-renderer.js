@@ -29,6 +29,9 @@ let settings = {
 
 function setCaption(text) {
   caption.textContent = text;
+  requestAnimationFrame(() => {
+    window.torcsOverlay?.resizeWindow(document.body.scrollHeight);
+  });
 }
 
 function clearTimers() {
