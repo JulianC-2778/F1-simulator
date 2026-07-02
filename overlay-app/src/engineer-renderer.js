@@ -11,7 +11,37 @@ const settingsButton = document.getElementById('settingsButton');
 let socket = null;
 let reconnectTimer = null;
 let pingTimer = null;
+let revertTimer = null;
+let turnId = 0;
 let pendingText = '';
+
+// Estimated time (ms) to read/speak a reply, used to decide how long the
+// caption stays up before reverting to the idle "Waiting..." state. Same
+// word-count formula the commentary window already uses for its own
+// no-voice fallback timing.
+function estimatedReadMs(text) {
+  const wordCount = text && text.trim() ? text.trim().split(/\s+/).length : 0;
+  return wordCount * 300 + 500;
+}
+
+function clearRevertTimer() {
+  if (revertTimer) {
+    clearTimeout(revertTimer);
+    revertTimer = null;
+  }
+}
+
+function scheduleRevert(text, myTurn) {
+  clearRevertTimer();
+  const readMs = estimatedReadMs(text);
+  revertTimer = setTimeout(() => {
+    revertTimer = null;
+    if (turnId !== myTurn) {
+      return; // superseded by a newer question while we were waiting
+    }
+    setCaption('Waiting for engineer reply...');
+  }, readMs + 1000);
+}
 let settings = {
   connection: {
     wsUrl: 'ws://127.0.0.1:8765/ws',
@@ -134,8 +164,10 @@ function handleMessage(message) {
 
   switch (message.type) {
     case 'ai_start':
+      turnId += 1;
       pendingText = '';
       stopSpeech();
+      clearRevertTimer();
       setCaption('Generating engineer reply...');
       break;
     case 'token':
@@ -144,11 +176,15 @@ function handleMessage(message) {
       }
       break;
     case 'ai_done': {
+      const myTurn = turnId;
       const finalText = typeof message.content === 'string' && message.content.trim()
         ? message.content.trim()
         : pendingText.trim();
       setCaption(finalText || 'Waiting for engineer reply...');
       speak(finalText);
+      if (finalText) {
+        scheduleRevert(finalText, myTurn);
+      }
       break;
     }
     case 'error': {
