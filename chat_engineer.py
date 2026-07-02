@@ -17,6 +17,10 @@ Env vars:
     TORCS_ENGINEER_MODEL             - model id override
     TORCS_ENGINEER_USE_FAKE_DATA     - "true" to force demo data instead of live telemetry
     TORCS_ENGINEER_UDP_PORT          - live telemetry UDP port (default 3101)
+    TORCS_ENGINEER_USE_MIDWARE_TELEMETRY - "true" to read live car_state via midware's REST API
+                                          (GET /api/telemetry) instead of binding UDP directly.
+                                          Avoids the port conflict when midware is also running.
+    TORCS_ENGINEER_MIDWARE_URL       - midware base URL for the option above (default http://127.0.0.1:8765)
     TORCS_ENGINEER_HISTORY_TURNS     - how many past Q&A turns to keep as context (default 3)
 """
 
@@ -31,6 +35,7 @@ import prompt_builder
 from car_state_source import (
     CarStateSource,
     FakeCarStateSource,
+    HttpCarStateSource,
     LiveCarStateSource,
     wait_for_live_state,
 )
@@ -38,6 +43,13 @@ from telemetry_common import env_flag
 
 
 USE_FAKE_DATA = env_flag("TORCS_ENGINEER_USE_FAKE_DATA", False)
+# Opt-in: read live car_state via midware's REST API instead of binding UDP
+# directly. Avoids the "Address already in use" port conflict when midware
+# (needed for the overlay window) is already running -- see
+# car_state_source.HttpCarStateSource and docs/feature2-standalone-service.md
+# for the same fix applied to Module 2.
+USE_MIDWARE_TELEMETRY = env_flag("TORCS_ENGINEER_USE_MIDWARE_TELEMETRY", False)
+MIDWARE_BASE_URL = os.getenv("TORCS_ENGINEER_MIDWARE_URL", "http://127.0.0.1:8765")
 UDP_PORT = int(os.getenv("TORCS_ENGINEER_UDP_PORT", "3101"))
 HISTORY_TURNS = int(os.getenv("TORCS_ENGINEER_HISTORY_TURNS", "3"))
 
@@ -46,6 +58,21 @@ def choose_car_state_source() -> CarStateSource:
     if USE_FAKE_DATA:
         print("[ChatEngineer] TORCS_ENGINEER_USE_FAKE_DATA=true -> using demo car_state data.")
         return FakeCarStateSource()
+
+    if USE_MIDWARE_TELEMETRY:
+        midware_source = HttpCarStateSource(base_url=MIDWARE_BASE_URL)
+        print(
+            f"[ChatEngineer] TORCS_ENGINEER_USE_MIDWARE_TELEMETRY=true -> "
+            f"reading live car_state via midware at {MIDWARE_BASE_URL} (no UDP bind)."
+        )
+        if wait_for_live_state(midware_source, timeout=5.0):
+            print("[ChatEngineer] Live telemetry detected via midware, using real car_state data.")
+        else:
+            print(
+                "[ChatEngineer] No live telemetry from midware yet. Make sure midware/commentary.py "
+                "is running and TORCS is in a driving/racing state; will keep retrying."
+            )
+        return midware_source
 
     live = LiveCarStateSource(udp_port=UDP_PORT)
     print(f"[ChatEngineer] Waiting up to 5s for live telemetry on UDP:{UDP_PORT} ...")
