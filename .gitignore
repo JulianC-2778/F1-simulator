@@ -77,6 +77,10 @@ desktop.ini
 *.swp
 *.swo
 
+# Kokoro TTS model files (too large for GitHub)
+kokoro-v1_0.pth
+voices/
+
 # Python helpers
 __pycache__/
 *.py[cod]
