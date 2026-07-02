@@ -37,7 +37,7 @@ function httpBaseFromWs(wsUrl) {
     url.hash = '';
     return url.toString().replace(/\/$/, '');
   } catch {
-    return 'http://127.0.0.1:8765';
+    return 'http://127.0.0.1:8880';
   }
 }
 
@@ -60,7 +60,7 @@ async function request(path, options = {}) {
 function collectOverlaySettings() {
   return {
     connection: {
-      wsUrl: el.wsUrl.value.trim() || 'ws://127.0.0.1:8765/ws',
+      wsUrl: el.wsUrl.value.trim() || 'ws://127.0.0.1:8880/ws',
       reconnectDelayMs: Number(el.reconnectDelayMs.value) || 3000,
       pingIntervalMs: Number(el.pingIntervalMs.value) || 15000
     },

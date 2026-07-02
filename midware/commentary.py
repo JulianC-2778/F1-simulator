@@ -50,6 +50,14 @@ api_config: dict[str, Any] = {
     "stream":      True,
 }
 
+# -- TTS config --
+tts_config: dict[str, Any] = {
+    "enabled": False,
+    "url":     "http://localhost:8881/tts",
+    "voice":   "bm_lewis",
+    "speed":   1.2,
+}
+
 # -- Context 配置 --
 ctx_cfg   = ContextConfig()
 ctx_mgr   = ContextManager(ctx_cfg)
@@ -100,6 +108,24 @@ async def broadcast(msg: dict):
 # ---------------------------------------------------------------------------
 # AI 调用
 # ---------------------------------------------------------------------------
+
+async def call_tts(text: str) -> bytes | None:
+    if not tts_config["enabled"] or not text.strip():
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(tts_config["url"], json={
+                "text": text,
+                "voice": tts_config["voice"],
+                "speed": tts_config["speed"],
+            })
+            if resp.status_code == 200:
+                return resp.content
+            log.warning(f"TTS server returned {resp.status_code}")
+    except Exception as e:
+        log.warning(f"TTS call failed: {e}")
+    return None
+
 
 async def call_ai(messages: list[dict]) -> str:
     """Call the OpenAI-compatible API and return full reply text, streaming tokens via WebSocket."""
@@ -219,6 +245,16 @@ async def generate_commentary(
         "stats": ctx_mgr.stats(),
     })
 
+    # 8. TTS
+    audio = await call_tts(reply)
+    if audio:
+        import base64
+        await broadcast({
+            "type": "tts_audio",
+            "audio": base64.b64encode(audio).decode(),
+            "mime":  "audio/wav",
+        })
+
     return reply
 
 
@@ -291,6 +327,7 @@ async def index():
 async def get_config():
     return {
         "api": {**api_config, "api_key": "***" if api_config["api_key"] else ""},
+        "tts": tts_config,
         "context": {
             "max_context_tokens":  ctx_cfg.max_context_tokens,
             "max_response_tokens": ctx_cfg.max_response_tokens,
@@ -310,6 +347,14 @@ async def get_config():
             "max_words": commentary_engine.config.max_words,
         },
     }
+
+
+@app.post("/api/config/tts")
+async def update_tts_config(body: dict):
+    for k in ("enabled", "url", "voice", "speed"):
+        if k in body:
+            tts_config[k] = body[k]
+    return {"ok": True, "tts": tts_config}
 
 
 @app.post("/api/config/api")
@@ -499,7 +544,7 @@ async def startup():
     # 启动自动解说循环
     global _auto_task
     _auto_task = asyncio.create_task(_auto_commentary_loop())
-    log.info("服务启动完成 → http://localhost:8765")
+    log.info("服务启动完成 → http://localhost:8880")
 
 
 # ---------------------------------------------------------------------------
@@ -514,4 +559,4 @@ if __name__ == "__main__":
     UI_FILE = "index2.html" if args.ui == "voice" else "index.html"
     log.info(f"界面模式: {args.ui} → {UI_FILE}")
 
-    uvicorn.run(app, host="0.0.0.0", port=8765, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8880, reload=False)

@@ -392,6 +392,37 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
       </div>
     </div>
 
+    <div class="s-sec">
+      <div class="s-hd cl" onclick="togSec(this)">Kokoro TTS <span class="s-ar">▾</span></div>
+      <div class="s-bd cl">
+        <div class="tog">
+          <input type="checkbox" id="tts-enabled" onchange="saveTts()">
+          <label for="tts-enabled">Enable Kokoro TTS</label>
+        </div>
+        <div><label>TTS Server URL</label><input type="text" id="tts-url" placeholder="http://localhost:8881/tts"></div>
+        <div>
+          <label>Voice</label>
+          <select id="tts-voice">
+            <option value="bm_lewis">bm_lewis — British male (broadcaster)</option>
+            <option value="bm_george">bm_george — British male</option>
+            <option value="af_heart">af_heart — American female (warm)</option>
+            <option value="af_bella">af_bella — American female (bright)</option>
+            <option value="am_adam">am_adam — American male</option>
+            <option value="am_michael">am_michael — American male (deep)</option>
+          </select>
+        </div>
+        <div>
+          <label>Speed: <span id="tts-speed-val">1.2</span></label>
+          <div class="sl-row">
+            <input type="range" min="0.5" max="2.0" step="0.1" value="1.2" id="tts-speed"
+              oninput="document.getElementById('tts-speed-val').textContent=parseFloat(this.value).toFixed(1)">
+          </div>
+        </div>
+        <button class="btn bp" onclick="saveTts()">Save TTS Config</button>
+        <div class="n" id="n5"></div>
+      </div>
+    </div>
+
   </div>
 </aside>
 
@@ -510,6 +541,23 @@ function showLoading(on) {
   document.getElementById('loading').classList.toggle('show', on);
 }
 
+// ── Kokoro TTS audio ─────────────────────────────────────
+let currentAudio = null;
+
+function playTtsAudio(base64, mime = 'audio/wav') {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mime });
+  const url = URL.createObjectURL(blob);
+  currentAudio = new Audio(url);
+  currentAudio.onended = () => { URL.revokeObjectURL(url); currentAudio = null; };
+  currentAudio.play().catch(e => console.warn('Audio play failed:', e));
+}
+
+function stopTtsAudio() {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+}
+
 // ── WS ────────────────────────────────────────────────────
 let ws = null, pendingText = '';
 
@@ -538,6 +586,7 @@ function onMsg(msg) {
     case 'ai_start':
       pendingText = '';
       stopSpeech();
+      stopTtsAudio();
       showLoading(true);
       break;
 
@@ -545,14 +594,27 @@ function onMsg(msg) {
       pendingText += msg.text;
       break;
 
-    case 'ai_done':
+    case 'ai_done': {
       showLoading(false);
-      const newSentences = splitSentences(pendingText.trim());
-      const wasEmpty = sentenceQueue.length === 0;
-      sentenceQueue.push(...newSentences);
-      if (wasEmpty) playNextSentence();
+      const fullText = pendingText.trim();
+      if (document.getElementById('tts-enabled').checked) {
+        // Kokoro TTS handles audio — just show subtitle now, audio comes via tts_audio
+        showSubtitle(fullText);
+      } else {
+        // Browser TTS: play sentence by sentence
+        const newSentences = splitSentences(fullText);
+        const wasEmpty = sentenceQueue.length === 0;
+        sentenceQueue.push(...newSentences);
+        if (wasEmpty) playNextSentence();
+      }
       updateStats(msg.stats);
       pendingText = '';
+      break;
+    }
+
+    case 'tts_audio':
+      stopSpeech();
+      playTtsAudio(msg.audio, msg.mime);
       break;
 
     case 'error':
@@ -598,6 +660,14 @@ async function loadConfig() {
     const iv = c.auto_interval || 0;
     document.getElementById('ar').value   = iv;
     document.getElementById('av').textContent = iv;
+
+    if (c.tts) {
+      document.getElementById('tts-enabled').checked = c.tts.enabled;
+      document.getElementById('tts-url').value        = c.tts.url;
+      document.getElementById('tts-voice').value      = c.tts.voice;
+      document.getElementById('tts-speed').value      = c.tts.speed;
+      document.getElementById('tts-speed-val').textContent = parseFloat(c.tts.speed).toFixed(1);
+    }
   } catch(e) { console.warn('loadConfig:', e); }
 }
 
@@ -679,6 +749,19 @@ async function injectDemo() {
     }),
   });
   note('n4', '✓ Demo data injected', true);
+}
+
+async function saveTts() {
+  const r = await fetch('/api/config/tts', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      enabled: document.getElementById('tts-enabled').checked,
+      url:     document.getElementById('tts-url').value.trim(),
+      voice:   document.getElementById('tts-voice').value,
+      speed:   parseFloat(document.getElementById('tts-speed').value),
+    }),
+  });
+  note('n5', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
 }
 
 async function manual() {
