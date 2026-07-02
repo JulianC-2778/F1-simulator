@@ -5,16 +5,18 @@ Shared helpers for TORCS telemetry-driven AI features.
 
 from __future__ import annotations
 
+import atexit
+import base64
 import json
 import math
 import os
-import socket
 import platform
+import socket
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass
 from collections import deque
+from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import Any
 from urllib import request
@@ -26,6 +28,11 @@ DEFAULT_MODEL_BASE_URL = os.getenv("TORCS_AI_BASE_URL", "http://127.0.0.1:1234/v
 DEFAULT_MODEL_NAME = os.getenv("TORCS_AI_MODEL", "").strip()
 DEFAULT_API_KEY = os.getenv("TORCS_AI_API_KEY", "not-needed")
 DEFAULT_MODEL_HINT = os.getenv("TORCS_AI_MODEL_HINT", "granite").strip().lower()
+DEFAULT_WSL_TRANSPORTS = tuple(
+    part.strip().lower()
+    for part in os.getenv("TORCS_AI_WSL_TRANSPORTS", "powershell,bridge").split(",")
+    if part.strip()
+)
 
 
 @dataclass
@@ -35,6 +42,7 @@ class ModelConnection:
     model_name: str
     visible_models: list[str]
     transport: str
+    bridge_session: Any = None
 
 
 @dataclass
@@ -42,6 +50,183 @@ class WorkerResult:
     task: dict[str, Any]
     output: Any = None
     error: str | None = None
+
+
+class WindowsRelaySession:
+    def __init__(self, api_key: str = DEFAULT_API_KEY) -> None:
+        self.api_key = api_key
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._script_path: str | None = None
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        with self._lock:
+            process = self._process
+            self._process = None
+            script_path = self._script_path
+            self._script_path = None
+
+        if process is not None and process.poll() is None:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except Exception:
+                pass
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+        if script_path and os.path.exists(script_path):
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
+
+    def request_text(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+        timeout: int = 20,
+    ) -> str:
+        attempts = 1 if method.upper() == "POST" else 2
+        for index in range(attempts):
+            try:
+                return self._request_text_once(url, method=method, body=body, timeout=timeout)
+            except Exception:
+                if index + 1 >= attempts:
+                    raise
+                self.close()
+        raise RuntimeError("Windows relay request failed.")
+
+    def request_json(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+        timeout: int = 20,
+    ) -> dict[str, Any]:
+        return json.loads(self.request_text(url, method=method, body=body, timeout=timeout))
+
+    def _request_text_once(
+        self,
+        url: str,
+        *,
+        method: str,
+        body: dict[str, Any] | None,
+        timeout: int,
+    ) -> str:
+        with self._lock:
+            self._ensure_started()
+            if self._process is None or self._process.stdin is None or self._process.stdout is None:
+                raise RuntimeError("Windows relay process is not available.")
+
+            payload = {
+                "url": url,
+                "method": method.upper(),
+                "timeout": max(1, int(timeout)),
+                "api_key": self.api_key,
+                "body": body,
+            }
+            request_text = json.dumps(payload, ensure_ascii=True)
+            encoded = base64.b64encode(request_text.encode("utf-8")).decode("ascii")
+            self._process.stdin.write(f"{encoded}\n")
+            self._process.stdin.flush()
+
+            response_line = self._process.stdout.readline()
+            if not response_line:
+                raise RuntimeError("Windows relay returned no response line.")
+
+        response_json = base64.b64decode(response_line.strip()).decode("utf-8")
+        response = json.loads(response_json)
+        if not response.get("ok"):
+            raise RuntimeError(str(response.get("error", "Windows relay request failed.")))
+        content = str(response.get("content", "")).strip()
+        if not content:
+            raise RuntimeError("Windows relay returned empty content.")
+        return content
+
+    def _ensure_started(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            return
+
+        script = r"""
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$ProgressPreference = 'SilentlyContinue'
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) {
+    break
+  }
+  if ([string]::IsNullOrWhiteSpace($line)) {
+    continue
+  }
+  try {
+    $requestJson = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($line))
+    $request = $requestJson | ConvertFrom-Json
+    $method = [string]$request.method
+    $uri = [string]$request.url
+    $timeout = [int]$request.timeout
+    $apiKey = [string]$request.api_key
+    $headers = @{ 'Accept' = 'application/json' }
+    if ($apiKey) {
+      $headers['Authorization'] = "Bearer $apiKey"
+    }
+    if ($method -eq 'POST') {
+      $headers['Content-Type'] = 'application/json'
+      $bodyJson = ''
+      if ($null -ne $request.body) {
+        $bodyJson = $request.body | ConvertTo-Json -Depth 100 -Compress
+      }
+      $response = Invoke-WebRequest -Method Post -Uri $uri -Headers $headers -Body $bodyJson -TimeoutSec $timeout
+      $content = $response.Content
+    } else {
+      $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers -TimeoutSec $timeout
+      $content = $response | ConvertTo-Json -Depth 100 -Compress
+    }
+    $result = @{ ok = $true; content = $content } | ConvertTo-Json -Depth 20 -Compress
+  } catch {
+    $result = @{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Depth 20 -Compress
+  }
+  $encoded = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($result))
+  [Console]::Out.WriteLine($encoded)
+  [Console]::Out.Flush()
+}
+"""
+
+        temp_dir = None
+        if is_wsl():
+            temp_dir = os.getenv("TORCS_POWERSHELL_TEMP_DIR", "/mnt/c/Users/Public")
+        with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8", dir=temp_dir) as temp_file:
+            temp_file.write(script)
+            script_path = temp_file.name
+
+        file_arg = script_path
+        if is_wsl():
+            file_arg = subprocess.check_output(["wslpath", "-w", script_path], text=True, timeout=5).strip()
+
+        process = subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file_arg],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        self._process = process
+        self._script_path = script_path
 
 
 class LatestTaskRunner:
@@ -226,14 +411,23 @@ def is_wsl() -> bool:
     return "microsoft" in release or "wsl" in release
 
 
-def powershell_json_request(
+def powershell_text_request(
     url: str,
     *,
     method: str = "GET",
     body: dict[str, Any] | None = None,
     api_key: str = DEFAULT_API_KEY,
     timeout: int = 20,
-) -> dict[str, Any]:
+) -> str:
+    if is_wsl() and method.upper() == "POST":
+        return windows_curl_text_request(
+            url,
+            method=method,
+            body=body,
+            api_key=api_key,
+            timeout=timeout,
+        )
+
     body_json = json.dumps(body, ensure_ascii=True) if body is not None else ""
     ps_method = method.replace("'", "''")
     ps_url = url.replace("'", "''")
@@ -258,11 +452,16 @@ if ($apiKey) {{
 }}
 if ($method -eq 'POST') {{
   $headers['Content-Type'] = 'application/json'
-  $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $body -TimeoutSec $timeout
+  $resp = Invoke-WebRequest -Method Post -Uri $uri -Headers $headers -Body $body -TimeoutSec $timeout
+  $content = $resp.Content
 }} else {{
   $resp = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers -TimeoutSec $timeout
+  $content = $resp | ConvertTo-Json -Depth 100 -Compress
 }}
-$resp | ConvertTo-Json -Depth 100 -Compress
+if ([string]::IsNullOrWhiteSpace($content)) {{
+  exit 3
+}}
+$content
 """
 
     temp_path = None
@@ -295,13 +494,90 @@ $resp | ConvertTo-Json -Depth 100 -Compress
         text = stdout.strip()
         if not text:
             raise RuntimeError("PowerShell request returned empty output.")
-        return json.loads(text)
+        return text
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
+
+
+def windows_curl_text_request(
+    url: str,
+    *,
+    method: str = "POST",
+    body: dict[str, Any] | None = None,
+    api_key: str = DEFAULT_API_KEY,
+    timeout: int = 20,
+) -> str:
+    temp_path = None
+    try:
+        command = [
+            "curl.exe",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            str(max(1, int(timeout))),
+            "-X",
+            method.upper(),
+            "-H",
+            "Accept: application/json",
+        ]
+        if api_key:
+            command.extend(["-H", f"Authorization: Bearer {api_key}"])
+
+        if body is not None:
+            temp_dir = "/mnt/c/Users/Public" if is_wsl() else None
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8", dir=temp_dir) as temp_file:
+                json.dump(body, temp_file, ensure_ascii=True)
+                temp_path = temp_file.name
+            body_arg = temp_path
+            if is_wsl():
+                body_arg = (
+                    subprocess.check_output(["wslpath", "-w", temp_path], text=True, timeout=5)
+                    .strip()
+                )
+            command.extend(["-H", "Content-Type: application/json", "--data-binary", f"@{body_arg}"])
+
+        command.append(url)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=max(5, int(timeout) + 5),
+            check=False,
+        )
+        stdout = decode_subprocess_output(result.stdout).strip()
+        stderr = decode_subprocess_output(result.stderr).strip()
+        if result.returncode != 0:
+            raise RuntimeError(stderr or stdout or "curl.exe request failed")
+        if not stdout:
+            raise RuntimeError("curl.exe request returned empty output.")
+        return stdout
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def powershell_json_request(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    api_key: str = DEFAULT_API_KEY,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    text = powershell_text_request(
+        url,
+        method=method,
+        body=body,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    return json.loads(text)
 
 
 def decode_subprocess_output(data: bytes) -> str:
@@ -388,18 +664,53 @@ def connect_openai_compatible_model(
             errors.append(f"{candidate} -> {exc}")
 
     if is_wsl():
-        try:
-            models = list_models_via_powershell_localhost(api_key=api_key, timeout=timeout)
-            model_name = choose_model_identifier(models, requested_model=requested_model, model_hint=model_hint)
-            return ModelConnection(
-                client=None,
-                base_url="http://127.0.0.1:1234/v1",
-                model_name=model_name,
-                visible_models=models,
-                transport="powershell",
-            )
-        except Exception as exc:
-            errors.append(f"powershell localhost proxy -> {exc}")
+        for transport_name in DEFAULT_WSL_TRANSPORTS:
+            if transport_name == "powershell":
+                try:
+                    models = list_models_via_powershell_localhost(api_key=api_key, timeout=timeout)
+                    model_name = choose_model_identifier(models, requested_model=requested_model, model_hint=model_hint)
+                    return ModelConnection(
+                        client=None,
+                        base_url="http://127.0.0.1:1234/v1",
+                        model_name=model_name,
+                        visible_models=models,
+                        transport="powershell",
+                        bridge_session=None,
+                    )
+                except Exception as exc:
+                    errors.append(f"powershell localhost proxy -> {exc}")
+                continue
+
+            if transport_name == "bridge":
+                bridge: WindowsRelaySession | None = None
+                try:
+                    bridge = WindowsRelaySession(api_key=api_key)
+                    models_payload = bridge.request_json(
+                        "http://127.0.0.1:1234/v1/models",
+                        method="GET",
+                        timeout=max(1, int(timeout)),
+                    )
+                    data = models_payload.get("data", [])
+                    models: list[str] = []
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        model_id = str(item.get("id", "")).strip()
+                        if model_id:
+                            models.append(model_id)
+                    model_name = choose_model_identifier(models, requested_model=requested_model, model_hint=model_hint)
+                    return ModelConnection(
+                        client=None,
+                        base_url="http://127.0.0.1:1234/v1",
+                        model_name=model_name,
+                        visible_models=models,
+                        transport="bridge",
+                        bridge_session=bridge,
+                    )
+                except Exception as exc:
+                    errors.append(f"windows relay bridge -> {exc}")
+                    if bridge is not None:
+                        bridge.close()
 
     joined = "; ".join(errors) if errors else "no candidates were tried"
     raise RuntimeError(
@@ -441,6 +752,30 @@ def chat_completion_text(
             timeout=timeout,
         )
         return response.choices[0].message.content.strip()
+
+    if connection.transport == "bridge":
+        if connection.bridge_session is None:
+            raise RuntimeError("Bridge transport selected but no relay session is available.")
+        payload = {
+            "model": connection.model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        response = connection.bridge_session.request_json(
+            f"{normalize_base_url(connection.base_url)}/chat/completions",
+            method="POST",
+            body=payload,
+            timeout=max(1, int(timeout)),
+        )
+        choices = response.get("choices", [])
+        if not choices:
+            raise RuntimeError("LM Studio returned no choices.")
+        message = choices[0].get("message", {})
+        content = str(message.get("content", "")).strip()
+        if not content:
+            raise RuntimeError("LM Studio returned an empty message.")
+        return content
 
     payload = {
         "model": connection.model_name,

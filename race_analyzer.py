@@ -111,27 +111,27 @@ def analyze_car_state(state: dict[str, Any]) -> list[str]:
     fuel = float(state.get("fuel", 0.0))
 
     if abs(track_pos) > 1.0:
-        problems.append("车辆已经驶出赛道边界，需要立刻回到赛道内")
+        problems.append("Car is off track -- get back on immediately.")
     elif abs(track_pos) > 0.8:
-        problems.append("车辆快要偏离赛道，建议减小转向并回到中心线附近")
+        problems.append("Car is close to the edge -- ease off steering and move back toward the center line.")
 
     if rpm > 8500:
-        problems.append("转速过高，建议尽快升挡")
+        problems.append("RPM too high -- shift up soon.")
     elif rpm < 2500 and gear > 2:
-        problems.append("转速偏低，当前挡位可能过高")
+        problems.append("RPM too low -- current gear may be too high.")
 
     if speed < 80 and gear > 3:
-        problems.append("低速时挡位过高，出弯加速可能会变慢")
+        problems.append("Gear too high for this speed -- acceleration out of the corner may suffer.")
 
     if damage > 3000:
-        problems.append("车辆损伤较严重，需要减少碰撞风险")
+        problems.append("Car has serious damage -- avoid further contact.")
     elif damage > 1500:
-        problems.append("车辆已有明显损伤，驾驶需要更保守")
+        problems.append("Car has noticeable damage -- drive more conservatively.")
 
     if 0 < fuel < 8:
-        problems.append("剩余油量偏低，需要考虑进站或节省燃油")
+        problems.append("Fuel is low -- consider pitting or conserving fuel.")
 
     if not problems:
-        problems.append("暂无明显异常")
+        problems.append("No issues detected.")
 
     return problems

@@ -518,10 +518,25 @@ async def websocket_endpoint(ws: WebSocket):
             "has_telemetry": telemetry_store.has_telemetry(),
         })
         while True:
-            # 保持连接，接收 ping
+            # 保持连接，接收 ping；同时转发外部客户端（如 overlay_broadcast.py，
+            # 见 Feature 1 引擎师聊天机器人）发来的展示消息，让所有浮窗都能收到。
             msg = await ws.receive_text()
             if msg == "ping":
                 await ws.send_json({"type": "pong"})
+                continue
+
+            try:
+                parsed = json.loads(msg)
+            except (TypeError, ValueError):
+                continue
+
+            if isinstance(parsed, dict) and parsed.get("type") in {
+                "ai_start",
+                "token",
+                "ai_done",
+                "error",
+            }:
+                await broadcast(parsed)
     except WebSocketDisconnect:
         ws_clients.discard(ws)
         log.info(f"WebSocket 断开，剩余客户端: {len(ws_clients)}")

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 let overlayWindow;
+let engineerWindow;
 let settingsWindow;
 let speechProcess;
 
@@ -69,6 +70,23 @@ function getWindowBounds() {
   };
 }
 
+// Feature 1 (AI Racing Engineer Chatbot) gets its own floating window so its
+// replies never overwrite/compete with race commentary captions. Anchored
+// near the top-center of the screen so the two windows never overlap.
+function getEngineerWindowBounds() {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { x, y, width } = primaryDisplay.workArea;
+  const windowWidth = 900;
+  const windowHeight = 160;
+
+  return {
+    width: windowWidth,
+    height: windowHeight,
+    x: Math.round(x + (width - windowWidth) / 2),
+    y: Math.round(y + 56)
+  };
+}
+
 function createOverlayWindow() {
   overlayWindow = new BrowserWindow({
     ...getWindowBounds(),
@@ -91,6 +109,30 @@ function createOverlayWindow() {
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
+}
+
+function createEngineerWindow() {
+  engineerWindow = new BrowserWindow({
+    ...getEngineerWindowBounds(),
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    title: 'TORCS AI Engineer Overlay',
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  engineerWindow.setAlwaysOnTop(true, 'screen-saver');
+  engineerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  engineerWindow.loadFile(path.join(__dirname, '..', 'src', 'engineer.html'));
 }
 
 function createSettingsWindow() {
@@ -130,6 +172,16 @@ function showOverlayWindow() {
   overlayWindow.focus();
 }
 
+function showEngineerWindow() {
+  if (!engineerWindow || engineerWindow.isDestroyed()) {
+    createEngineerWindow();
+    return;
+  }
+
+  engineerWindow.show();
+  engineerWindow.focus();
+}
+
 function buildMenu() {
   const template = [
     {
@@ -148,6 +200,19 @@ function buildMenu() {
           click: () => {
             if (overlayWindow) {
               overlayWindow.hide();
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Show Engineer Overlay',
+          click: showEngineerWindow
+        },
+        {
+          label: 'Hide Engineer Overlay',
+          click: () => {
+            if (engineerWindow) {
+              engineerWindow.hide();
             }
           }
         },
@@ -218,10 +283,12 @@ app.whenReady().then(() => {
   writeSettings(readSettings());
   buildMenu();
   createOverlayWindow();
+  createEngineerWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createOverlayWindow();
+      createEngineerWindow();
     }
   });
 });
@@ -243,6 +310,9 @@ ipcMain.handle('settings:save', (_event, settings) => {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.webContents.send('settings:updated', saved);
   }
+  if (engineerWindow && !engineerWindow.isDestroyed()) {
+    engineerWindow.webContents.send('settings:updated', saved);
+  }
   return saved;
 });
 
@@ -252,13 +322,25 @@ ipcMain.handle('voice:stop', () => {
   return { ok: true };
 });
 
-ipcMain.handle('overlay:resize', (_event, contentHeight) => {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  const { x, y, width, height: screenH } = screen.getPrimaryDisplay().workArea;
-  const bounds = overlayWindow.getBounds();
+ipcMain.handle('overlay:resize', (event, contentHeight) => {
+  const { y, height: screenH } = screen.getPrimaryDisplay().workArea;
   const newH = Math.max(80, Math.min(Math.ceil(contentHeight) + 24, 400));
-  overlayWindow.setSize(bounds.width, newH);
-  overlayWindow.setPosition(bounds.x, Math.round(y + screenH - newH - 56));
+
+  // Commentary window: bottom edge stays put, grows upward.
+  if (overlayWindow && !overlayWindow.isDestroyed() && event.sender === overlayWindow.webContents) {
+    const bounds = overlayWindow.getBounds();
+    overlayWindow.setSize(bounds.width, newH);
+    overlayWindow.setPosition(bounds.x, Math.round(y + screenH - newH - 56));
+    return;
+  }
+
+  // Engineer window: top edge stays put, grows downward (mirror of the above).
+  if (engineerWindow && !engineerWindow.isDestroyed() && event.sender === engineerWindow.webContents) {
+    const bounds = engineerWindow.getBounds();
+    engineerWindow.setSize(bounds.width, newH);
+    engineerWindow.setPosition(bounds.x, Math.round(y + 56));
+    return;
+  }
 });
 
 app.on('window-all-closed', () => {
