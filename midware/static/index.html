@@ -563,6 +563,10 @@ function handleWsMessage(msg) {
 
     case 'pong': break;
 
+    case 'config_updated':
+      loadConfig();
+      break;
+
     case 'telemetry_update':
       updateTelemetryBar(msg.telemetry);
       break;
@@ -789,6 +793,9 @@ async function loadConfig() {
     if (cfg.auto_interval > 0 && (!cfg.commentary || cfg.commentary.mode !== 'off')) {
       document.getElementById('auto-indicator').textContent = `Auto: ${cfg.commentary?.mode || 'interval'} / ${cfg.auto_interval}s`;
       document.getElementById('auto-indicator').classList.add('active');
+    } else {
+      document.getElementById('auto-indicator').textContent = 'Auto commentary: off';
+      document.getElementById('auto-indicator').classList.remove('active');
     }
   } catch(e) { console.warn('loadConfig failed', e); }
 }

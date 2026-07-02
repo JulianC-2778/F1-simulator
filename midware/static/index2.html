@@ -207,7 +207,7 @@ body::after {
 .s-bd.cl { display: none; }
 
 label { font-size: 12px; color: var(--dim); display: block; margin-bottom: 4px; }
-input[type=text], input[type=password], select, textarea {
+input[type=text], input[type=password], input[type=number], select, textarea {
   width: 100%; background: var(--surf2); border: 1px solid var(--bord2);
   border-radius: 8px; color: var(--text); padding: 8px 12px;
   font-size: 13px; outline: none; font-family: inherit; transition: border-color .15s;
@@ -368,11 +368,28 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
       <div class="s-hd cl" onclick="togSec(this)">Auto commentary <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
         <div>
-          <label>Interval (s, 0 = off): <span id="av">0</span></label>
+          <label>Mode</label>
+          <select id="commentary-mode">
+            <option value="off">Off</option>
+            <option value="interval">Fixed interval</option>
+            <option value="event">Event-driven</option>
+            <option value="hybrid">Event + interval</option>
+          </select>
+        </div>
+        <div>
+          <label>Baseline interval (s): <span id="av">0</span></label>
           <div class="sl-row">
             <input type="range" min="0" max="60" step="1" value="0" id="ar"
               oninput="document.getElementById('av').textContent=this.value">
           </div>
+        </div>
+        <div>
+          <label>Event window (s)</label>
+          <input type="number" min="2" max="30" step="1" id="event-window" value="6">
+        </div>
+        <div>
+          <label>Event cooldown (s)</label>
+          <input type="number" min="0" max="10" step="0.5" id="event-cooldown" value="1">
         </div>
         <button class="btn bp" onclick="saveAuto()">Apply</button>
         <div class="n" id="n3"></div>
@@ -582,6 +599,7 @@ function onMsg(msg) {
   switch (msg.type) {
     case 'connected': updateStats(msg.stats); break;
     case 'user_msg':  updateStats(msg.stats); break;
+    case 'config_updated': loadConfig(); break;
 
     case 'ai_start':
       pendingText = '';
@@ -657,9 +675,13 @@ async function loadConfig() {
     document.getElementById('rtr').value   = x.max_response_tokens;
     document.getElementById('rtv').textContent = x.max_response_tokens;
     document.getElementById('persona').value = x.commentator_persona;
-    const iv = c.auto_interval || 0;
+    const commentary = c.commentary || {};
+    const iv = commentary.baseline_interval ?? c.auto_interval ?? 0;
+    document.getElementById('commentary-mode').value = commentary.mode || (iv > 0 ? 'interval' : 'off');
     document.getElementById('ar').value   = iv;
     document.getElementById('av').textContent = iv;
+    document.getElementById('event-window').value = commentary.window_seconds ?? 6;
+    document.getElementById('event-cooldown').value = commentary.event_cooldown ?? 1;
 
     if (c.tts) {
       document.getElementById('tts-enabled').checked = c.tts.enabled;
@@ -716,11 +738,18 @@ async function clearAll() {
 
 async function saveAuto() {
   const v = parseInt(document.getElementById('ar').value);
-  const r = await fetch('/api/config/auto_interval', {
+  const selectedMode = document.getElementById('commentary-mode').value;
+  const mode = v <= 0 && selectedMode === 'interval' ? 'off' : selectedMode;
+  const r = await fetch('/api/commentary/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ interval: v }),
+    body: JSON.stringify({
+      mode,
+      baseline_interval: v,
+      window_seconds: parseFloat(document.getElementById('event-window').value),
+      event_cooldown: parseFloat(document.getElementById('event-cooldown').value),
+    }),
   });
-  note('n3', r.ok ? (v > 0 ? `✓ Every ${v}s` : '✓ Disabled') : '✗ Failed', r.ok);
+  note('n3', r.ok ? (mode !== 'off' ? `✓ ${mode} / ${v}s` : '✓ Disabled') : '✗ Failed', r.ok);
 }
 
 async function loadCsv() {

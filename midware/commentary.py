@@ -105,6 +105,10 @@ async def broadcast(msg: dict):
     ws_clients.difference_update(dead)
 
 
+async def broadcast_config_updated(section: str):
+    await broadcast({"type": "config_updated", "section": section})
+
+
 # ---------------------------------------------------------------------------
 # AI 调用
 # ---------------------------------------------------------------------------
@@ -354,6 +358,7 @@ async def update_tts_config(body: dict):
     for k in ("enabled", "url", "voice", "speed"):
         if k in body:
             tts_config[k] = body[k]
+    await broadcast_config_updated("tts")
     return {"ok": True, "tts": tts_config}
 
 
@@ -362,6 +367,7 @@ async def update_api_config(body: dict):
     for k in ("base_url", "api_key", "model", "temperature", "stream"):
         if k in body:
             api_config[k] = body[k]
+    await broadcast_config_updated("api")
     return {"ok": True}
 
 
@@ -373,6 +379,7 @@ async def update_context_config(body: dict):
         if hasattr(ctx_cfg, k):
             setattr(ctx_cfg, k, v)
     ctx_mgr.config = ctx_cfg
+    await broadcast_config_updated("context")
     return {"ok": True, "stats": ctx_mgr.stats()}
 
 
@@ -381,6 +388,7 @@ async def update_auto_interval(body: dict):
     interval = float(body.get("interval", 0))
     commentary_engine.config.baseline_interval = interval
     commentary_engine.config.mode = "interval" if interval > 0 else "off"
+    await broadcast_config_updated("commentary")
     return {"ok": True, "interval": interval, "mode": commentary_engine.config.mode}
 
 
@@ -399,7 +407,9 @@ async def get_commentary_config():
 @app.post("/api/commentary/config")
 async def update_commentary_config(body: dict):
     commentary_engine.update_config(body)
-    return {"ok": True, "config": await get_commentary_config()}
+    config = await get_commentary_config()
+    await broadcast_config_updated("commentary")
+    return {"ok": True, "config": config}
 
 
 @app.post("/api/commentary/manual")
