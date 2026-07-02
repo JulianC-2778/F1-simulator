@@ -50,6 +50,7 @@ src/tools/package/specfiles/*.spec
 *.core
 core
 core.*
+output.wav
 *.replay
 *.bak
 *~

@@ -57,10 +57,10 @@ LANG_MAP = {
 # Load model
 # ---------------------------------------------------------------------------
 
-pipeline = None
+pipelines = {}
 
 def load_model():
-    global pipeline
+    global pipelines
     from kokoro import KPipeline
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
@@ -69,7 +69,10 @@ def load_model():
             "hf_hub_download('hexgrad/Kokoro-82M', 'kokoro-v1_0.pth', local_dir='.')\""
         )
     log.info(f"Loading Kokoro model from {MODEL_PATH} ...")
-    pipeline = KPipeline(lang_code="a", model=str(MODEL_PATH))
+    pipelines = {
+        "a": KPipeline(lang_code="a", model=str(MODEL_PATH)),
+        "b": KPipeline(lang_code="b", model=str(MODEL_PATH)),
+    }
     log.info("Kokoro model loaded.")
 
 # ---------------------------------------------------------------------------
@@ -102,7 +105,7 @@ class TTSRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model_loaded": pipeline is not None}
+    return {"ok": True, "model_loaded": bool(pipelines)}
 
 
 @app.get("/voices")
@@ -125,7 +128,7 @@ def list_voices():
 
 @app.post("/tts")
 def synthesize(req: TTSRequest):
-    if pipeline is None:
+    if not pipelines:
         raise HTTPException(status_code=503, detail="Model not loaded")
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
@@ -140,9 +143,10 @@ def synthesize(req: TTSRequest):
     log.info(f"TTS: voice={req.voice} speed={req.speed} chars={len(req.text)}")
 
     try:
-        lang_code = LANG_MAP.get(req.lang, "a")
+        lang_code = "b" if req.voice.startswith("b") else LANG_MAP.get(req.lang, "a")
+        pipeline = pipelines.get(lang_code) or pipelines["a"]
         audio_chunks = []
-        for _, _, audio in pipeline(req.text, voice=str(voice_path), speed=req.speed, lang=lang_code):
+        for _, _, audio in pipeline(req.text, voice=str(voice_path), speed=req.speed):
             audio_chunks.append(audio)
 
         if not audio_chunks:
