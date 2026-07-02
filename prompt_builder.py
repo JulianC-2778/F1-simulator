@@ -12,25 +12,30 @@ from typing import Any
 
 
 SYSTEM_PROMPT = (
-    "你是一名专业但说话简单直接的 AI 赛车工程师，搭档是一名 TORCS 赛车游戏玩家。"
-    "你只能依据下面提供的实时赛车数据和检测到的问题来回答，不要编造没有给出的数值。"
-    "回答必须使用简体中文，简洁、具体、可执行，像车队工程师在对讲机里说话一样，"
-    "通常 2-4 句话即可，不需要免责声明，也不要重复整段输入数据。"
+    "You are a professional, direct-talking AI racing engineer on the radio with a TORCS driver. "
+    "Answer only using the live telemetry and detected issues provided below -- never invent numbers "
+    "that were not given. Sound like a real pit-wall radio call: interpret the data and tell the driver "
+    "what to do about it, don't just read the numbers back. Match your length to what was asked -- a single "
+    "question gets 2-3 sentences with a bit of reasoning, not just a bare fact. If the driver asks about "
+    "several things at once, keep each part shorter so the whole answer doesn't run long, and answer them "
+    "in order of importance to the race, not necessarily the order they were asked. If a question has "
+    "nothing to do with the car, the race, or the data provided, deprioritize it -- answer it last and "
+    "briefly, or skip it if it doesn't matter. Never pad, ramble, or repeat yourself. Always answer in English."
 )
 
 
 def format_car_state(car_state: dict[str, Any]) -> str:
     problems = car_state.get("problems") or []
-    problem_text = "、".join(problems) if problems else "暂无明显异常"
+    problem_text = ", ".join(problems) if problems else "No issues detected."
     return (
-        f"速度：{car_state.get('speed', 0):.0f} km/h\n"
-        f"转速：{car_state.get('rpm', 0):.0f} rpm\n"
-        f"挡位：{car_state.get('gear', 0)}\n"
-        f"赛道位置：{car_state.get('track_pos', 0):.2f}（0为中心线，绝对值越接近1越靠近赛道边缘）\n"
-        f"车辆损伤：{car_state.get('damage', 0):.0f}\n"
-        f"剩余油量：{car_state.get('fuel', 0):.1f} L\n"
-        f"当前圈速：{car_state.get('lap_time', 0):.1f} s\n"
-        f"检测到的问题：{problem_text}"
+        f"Speed: {car_state.get('speed', 0):.0f} km/h\n"
+        f"RPM: {car_state.get('rpm', 0):.0f}\n"
+        f"Gear: {car_state.get('gear', 0)}\n"
+        f"Track position: {car_state.get('track_pos', 0):.2f} (0 = center line, closer to +/-1 = closer to the track edge)\n"
+        f"Damage: {car_state.get('damage', 0):.0f}\n"
+        f"Fuel remaining: {car_state.get('fuel', 0):.1f} L\n"
+        f"Current lap time: {car_state.get('lap_time', 0):.1f} s\n"
+        f"Detected issues: {problem_text}"
     )
 
 
@@ -52,7 +57,7 @@ def build_messages(
     messages.append(
         {
             "role": "user",
-            "content": f"当前赛车数据：\n{format_car_state(car_state)}\n\n玩家问题：\n{user_question}",
+            "content": f"Current car data:\n{format_car_state(car_state)}\n\nDriver's question:\n{user_question}",
         }
     )
     return messages
