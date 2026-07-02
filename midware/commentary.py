@@ -56,6 +56,7 @@ tts_config: dict[str, Any] = {
     "url":     "http://localhost:8881/tts",
     "voice":   "bm_lewis",
     "speed":   1.2,
+    "volume":  1.0,
 }
 
 # -- Context 配置 --
@@ -122,6 +123,7 @@ async def call_tts(text: str) -> bytes | None:
                 "text": text,
                 "voice": tts_config["voice"],
                 "speed": tts_config["speed"],
+                "volume": tts_config["volume"],
             })
             if resp.status_code == 200:
                 return resp.content
@@ -355,7 +357,7 @@ async def get_config():
 
 @app.post("/api/config/tts")
 async def update_tts_config(body: dict):
-    for k in ("enabled", "url", "voice", "speed"):
+    for k in ("enabled", "url", "voice", "speed", "volume"):
         if k in body:
             tts_config[k] = body[k]
     await broadcast_config_updated("tts")

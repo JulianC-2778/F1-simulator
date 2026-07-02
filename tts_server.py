@@ -45,6 +45,7 @@ VOICES_DIR   = Path(__file__).parent / "voices"
 
 DEFAULT_VOICE  = "af_heart"
 DEFAULT_SPEED  = 1.2
+DEFAULT_VOLUME = 1.0
 SAMPLE_RATE    = 24000
 
 # lang_code: 'a' = American English, 'b' = British English
@@ -96,6 +97,7 @@ class TTSRequest(BaseModel):
     text:  str
     voice: str   = DEFAULT_VOICE
     speed: float = DEFAULT_SPEED
+    volume: float = DEFAULT_VOLUME
     lang:  str   = "en-us"
 
 
@@ -140,7 +142,7 @@ def synthesize(req: TTSRequest):
             detail=f"Voice '{req.voice}' not downloaded. File expected at: {voice_path}"
         )
 
-    log.info(f"TTS: voice={req.voice} speed={req.speed} chars={len(req.text)}")
+    log.info(f"TTS: voice={req.voice} speed={req.speed} volume={req.volume} chars={len(req.text)}")
 
     try:
         lang_code = "b" if req.voice.startswith("b") else LANG_MAP.get(req.lang, "a")
@@ -152,7 +154,8 @@ def synthesize(req: TTSRequest):
         if not audio_chunks:
             raise RuntimeError("No audio generated")
 
-        samples = np.concatenate(audio_chunks)
+        volume = max(0.0, min(float(req.volume), 2.0))
+        samples = np.clip(np.concatenate(audio_chunks) * volume, -1.0, 1.0)
     except Exception as e:
         log.error(f"Synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

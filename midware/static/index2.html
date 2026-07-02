@@ -435,6 +435,13 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
               oninput="document.getElementById('tts-speed-val').textContent=parseFloat(this.value).toFixed(1)">
           </div>
         </div>
+        <div>
+          <label>Volume: <span id="tts-volume-val">1.00</span></label>
+          <div class="sl-row">
+            <input type="range" min="0" max="2.0" step="0.05" value="1.0" id="tts-volume"
+              oninput="document.getElementById('tts-volume-val').textContent=parseFloat(this.value).toFixed(2)">
+          </div>
+        </div>
         <button class="btn bp" onclick="saveTts()">Save TTS Config</button>
         <div class="n" id="n5"></div>
       </div>
@@ -689,6 +696,8 @@ async function loadConfig() {
       document.getElementById('tts-voice').value      = c.tts.voice;
       document.getElementById('tts-speed').value      = c.tts.speed;
       document.getElementById('tts-speed-val').textContent = parseFloat(c.tts.speed).toFixed(1);
+      document.getElementById('tts-volume').value     = c.tts.volume ?? 1.0;
+      document.getElementById('tts-volume-val').textContent = parseFloat(c.tts.volume ?? 1.0).toFixed(2);
     }
   } catch(e) { console.warn('loadConfig:', e); }
 }
@@ -788,6 +797,7 @@ async function saveTts() {
       url:     document.getElementById('tts-url').value.trim(),
       voice:   document.getElementById('tts-voice').value,
       speed:   parseFloat(document.getElementById('tts-speed').value),
+      volume:  parseFloat(document.getElementById('tts-volume').value),
     }),
   });
   note('n5', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
