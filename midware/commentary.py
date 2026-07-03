@@ -72,7 +72,7 @@ ws_clients: set[WebSocket] = set()
 # -- 自动解说配置 --
 commentary_engine = CommentaryEngine(
     CommentaryConfig(
-        mode="interval",
+        mode="hybrid",
         baseline_interval=10.0,
         event_cooldown=1.0,
         window_seconds=6.0,

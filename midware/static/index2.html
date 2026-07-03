@@ -300,7 +300,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
           <input type="checkbox" id="st" checked>
           <label for="st">Streaming output</label>
         </div>
-        <button class="btn bp" onclick="saveApi()">Save model config</button>
+        <button class="btn bp" onclick="saveApi()">Apply model config</button>
         <div class="n" id="n1"></div>
       </div>
     </div>
@@ -373,7 +373,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
             <option value="off">Off</option>
             <option value="interval">Fixed interval</option>
             <option value="event">Event-driven</option>
-            <option value="hybrid">Event + interval</option>
+            <option value="hybrid" selected>Event + interval</option>
           </select>
         </div>
         <div>
@@ -442,7 +442,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
               oninput="document.getElementById('tts-volume-val').textContent=parseFloat(this.value).toFixed(2)">
           </div>
         </div>
-        <button class="btn bp" onclick="saveTts()">Save TTS Config</button>
+        <button class="btn bp" onclick="saveTts()">Apply TTS Config</button>
         <div class="n" id="n5"></div>
       </div>
     </div>
@@ -720,7 +720,7 @@ async function saveApi() {
       stream:   document.getElementById('st').checked,
     }),
   });
-  note('n1', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
+  note('n1', r.ok ? '✓ Applied' : '✗ Failed', r.ok);
 }
 
 async function saveCtx() {
@@ -734,7 +734,7 @@ async function saveCtx() {
   });
   const d = await r.json();
   if (d.stats) updateStats(d.stats);
-  note('n2', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
+  note('n2', r.ok ? '✓ Applied' : '✗ Failed', r.ok);
 }
 
 async function clearAll() {
@@ -800,7 +800,7 @@ async function saveTts() {
       volume:  parseFloat(document.getElementById('tts-volume').value),
     }),
   });
-  note('n5', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
+  note('n5', r.ok ? '✓ Applied' : '✗ Failed', r.ok);
 }
 
 async function manual() {
