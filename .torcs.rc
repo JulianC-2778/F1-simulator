@@ -1,2 +1,2 @@
-TORCS_BASE = /home/caojj/F1-simulator
-MAKE_DEFAULT = /home/caojj/F1-simulator/Make-default.mk
+TORCS_BASE = /home/ubu/test/F1-simulator
+MAKE_DEFAULT = /home/ubu/test/F1-simulator/Make-default.mk

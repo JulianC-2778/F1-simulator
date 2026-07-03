@@ -417,7 +417,6 @@ def build_commentary_payload(
     }
     payload.update(_extract_fields(field_names, latest, summary, event, rankings))
     payload["style"] = {
-        "language": "zh-CN",
         "tone": "professional, vivid, concise",
         "max_words": max_words,
     }

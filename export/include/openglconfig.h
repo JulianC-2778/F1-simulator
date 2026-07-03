@@ -1,1 +1,1 @@
-/home/caojj/F1-simulator/src/libs/confscreens/openglconfig.h
+/home/ubu/test/F1-simulator/src/libs/confscreens/openglconfig.h

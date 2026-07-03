@@ -7,9 +7,11 @@ let pingTimer = null;
 let pendingText = '';
 let sentenceQueue = [];
 let sentenceTimer = null;
+let serverTtsEnabled = false;
+let currentTtsAudio = null;
 let settings = {
   connection: {
-    wsUrl: 'ws://127.0.0.1:8765/ws',
+    wsUrl: 'ws://127.0.0.1:8880/ws',
     reconnectDelayMs: 3000,
     pingIntervalMs: 15000
   },
@@ -30,8 +32,18 @@ function setCaption(text) {
 }
 
 function splitSentences(text) {
-  const parts = text.match(/[^.!?]+[.!?]+\s*/g);
+  const parts = text.match(/[^.!?。！？]+[.!?。！？]+\s*/g);
   return parts ? parts.map(s => s.trim()).filter(Boolean) : [text.trim()];
+}
+
+// CJK characters carry roughly one "word" of speech duration each; Latin
+// text is still counted by whitespace-separated words. Used only as a
+// pacing estimate (silent captions) or as a safety-net timeout — the native
+// speech path now advances on the real 'voice:speech-ended' event instead.
+function estimateReadMs(text, rate = 1) {
+  const cjkChars = (text.match(/[一-鿿]/g) || []).length;
+  const latinWords = text.replace(/[一-鿿]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return ((cjkChars + latinWords) * 300) / Math.max(rate, 0.1) + 500;
 }
 
 function playNextSentence() {
@@ -43,8 +55,7 @@ function playNextSentence() {
 
 function speakSentence(text) {
   if (!settings.voice.enabled || !text) {
-    const wordCount = text.split(' ').length;
-    sentenceTimer = setTimeout(playNextSentence, wordCount * 300 + 500);
+    sentenceTimer = setTimeout(playNextSentence, estimateReadMs(text));
     return;
   }
 
@@ -53,9 +64,8 @@ function speakSentence(text) {
 
   if (!selectedVoice) {
     window.torcsOverlay?.speak(text, settings.voice);
-    const wordCount = text.split(' ').length;
-    const ms = (wordCount / (settings.voice.rate * 2.5)) * 1000 + 600;
-    sentenceTimer = setTimeout(playNextSentence, ms);
+    // Safety net in case the native process never reports back.
+    sentenceTimer = setTimeout(playNextSentence, estimateReadMs(text, settings.voice.rate) * 3);
     return;
   }
 
@@ -110,6 +120,34 @@ function stopSpeech() {
   window.torcsOverlay?.stopSpeech();
 }
 
+function restBaseUrl() {
+  return settings.connection.wsUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+}
+
+async function refreshTtsConfig() {
+  try {
+    const resp = await fetch(`${restBaseUrl()}/api/config`);
+    const data = await resp.json();
+    serverTtsEnabled = Boolean(data?.tts?.enabled);
+  } catch {
+    serverTtsEnabled = false;
+  }
+}
+
+function playTtsAudio(base64, mime = 'audio/wav') {
+  if (currentTtsAudio) { currentTtsAudio.pause(); currentTtsAudio = null; }
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mime });
+  const url = URL.createObjectURL(blob);
+  currentTtsAudio = new Audio(url);
+  currentTtsAudio.onended = () => { URL.revokeObjectURL(url); currentTtsAudio = null; };
+  currentTtsAudio.play().catch(() => {});
+}
+
+function stopTtsAudio() {
+  if (currentTtsAudio) { currentTtsAudio.pause(); currentTtsAudio = null; }
+}
+
 function speak(text) {
   if (!settings.voice.enabled || !text) {
     return;
@@ -155,6 +193,7 @@ function handleMessage(message) {
     case 'ai_start':
       pendingText = '';
       stopSpeech();
+      stopTtsAudio();
       setCaption('Generating captions...');
       break;
     case 'token':
@@ -166,12 +205,25 @@ function handleMessage(message) {
       const finalText = typeof message.content === 'string' && message.content.trim()
         ? message.content.trim()
         : pendingText.trim();
-      const newSentences = splitSentences(finalText || 'Waiting for commentary...');
-      const wasEmpty = sentenceQueue.length === 0;
-      sentenceQueue.push(...newSentences);
-      if (wasEmpty) playNextSentence();
+      const text = finalText || 'Waiting for commentary...';
+      if (serverTtsEnabled) {
+        // Kokoro TTS handles audio playback; it arrives separately via 'tts_audio'.
+        setCaption(text);
+      } else {
+        const newSentences = splitSentences(text);
+        const wasEmpty = sentenceQueue.length === 0;
+        sentenceQueue.push(...newSentences);
+        if (wasEmpty) playNextSentence();
+      }
       break;
     }
+    case 'tts_audio':
+      stopSpeech();
+      playTtsAudio(message.audio, message.mime);
+      break;
+    case 'config_updated':
+      if (message.section === 'tts') refreshTtsConfig();
+      break;
     case 'error': {
       const detail = conciseMessage(message.message);
       setCaption(detail ? `Commentary error: ${detail}` : 'Commentary error');
@@ -211,6 +263,7 @@ function connect() {
     }
     setCaption('Waiting for commentary...');
     startPing();
+    refreshTtsConfig();
   });
 
   nextSocket.addEventListener('message', (event) => {
@@ -261,5 +314,9 @@ settingsButton.addEventListener('click', () => {
 });
 
 window.torcsOverlay?.onSettingsUpdated(applySettings);
+window.torcsOverlay?.onSpeechEnded(() => {
+  if (sentenceTimer) { clearTimeout(sentenceTimer); sentenceTimer = null; }
+  playNextSentence();
+});
 
 loadSettings().finally(connect);

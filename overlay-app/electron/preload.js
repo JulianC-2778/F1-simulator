@@ -10,5 +10,8 @@ contextBridge.exposeInMainWorld('torcsOverlay', {
   onSettingsUpdated: (callback) => {
     ipcRenderer.on('settings:updated', (_event, settings) => callback(settings));
   },
+  onSpeechEnded: (callback) => {
+    ipcRenderer.on('voice:speech-ended', () => callback());
+  },
   resizeWindow: (height) => ipcRenderer.invoke('overlay:resize', height)
 });

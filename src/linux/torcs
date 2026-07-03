@@ -18,7 +18,7 @@
 #
 ##############################################################################
 
-prefix=/home/caojj/F1-simulator/BUILD
+prefix=/home/ubu/test/F1-simulator/BUILD
 exec_prefix=${prefix}
 
 BINDIR=${exec_prefix}/bin

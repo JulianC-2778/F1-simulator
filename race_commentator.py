@@ -196,14 +196,13 @@ def build_commentary_payload(
 
 
 def call_model(connection: Any, payload: dict[str, Any]) -> str:
-    prompt = f"""You are a live F1 broadcast commentator. React to this race event in one sentence.
+    prompt = f"""React to this race event in one short sentence.
 
 Rules:
-- Maximum 28 words.
-- Use the driver's name if available.
-- Short punchy language. ALL CAPS only for shocking moments (crash, breakdown).
+- Maximum 20 words.
+- Refer to this car as "player"; describe other cars generically (e.g. "the car ahead") since no names are given. Never invent driver names.
+- Short punchy language. ALL CAPS only for shock moments (crash, breakdown).
 - No speed numbers or RPM. Focus on position, drama, and action.
-- One strong sentence only.
 
 Event payload:
 {json.dumps(payload, ensure_ascii=True)}"""
