@@ -9,7 +9,7 @@ let sentenceQueue = [];
 let sentenceTimer = null;
 let settings = {
   connection: {
-    wsUrl: 'ws://127.0.0.1:8765/ws',
+    wsUrl: 'ws://127.0.0.1:8880/ws',
     reconnectDelayMs: 3000,
     pingIntervalMs: 15000
   },
