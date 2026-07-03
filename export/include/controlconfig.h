@@ -1,1 +1,1 @@
-/home/caojj/F1-simulator/src/libs/confscreens/controlconfig.h
+/home/abcdz/F1-simulator/src/libs/confscreens/controlconfig.h
