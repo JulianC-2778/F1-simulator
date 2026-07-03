@@ -13,6 +13,7 @@ TORCS 比赛解说中间件 — 主服务
 """
 
 import asyncio
+import base64
 import csv
 import json
 import logging
@@ -53,10 +54,23 @@ api_config: dict[str, Any] = {
 # -- TTS config --
 tts_config: dict[str, Any] = {
     "enabled": False,
+    "provider": "kokoro",
     "url":     "http://localhost:8881/tts",
-    "voice":   "bm_lewis",
+    "api_key": "",
+    "model":   "",
+    "voice":   "af_heart",
     "speed":   1.2,
     "volume":  1.0,
+    "response_format": "audio_bytes",
+    "response_audio_field": "audio",
+    "mime": "audio/wav",
+    "request_template": json.dumps({
+        "text": "{text}",
+        "model": "{model}",
+        "voice": "{voice}",
+        "speed": "{speed}",
+        "volume": "{volume}",
+    }, indent=2),
 }
 
 # -- Context 配置 --
@@ -114,19 +128,81 @@ async def broadcast_config_updated(section: str):
 # AI 调用
 # ---------------------------------------------------------------------------
 
+def _tts_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    api_key = str(tts_config.get("api_key") or "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _render_tts_template(text: str) -> dict[str, Any]:
+    template = str(tts_config.get("request_template") or "").strip()
+    if not template:
+        template = json.dumps({"text": "{text}"})
+
+    values = {
+        "text": text,
+        "model": tts_config.get("model", ""),
+        "voice": tts_config.get("voice", ""),
+        "speed": tts_config.get("speed", 1.0),
+        "volume": tts_config.get("volume", 1.0),
+    }
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace(f'"{{{key}}}"', json.dumps(value))
+        rendered = rendered.replace(f"{{{key}}}", json.dumps(value))
+
+    return json.loads(rendered)
+
+
+def _extract_tts_audio(resp: httpx.Response) -> bytes | None:
+    response_format = tts_config.get("response_format", "audio_bytes")
+    if response_format == "audio_bytes":
+        return resp.content
+
+    data = resp.json()
+    if response_format == "json_base64":
+        field = str(tts_config.get("response_audio_field") or "audio")
+        audio = data
+        for part in field.split("."):
+            audio = audio[part]
+        if isinstance(audio, str) and "," in audio and audio.startswith("data:"):
+            audio = audio.split(",", 1)[1]
+        return base64.b64decode(audio)
+
+    log.warning(f"Unsupported TTS response_format: {response_format}")
+    return None
+
+
 async def call_tts(text: str) -> bytes | None:
     if not tts_config["enabled"] or not text.strip():
         return None
+    provider = tts_config.get("provider") or "kokoro"
+    if provider in {"browser", "off"}:
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(tts_config["url"], json={
-                "text": text,
-                "voice": tts_config["voice"],
-                "speed": tts_config["speed"],
-                "volume": tts_config["volume"],
-            })
+            if provider == "kokoro":
+                resp = await client.post(tts_config["url"], json={
+                    "text": text,
+                    "voice": tts_config["voice"],
+                    "speed": tts_config["speed"],
+                    "volume": tts_config["volume"],
+                })
+            elif provider == "custom_http":
+                resp = await client.post(
+                    tts_config["url"],
+                    headers=_tts_headers(),
+                    json=_render_tts_template(text),
+                )
+            else:
+                log.warning(f"Unsupported TTS provider: {provider}")
+                return None
+
             if resp.status_code == 200:
-                return resp.content
+                return _extract_tts_audio(resp)
             log.warning(f"TTS server returned {resp.status_code}")
     except Exception as e:
         log.warning(f"TTS call failed: {e}")
@@ -254,11 +330,10 @@ async def generate_commentary(
     # 8. TTS
     audio = await call_tts(reply)
     if audio:
-        import base64
         await broadcast({
             "type": "tts_audio",
             "audio": base64.b64encode(audio).decode(),
-            "mime":  "audio/wav",
+            "mime":  tts_config.get("mime") or "audio/wav",
         })
 
     return reply
@@ -357,7 +432,20 @@ async def get_config():
 
 @app.post("/api/config/tts")
 async def update_tts_config(body: dict):
-    for k in ("enabled", "url", "voice", "speed", "volume"):
+    for k in (
+        "enabled",
+        "provider",
+        "url",
+        "api_key",
+        "model",
+        "voice",
+        "speed",
+        "volume",
+        "response_format",
+        "response_audio_field",
+        "mime",
+        "request_template",
+    ):
         if k in body:
             tts_config[k] = body[k]
     await broadcast_config_updated("tts")
