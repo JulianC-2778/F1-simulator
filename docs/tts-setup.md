@@ -119,7 +119,7 @@ Available voices:
 | `bm_george`  | en-gb    | British male             |
 | `bm_lewis`   | en-gb    | British male (broadcaster) |
 
-For F1 commentary, `bm_lewis` is recommended (closest to Sky Sports style).
+For race commentary, `bm_lewis` is recommended (broadcaster-style delivery).
 
 ---
 

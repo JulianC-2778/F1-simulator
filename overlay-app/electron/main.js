@@ -10,7 +10,7 @@ let speechProcess;
 
 const defaultSettings = {
   connection: {
-    wsUrl: 'ws://127.0.0.1:8765/ws',
+    wsUrl: 'ws://127.0.0.1:8880/ws',
     reconnectDelayMs: 3000,
     pingIntervalMs: 15000
   },
@@ -243,22 +243,29 @@ function toSpeechDispatcherVolume(volume) {
 
 function stopNativeSpeech() {
   if (speechProcess && !speechProcess.killed) {
+    speechProcess.superseded = true;
     speechProcess.kill();
   }
   speechProcess = null;
   spawn('spd-say', ['-C'], { stdio: 'ignore' }).on('error', () => {});
 }
 
-function speakNative(text, voiceSettings = {}) {
+// Spawns spd-say and reports real completion back to the caller via
+// 'voice:speech-ended', so the renderer can advance its sentence queue on
+// actual playback end instead of guessing from a word-count timer. Each
+// process tracks its own `superseded` flag (set synchronously right before
+// it is killed/replaced) so a stale exit from a preempted process never
+// fires a spurious "ended" notification for the process that replaced it.
+function speakNative(text, voiceSettings = {}, sender = null) {
   const spokenText = typeof text === 'string' ? text.trim() : '';
   if (!spokenText) {
     return { ok: false, message: 'No text to speak.' };
   }
 
   if (speechProcess && !speechProcess.killed) {
+    speechProcess.superseded = true;
     speechProcess.kill();
   }
-  speechProcess = null;
 
   const args = [
     '-P', 'important',
@@ -268,13 +275,19 @@ function speakNative(text, voiceSettings = {}) {
     spokenText
   ];
 
-  speechProcess = spawn('spd-say', args, { stdio: 'ignore', shell: true });
-  speechProcess.on('error', () => {
-    speechProcess = null;
-  });
-  speechProcess.on('exit', () => {
-    speechProcess = null;
-  });
+  const proc = spawn('spd-say', args, { stdio: 'ignore', shell: true });
+  speechProcess = proc;
+
+  const notifyEnded = () => {
+    if (speechProcess === proc) {
+      speechProcess = null;
+    }
+    if (!proc.superseded) {
+      sender?.send('voice:speech-ended');
+    }
+  };
+  proc.on('error', notifyEnded);
+  proc.on('exit', notifyEnded);
 
   return { ok: true };
 }
@@ -316,7 +329,7 @@ ipcMain.handle('settings:save', (_event, settings) => {
   return saved;
 });
 
-ipcMain.handle('voice:speak', (_event, text, voiceSettings) => speakNative(text, voiceSettings));
+ipcMain.handle('voice:speak', (event, text, voiceSettings) => speakNative(text, voiceSettings, event.sender));
 ipcMain.handle('voice:stop', () => {
   stopNativeSpeech();
   return { ok: true };

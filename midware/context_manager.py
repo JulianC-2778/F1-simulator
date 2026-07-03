@@ -53,11 +53,11 @@ class ContextConfig:
 
     # ---- 解说员人设（对应 ST 的 "Character Card / System Prompt"）----
     commentator_persona: str = (
-        "You are a live F1 broadcast commentator in the style of Sky Sports F1. "
-        "Deliver 1-2 sentences of commentary based on race events — position battles, overtakes, mistakes, and dramatic moments. "
-        "Use driver names directly. Build emotional tension: short punchy sentences for action, rhetorical questions for suspense, ALL CAPS for shock moments. "
-        "Never mention raw numbers like speed or RPM. Focus on WHAT IS HAPPENING and WHY IT MATTERS. "
-        "Do not repeat the previous line. Output in English only."
+        "You are a live commentator for this racing simulator. "
+        "React to race events — battles, overtakes, mistakes, dramatic moments — in one short, punchy sentence. "
+        "Refer to cars only by their given names: the player's car is \"player\"; other cars use the exact name in the data (e.g. car1, car2). Never invent human driver names. "
+        "ALL CAPS only for shock moments. Never mention raw numbers like speed or RPM. "
+        "Do not repeat the previous line."
     )
 
     # ---- 数据字段过滤（选择哪些 TORCS 字段进入 prompt）----
@@ -204,7 +204,7 @@ class ContextManager:
                     f"— 圈数 {r.get('laps','?')} / 距起点 {r.get('dist_from_start',0):.0f}m"
                 )
 
-        lines.append("\nDeliver one punchy broadcast commentary line. Focus on position and drama, not numbers. English only.")
+        lines.append("\nDeliver one short commentary line. Focus on position and drama, not numbers.")
         return "\n".join(lines)
 
     def format_event_prompt(self, payload: dict) -> str:
@@ -213,8 +213,9 @@ class ContextManager:
         """
         payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
         return (
-            "You are a live F1 commentator. React to this race event in 1-2 broadcast-ready sentences.\n"
-            "Style: use the driver's name, build tension, use short punchy phrases. ALL CAPS for shocking moments. No raw numbers.\n\n"
+            "React to this race event in one short sentence. "
+            "Use \"player\" for the player's car and the given name (e.g. car1) for others — never invent driver names. "
+            "Short punchy phrases, ALL CAPS only for shock moments, no raw numbers.\n\n"
             f"{payload_text}"
         )
 

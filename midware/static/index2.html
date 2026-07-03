@@ -507,8 +507,16 @@ function syncVoice() {
 let sentenceQueue = [], sentenceTimer = null;
 
 function splitSentences(text) {
-  const parts = text.match(/[^.!?]+[.!?]+\s*/g);
+  const parts = text.match(/[^.!?。！？]+[.!?。！？]+\s*/g);
   return parts ? parts.map(s => s.trim()).filter(Boolean) : [text.trim()];
+}
+
+// CJK characters carry roughly one "word" of speech duration each; Latin
+// text is still counted by whitespace-separated words.
+function estimateReadMs(text) {
+  const cjkChars = (text.match(/[一-鿿]/g) || []).length;
+  const latinWords = text.replace(/[一-鿿]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return (cjkChars + latinWords) * 300 + 500;
 }
 
 function stopSpeech() {
@@ -519,7 +527,7 @@ function stopSpeech() {
 
 function speakSentence(text) {
   if (!voiceEnabled || !text || !('speechSynthesis' in window)) {
-    sentenceTimer = setTimeout(playNextSentence, text.split(' ').length * 300 + 500);
+    sentenceTimer = setTimeout(playNextSentence, estimateReadMs(text));
     return;
   }
   const u = new SpeechSynthesisUtterance(text);
