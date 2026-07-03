@@ -9,6 +9,10 @@ Steps implemented:
      run_bot()            — connect to TORCS and drive
   4  compute_control()    — strategy-parameterized low-level controller
                             ATTACK / NORMAL / DEFEND / SAVE_FUEL / PIT
+  5  safety_filter()      — hard-rule override of Granite's strategy choice
+  6  GraniteStrategist    — async LLM strategy calls (build/parse prompt)
+  7  run_bot(use_granite=True) — wires the strategist + safety filter into
+                            the main loop, updating strategy every few seconds
 """
 
 from __future__ import annotations
@@ -265,7 +269,9 @@ class ScrClient:
 
         Returns:
             Parsed state dict  — normal packet.
-            Empty dict {}      — recv timed out; caller should resend last control.
+            Empty dict {}      — recv timed out, or the packet was malformed/
+                                  incomplete; caller should resend last control
+                                  and keep going, same as a timeout.
             None               — race ended (***shutdown***) or restarted (***restart***).
         """
         if self._sock is None:
@@ -288,7 +294,12 @@ class ScrClient:
         if text.startswith("***restart***"):
             return None
 
-        return parse_scr_state(text)
+        state = parse_scr_state(text)
+        if state is None:
+            # A dropped/truncated UDP packet is not a real end-of-race signal —
+            # treat it like a timeout instead of killing the whole drive loop.
+            return {}
+        return state
 
     def send_control(self, ctrl: str) -> None:
         if self._sock is None:

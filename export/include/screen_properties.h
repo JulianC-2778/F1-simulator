@@ -1,1 +1,1 @@
-/home/caojj/F1-simulator/src/libs/tgfclient/screen_properties.h
+/home/abcdz/F1-simulator/src/libs/tgfclient/screen_properties.h
