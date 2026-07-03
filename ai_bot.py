@@ -578,6 +578,16 @@ _PP_GAIN  = 1.0            # target heading (rad) → steer command
 # 0.3-0.8 rad and lose only the band width.
 _PP_FREE = 0.10
 
+# Gentle recentring while holding the line.  The aim deadband plus the high
+# edge-barrier threshold (0.85) left a dead zone in |tpos| 0–0.85 where NOTHING
+# pulled the car inward — lateral offset carried out of corners just persisted
+# down the straight until the car clipped a kerb at speed and got yanked back.
+# While the aim is inside its deadband (= open road) drift softly toward the
+# centre line; the term fades out continuously as a corner's aim signal builds,
+# so the apex stays free.  Keep this SMALL: it is a slow drift, not a pull —
+# a big gain here would re-create the pendulum the deadband cured.
+_HOLD_CENTRE = 0.08
+
 # WHY the angle-alignment term (params.steer_gain) is added to pursuit:
 # the lateral loop is second-order — offset y feeds the aim, the aim turns the
 # heading, the heading integrates back into y.  Pursuit alone supplies the
@@ -898,7 +908,8 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     edge    = max(0.0, abs(tpos) - _EDGE_FREE)
     barrier = -math.copysign(edge * _EDGE_GAIN, tpos)
     aim     = math.copysign(max(0.0, abs(pursuit) - _PP_FREE), pursuit)
-    steer   = aim * _PP_GAIN + barrier - speed_y * _STEER_DAMP
+    centre  = -tpos * _HOLD_CENTRE * max(0.0, 1.0 - abs(pursuit) / _PP_FREE)
+    steer   = aim * _PP_GAIN + centre + barrier - speed_y * _STEER_DAMP
     steer  /= (1.0 + max(speed, 0.0) * _STEER_SPEED_K)
     # The alignment damper is deliberately OUTSIDE the speed attenuation: the
     # lateral loop loses damping as speed rises (ζ ~ 1/√v) — that is exactly
@@ -1442,6 +1453,16 @@ def _run_tests() -> None:
     assert "(steer 0.000)" in cc_rag, f"FAIL: ragged straight must not pull sideways: {cc_rag}"
     assert "(accel 1.000)" in cc_rag, f"FAIL: ragged straight must hold full throttle: {cc_rag}"
     print(f"compute_control ragged straight (regression) ... OK  →  {cc_rag}")
+
+    # off-centre on an open straight → gentle drift back toward the centre
+    # line, so lateral offset carried out of corners no longer persists until
+    # the car clips a kerb at speed (regression)
+    _reset_driver_state()
+    cc_kerb = compute_control({**cs, "track_pos": 0.7, "speed_x": 200.0,
+                               "track": [200.0] * 19}, NORMAL)
+    assert "(steer -0.040)" in cc_kerb, f"FAIL: kerb-side straight must drift centreward: {cc_kerb}"
+    assert "(accel 1.000)" in cc_kerb, f"FAIL: recentring must not cost throttle: {cc_kerb}"
+    print(f"compute_control hold-line recentring (regression) ... OK  →  {cc_kerb}")
 
     # rpm-first gear shifting (the speed table short-shifted and killed pickup)
     assert _gear_shift(3, 9000.0, 100.0) == 4, "FAIL: high rpm must upshift"
