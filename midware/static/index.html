@@ -151,19 +151,6 @@
   }
   #topbar h1 { font-size: 15px; font-weight: 600; flex: 1; }
 
-  #telemetry-bar {
-    background: var(--surface2);
-    border-bottom: 1px solid var(--border);
-    padding: 6px 16px;
-    font-size: 12px;
-    color: var(--text-dim);
-    display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-    flex-shrink: 0;
-  }
-  .tele-item strong { color: var(--accent2); }
-
   #token-bar {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
@@ -332,7 +319,7 @@
         <input type="checkbox" id="api-stream" checked>
         <label for="api-stream" style="margin:0;cursor:pointer">Streaming output</label>
       </div>
-      <button class="btn-primary" onclick="saveApiConfig()">Save API config</button>
+      <button class="btn-primary" onclick="saveApiConfig()">Apply API config</button>
     </div>
   </div>
 
@@ -377,8 +364,7 @@
         <input type="checkbox" id="include-rankings" checked>
         <label for="include-rankings" style="margin:0;cursor:pointer">Include rankings</label>
       </div>
-      <button class="btn-primary" onclick="saveContextConfig()">Save context config</button>
-      <button class="btn-secondary btn-sm" onclick="clearHistory()">Clear history</button>
+      <button class="btn-primary" onclick="saveContextConfig()">Apply context config</button>
     </div>
   </div>
 
@@ -430,7 +416,7 @@
           <option value="off">Off</option>
           <option value="interval">Fixed interval</option>
           <option value="event">Event-driven</option>
-          <option value="hybrid">Event + interval</option>
+          <option value="hybrid" selected>Event + interval</option>
         </select>
       </div>
       <div>
@@ -451,7 +437,7 @@
         </div>
       </div>
       <button class="btn-primary" onclick="saveAutoInterval()">Apply</button>
-      <div id="auto-indicator">Auto commentary: off</div>
+      <div id="auto-indicator" class="active">Auto: hybrid / 10s</div>
     </div>
   </div>
 </div>
@@ -462,10 +448,6 @@
     <h1>🏎️ Race Commentary</h1>
     <span class="dot" id="ws-dot" title="WebSocket connection status"></span>
     <span id="ws-label" style="font-size:12px;color:var(--text-dim)">Disconnected</span>
-  </div>
-
-  <div id="telemetry-bar">
-    <span>Waiting for telemetry...</span>
   </div>
 
   <div id="token-bar">
@@ -479,11 +461,11 @@
   </div>
 
   <div id="bottom-bar">
-    <textarea id="manual-input" placeholder="Enter custom prompt, or leave blank to use latest telemetry..."
+    <textarea id="manual-input" placeholder="Enter a prompt, or use Inject demo data to insert a sample..."
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendManual()}"></textarea>
     <div style="display:flex;flex-direction:column;gap:6px">
       <button class="btn-primary" id="send-btn" onclick="sendManual()">▶ Comment</button>
-      <button class="btn-secondary btn-sm" onclick="clearHistory()">Clear</button>
+      <button class="btn-secondary btn-sm" onclick="clearHistory()">Clear history</button>
     </div>
   </div>
 </div>
@@ -563,8 +545,8 @@ function handleWsMessage(msg) {
 
     case 'pong': break;
 
-    case 'telemetry_update':
-      updateTelemetryBar(msg.telemetry);
+    case 'config_updated':
+      loadConfig();
       break;
 
     case 'event_detected':
@@ -651,29 +633,45 @@ function updateStats(stats) {
     `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
 }
 
-// ─── Telemetry bar ──────────────────────────────────────────────────────
-function updateTelemetryBar(t) {
-  if (!t) return;
-  const bar = document.getElementById('telemetry-bar');
-  const items = [
-    ['P',    t.racePos],
-    ['Lap',  t.lap],
-    ['Speed', t.speedX != null ? t.speedX.toFixed(1) + ' km/h' : '--'],
-    ['Thr',  t.throttle != null ? (t.throttle * 100).toFixed(0) + '%' : '--'],
-    ['Brk',  t.brake    != null ? (t.brake    * 100).toFixed(0) + '%' : '--'],
-    ['Gear', t.gear],
-    ['RPM',  t.rpm != null ? Math.round(t.rpm) : '--'],
-    ['Dmg',  t.damage != null ? t.damage.toFixed(0) : '--'],
-    ['T',    t.sim_time != null ? t.sim_time.toFixed(1) + 's' : '--'],
-  ];
-  bar.innerHTML = items.map(([k, v]) =>
-    `<span>${k}: <strong>${v ?? '--'}</strong></span>`
-  ).join('');
+// ─── Manual send ────────────────────────────────────────────────────────
+function formatTelemetryPrompt(t, rankings) {
+  const lines = ['[Live telemetry]'];
+  const add = (label, value, unit = '') => {
+    if (value == null || value === '') return;
+    lines.push(`  ${label}: ${value}${unit}`);
+  };
+
+  add('race time', t.sim_time != null ? Number(t.sim_time).toFixed(2) : null, 's');
+  add('position', t.racePos);
+  add('lap', t.lap);
+  add('gear', t.gear);
+  add('damage', t.damage);
+  add('fuel', t.fuel != null ? Number(t.fuel).toFixed(2) : null, 'L');
+  add('last lap time', t.lastLapTime != null ? Number(t.lastLapTime).toFixed(2) : null, 's');
+  add('current lap time', t.curLapTime != null ? Number(t.curLapTime).toFixed(2) : null, 's');
+  add('track position', t.trackPos != null ? Number(t.trackPos).toFixed(2) : null);
+
+  if (rankings && rankings.length) {
+    lines.push('', '[Race order]');
+    rankings.forEach(r => {
+      const pos = r.race_pos ?? '?';
+      const name = r.car_name ?? '?';
+      const laps = r.laps ?? '?';
+      const dist = r.dist_from_start != null ? ` / distance from start ${Number(r.dist_from_start).toFixed(0)}m` : '';
+      lines.push(`  P${pos} ${name} - lap ${laps}${dist}`);
+    });
+  }
+
+  lines.push('', 'Deliver one punchy broadcast commentary line. Focus on position and drama, not numbers. English only.');
+  return lines.join('\n');
 }
 
-// ─── Manual send ────────────────────────────────────────────────────────
 async function sendManual() {
   const prompt = document.getElementById('manual-input').value.trim();
+  if (!prompt) {
+    sysMsg('Please enter a prompt or inject demo data first.');
+    return;
+  }
   document.getElementById('manual-input').value = '';
   document.getElementById('send-btn').disabled = true;
 
@@ -681,7 +679,7 @@ async function sendManual() {
     await fetch('/api/commentary/manual', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ prompt: prompt || null }),
+      body: JSON.stringify({ prompt }),
     });
   } catch(e) { sysMsg('Request failed: ' + e.message, true); }
 
@@ -690,6 +688,7 @@ async function sendManual() {
 
 async function clearHistory() {
   await fetch('/api/commentary/clear', { method: 'POST' });
+  document.getElementById('manual-input').value = '';
   document.getElementById('chat').innerHTML = '';
   sysMsg('History cleared');
   const r = await fetch('/api/stats');
@@ -710,7 +709,7 @@ async function saveApiConfig() {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify(body),
   });
-  sysMsg(r.ok ? '✅ API config saved' : '❌ Save failed');
+  sysMsg(r.ok ? '✅ API config applied' : '❌ Apply failed');
 }
 
 async function saveContextConfig() {
@@ -728,7 +727,7 @@ async function saveContextConfig() {
     body: JSON.stringify(body),
   });
   const data = await r.json();
-  sysMsg(r.ok ? '✅ Context config saved' : '❌ Save failed');
+  sysMsg(r.ok ? '✅ Context config applied' : '❌ Apply failed');
   if (data.stats) updateStats(data.stats);
 }
 
@@ -789,6 +788,9 @@ async function loadConfig() {
     if (cfg.auto_interval > 0 && (!cfg.commentary || cfg.commentary.mode !== 'off')) {
       document.getElementById('auto-indicator').textContent = `Auto: ${cfg.commentary?.mode || 'interval'} / ${cfg.auto_interval}s`;
       document.getElementById('auto-indicator').classList.add('active');
+    } else {
+      document.getElementById('auto-indicator').textContent = 'Auto commentary: off';
+      document.getElementById('auto-indicator').classList.remove('active');
     }
   } catch(e) { console.warn('loadConfig failed', e); }
 }
@@ -826,12 +828,13 @@ async function injectDemo() {
     { sim_time: 87.4, car_index: 1, car_name: "player 1",     race_pos: 2, laps: 2, dist_from_start: 1432.0 },
     { sim_time: 87.4, car_index: 2, car_name: "scr_server 2", race_pos: 3, laps: 2, dist_from_start: 1390.0 },
   ];
-  await fetch('/api/telemetry/push', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ telemetry, rankings }),
-  });
-  updateTelemetryBar(telemetry);
-  sysMsg('✅ Demo data injected — click "Comment" to generate');
+  const input = document.getElementById('manual-input');
+  const demoPrompt = formatTelemetryPrompt(telemetry, rankings);
+  input.value = input.value.trim()
+    ? `${input.value.trim()}\n\n${demoPrompt}`
+    : demoPrompt;
+  input.focus();
+  sysMsg('✅ Demo data added to the prompt box — click "Comment" to send');
 }
 
 // ─── Field chips ────────────────────────────────────────────────────────

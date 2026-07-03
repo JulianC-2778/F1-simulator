@@ -1,1 +1,1 @@
-/home/abcdz/F1-simulator/src/libs/confscreens/simuconfig.h
+/home/ubu/test/F1-simulator/src/libs/confscreens/simuconfig.h

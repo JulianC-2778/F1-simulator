@@ -207,7 +207,7 @@ body::after {
 .s-bd.cl { display: none; }
 
 label { font-size: 12px; color: var(--dim); display: block; margin-bottom: 4px; }
-input[type=text], input[type=password], select, textarea {
+input[type=text], input[type=password], input[type=number], select, textarea {
   width: 100%; background: var(--surf2); border: 1px solid var(--bord2);
   border-radius: 8px; color: var(--text); padding: 8px 12px;
   font-size: 13px; outline: none; font-family: inherit; transition: border-color .15s;
@@ -222,6 +222,8 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 .tog { display: flex; align-items: center; gap: 9px; }
 .tog label { margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
 .tog input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+.tts-panel { display: flex; flex-direction: column; gap: 12px; }
+.tts-panel[hidden] { display: none; }
 
 .btn {
   padding: 8px 16px; border: none; border-radius: 8px;
@@ -300,7 +302,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
           <input type="checkbox" id="st" checked>
           <label for="st">Streaming output</label>
         </div>
-        <button class="btn bp" onclick="saveApi()">Save model config</button>
+        <button class="btn bp" onclick="saveApi()">Apply model config</button>
         <div class="n" id="n1"></div>
       </div>
     </div>
@@ -329,38 +331,100 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
     </div>
 
     <div class="s-sec">
-      <div class="s-hd cl" onclick="togSec(this)">Voice settings <span class="s-ar">▾</span></div>
+      <div class="s-hd cl" onclick="togSec(this)">TTS model <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
-        <div class="tog">
-          <input type="checkbox" id="ve" checked onchange="syncVoice()">
-          <label for="ve">Enable voice commentary</label>
-        </div>
+        <input type="checkbox" id="ve" checked hidden>
+        <input type="checkbox" id="tts-enabled" hidden>
         <div>
-          <label>Voice</label>
-          <select id="vsel" onchange="syncVoice()"><option value="">System default</option></select>
+          <label>TTS Model</label>
+          <select id="tts-model" onchange="onTtsModelChange()">
+            <option value="browser">Browser Speech</option>
+            <option value="kokoro">Kokoro TTS</option>
+            <option value="custom_http">Custom HTTP</option>
+            <option value="off">Off</option>
+          </select>
         </div>
-        <div>
-          <label>Speed: <span id="vrv">1.1</span></label>
-          <div class="sl-row">
-            <input type="range" min="0.5" max="2" step="0.1" value="1.1" id="vrr"
-              oninput="document.getElementById('vrv').textContent=parseFloat(this.value).toFixed(1);syncVoice()">
+
+        <div class="tts-panel" id="browser-tts-panel">
+          <div>
+            <label>Voice</label>
+            <select id="vsel" onchange="syncVoice()"><option value="">System default</option></select>
           </div>
-        </div>
-        <div>
-          <label>Pitch: <span id="vpv">1.0</span></label>
-          <div class="sl-row">
-            <input type="range" min="0.5" max="2" step="0.1" value="1.0" id="vpr"
-              oninput="document.getElementById('vpv').textContent=parseFloat(this.value).toFixed(1);syncVoice()">
+          <div>
+            <label>Speed: <span id="vrv">1.1</span></label>
+            <div class="sl-row">
+              <input type="range" min="0.5" max="2" step="0.1" value="1.1" id="vrr"
+                oninput="document.getElementById('vrv').textContent=parseFloat(this.value).toFixed(1);syncVoice()">
+            </div>
           </div>
-        </div>
-        <div>
-          <label>Volume: <span id="vvv">1.0</span></label>
-          <div class="sl-row">
-            <input type="range" min="0" max="1" step="0.05" value="1.0" id="vvr"
-              oninput="document.getElementById('vvv').textContent=parseFloat(this.value).toFixed(2);syncVoice()">
+          <div>
+            <label>Pitch: <span id="vpv">1.0</span></label>
+            <div class="sl-row">
+              <input type="range" min="0.5" max="2" step="0.1" value="1.0" id="vpr"
+                oninput="document.getElementById('vpv').textContent=parseFloat(this.value).toFixed(1);syncVoice()">
+            </div>
           </div>
+          <div>
+            <label>Volume: <span id="vvv">1.0</span></label>
+            <div class="sl-row">
+              <input type="range" min="0" max="1" step="0.05" value="1.0" id="vvr"
+                oninput="document.getElementById('vvv').textContent=parseFloat(this.value).toFixed(2);syncVoice()">
+            </div>
+          </div>
+          <button class="btn bs" onclick="testVoice()">🔊 Test voice</button>
         </div>
-        <button class="btn bs" onclick="testVoice()">🔊 Test voice</button>
+
+        <div class="tts-panel" id="kokoro-tts-panel" hidden>
+          <div><label>TTS Server URL</label><input type="text" id="tts-url" placeholder="http://localhost:8881/tts"></div>
+          <div>
+            <label>Voice</label>
+            <select id="tts-voice">
+              <option value="af_heart">af_heart — American female (warm)</option>
+              <option value="bm_lewis">bm_lewis — British male (broadcaster)</option>
+              <option value="bm_george">bm_george — British male</option>
+              <option value="af_bella">af_bella — American female (bright)</option>
+              <option value="am_adam">am_adam — American male</option>
+              <option value="am_michael">am_michael — American male (deep)</option>
+            </select>
+          </div>
+          <div>
+            <label>Speed: <span id="tts-speed-val">1.2</span></label>
+            <div class="sl-row">
+              <input type="range" min="0.5" max="2.0" step="0.1" value="1.2" id="tts-speed"
+                oninput="document.getElementById('tts-speed-val').textContent=parseFloat(this.value).toFixed(1)">
+            </div>
+          </div>
+          <div>
+            <label>Volume: <span id="tts-volume-val">1.00</span></label>
+            <div class="sl-row">
+              <input type="range" min="0" max="4.0" step="0.05" value="1.0" id="tts-volume"
+                oninput="document.getElementById('tts-volume-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <button class="btn bp" onclick="saveTts()">Apply TTS Config</button>
+        </div>
+
+        <div class="tts-panel" id="custom-tts-panel" hidden>
+          <div><label>TTS Server URL</label><input type="text" id="tts-custom-url"></div>
+          <div><label>API Key</label><input type="password" id="tts-api-key"></div>
+          <div><label>Model</label><input type="text" id="tts-model-name"></div>
+          <div><label>Voice</label><input type="text" id="tts-custom-voice"></div>
+          <div><label>Speed</label><input type="number" min="0.5" max="2.0" step="0.1" id="tts-custom-speed"></div>
+          <div><label>Volume</label><input type="number" min="0" max="4.0" step="0.05" id="tts-custom-volume"></div>
+          <div>
+            <label>Response Format</label>
+            <select id="tts-response-format">
+              <option value=""></option>
+              <option value="audio_bytes">Audio bytes</option>
+              <option value="json_base64">JSON base64</option>
+            </select>
+          </div>
+          <div><label>Audio Field</label><input type="text" id="tts-response-audio-field"></div>
+          <div><label>MIME Type</label><input type="text" id="tts-mime"></div>
+          <div><label>Body Template</label><textarea id="tts-request-template" rows="7"></textarea></div>
+          <button class="btn bp" onclick="saveTts()">Apply TTS Config</button>
+        </div>
+        <div class="n" id="n5"></div>
       </div>
     </div>
 
@@ -368,11 +432,28 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
       <div class="s-hd cl" onclick="togSec(this)">Auto commentary <span class="s-ar">▾</span></div>
       <div class="s-bd cl">
         <div>
-          <label>Interval (s, 0 = off): <span id="av">0</span></label>
+          <label>Mode</label>
+          <select id="commentary-mode">
+            <option value="off">Off</option>
+            <option value="interval">Fixed interval</option>
+            <option value="event">Event-driven</option>
+            <option value="hybrid" selected>Event + interval</option>
+          </select>
+        </div>
+        <div>
+          <label>Baseline interval (s): <span id="av">0</span></label>
           <div class="sl-row">
             <input type="range" min="0" max="60" step="1" value="0" id="ar"
               oninput="document.getElementById('av').textContent=this.value">
           </div>
+        </div>
+        <div>
+          <label>Event window (s)</label>
+          <input type="number" min="2" max="30" step="1" id="event-window" value="6">
+        </div>
+        <div>
+          <label>Event cooldown (s)</label>
+          <input type="number" min="0" max="10" step="0.5" id="event-cooldown" value="1">
         </div>
         <button class="btn bp" onclick="saveAuto()">Apply</button>
         <div class="n" id="n3"></div>
@@ -399,6 +480,12 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 // ── Voice ─────────────────────────────────────────────────
 let voices = [], voiceEnabled = true, selVoice = null;
 let vRate = 1.1, vPitch = 1.0, vVol = 1.0;
+const KOKORO_DEFAULTS = {
+  url: 'http://localhost:8881/tts',
+  voice: 'af_heart',
+  speed: 1.2,
+  volume: 1.0,
+};
 
 function initVoices() {
   function load() {
@@ -441,12 +528,64 @@ function initVoices() {
 }
 
 function syncVoice() {
-  voiceEnabled = document.getElementById('ve').checked;
+  voiceEnabled = getTtsModel() === 'browser';
+  document.getElementById('ve').checked = voiceEnabled;
   vRate  = parseFloat(document.getElementById('vrr').value);
   vPitch = parseFloat(document.getElementById('vpr').value);
   vVol   = parseFloat(document.getElementById('vvr').value);
   const i = document.getElementById('vsel').value;
   selVoice = i !== '' ? voices[parseInt(i)] : null;
+}
+
+function getTtsModel() {
+  return document.getElementById('tts-model')?.value || 'browser';
+}
+
+function updateTtsModelUI() {
+  const model = getTtsModel();
+  document.getElementById('browser-tts-panel').hidden = model !== 'browser';
+  document.getElementById('kokoro-tts-panel').hidden = model !== 'kokoro';
+  document.getElementById('custom-tts-panel').hidden = model !== 'custom_http';
+  document.getElementById('tts-enabled').checked = model === 'kokoro' || model === 'custom_http';
+  if (model === 'kokoro') ensureKokoroDefaults();
+  syncVoice();
+}
+
+function ensureKokoroDefaults() {
+  const url = document.getElementById('tts-url');
+  const voice = document.getElementById('tts-voice');
+  const speed = document.getElementById('tts-speed');
+  const volume = document.getElementById('tts-volume');
+  if (!url.value.trim()) url.value = KOKORO_DEFAULTS.url;
+  if (!voice.value) voice.value = KOKORO_DEFAULTS.voice;
+  if (!speed.value) speed.value = KOKORO_DEFAULTS.speed;
+  if (!volume.value) volume.value = KOKORO_DEFAULTS.volume;
+  document.getElementById('tts-speed-val').textContent = parseFloat(speed.value).toFixed(1);
+  document.getElementById('tts-volume-val').textContent = parseFloat(volume.value).toFixed(2);
+}
+
+function clearCustomTtsFields() {
+  [
+    'tts-custom-url',
+    'tts-api-key',
+    'tts-model-name',
+    'tts-custom-voice',
+    'tts-custom-speed',
+    'tts-custom-volume',
+    'tts-response-format',
+    'tts-response-audio-field',
+    'tts-mime',
+    'tts-request-template',
+  ].forEach(id => { document.getElementById(id).value = ''; });
+}
+
+function onTtsModelChange() {
+  stopSpeech();
+  stopTtsAudio();
+  localStorage.setItem('torcs-tts-model', getTtsModel());
+  if (getTtsModel() === 'custom_http') clearCustomTtsFields();
+  updateTtsModelUI();
+  saveTts();
 }
 
 let sentenceQueue = [], sentenceTimer = null;
@@ -464,7 +603,9 @@ function stopSpeech() {
 
 function speakSentence(text) {
   if (!voiceEnabled || !text || !('speechSynthesis' in window)) {
-    sentenceTimer = setTimeout(playNextSentence, text.split(' ').length * 300 + 500);
+    if (getTtsModel() === 'browser') {
+      sentenceTimer = setTimeout(playNextSentence, text.split(' ').length * 300 + 500);
+    }
     return;
   }
   const u = new SpeechSynthesisUtterance(text);
@@ -510,6 +651,23 @@ function showLoading(on) {
   document.getElementById('loading').classList.toggle('show', on);
 }
 
+// ── Kokoro TTS audio ─────────────────────────────────────
+let currentAudio = null;
+
+function playTtsAudio(base64, mime = 'audio/wav') {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mime });
+  const url = URL.createObjectURL(blob);
+  currentAudio = new Audio(url);
+  currentAudio.onended = () => { URL.revokeObjectURL(url); currentAudio = null; };
+  currentAudio.play().catch(e => console.warn('Audio play failed:', e));
+}
+
+function stopTtsAudio() {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+}
+
 // ── WS ────────────────────────────────────────────────────
 let ws = null, pendingText = '';
 
@@ -534,10 +692,12 @@ function onMsg(msg) {
   switch (msg.type) {
     case 'connected': updateStats(msg.stats); break;
     case 'user_msg':  updateStats(msg.stats); break;
+    case 'config_updated': loadConfig(); break;
 
     case 'ai_start':
       pendingText = '';
       stopSpeech();
+      stopTtsAudio();
       showLoading(true);
       break;
 
@@ -545,14 +705,31 @@ function onMsg(msg) {
       pendingText += msg.text;
       break;
 
-    case 'ai_done':
+    case 'ai_done': {
       showLoading(false);
-      const newSentences = splitSentences(pendingText.trim());
-      const wasEmpty = sentenceQueue.length === 0;
-      sentenceQueue.push(...newSentences);
-      if (wasEmpty) playNextSentence();
+      const fullText = pendingText.trim();
+      const ttsModel = getTtsModel();
+      if (ttsModel === 'kokoro' || ttsModel === 'custom_http') {
+        // HTTP TTS handles audio — just show subtitle now, audio comes via tts_audio
+        showSubtitle(fullText);
+      } else if (ttsModel === 'browser') {
+        // Browser TTS: play sentence by sentence
+        const newSentences = splitSentences(fullText);
+        const wasEmpty = sentenceQueue.length === 0;
+        sentenceQueue.push(...newSentences);
+        if (wasEmpty) playNextSentence();
+      } else {
+        showSubtitle(fullText);
+      }
       updateStats(msg.stats);
       pendingText = '';
+      break;
+    }
+
+    case 'tts_audio':
+      if (getTtsModel() !== 'kokoro' && getTtsModel() !== 'custom_http') break;
+      stopSpeech();
+      playTtsAudio(msg.audio, msg.mime);
       break;
 
     case 'error':
@@ -595,9 +772,41 @@ async function loadConfig() {
     document.getElementById('rtr').value   = x.max_response_tokens;
     document.getElementById('rtv').textContent = x.max_response_tokens;
     document.getElementById('persona').value = x.commentator_persona;
-    const iv = c.auto_interval || 0;
+    const commentary = c.commentary || {};
+    const iv = commentary.baseline_interval ?? c.auto_interval ?? 0;
+    document.getElementById('commentary-mode').value = commentary.mode || (iv > 0 ? 'interval' : 'off');
     document.getElementById('ar').value   = iv;
     document.getElementById('av').textContent = iv;
+    document.getElementById('event-window').value = commentary.window_seconds ?? 6;
+    document.getElementById('event-cooldown').value = commentary.event_cooldown ?? 1;
+
+    if (c.tts) {
+      const savedModel = localStorage.getItem('torcs-tts-model');
+      const provider = c.tts.provider || (c.tts.enabled ? 'kokoro' : 'browser');
+      document.getElementById('tts-model').value      = c.tts.enabled ? provider : (savedModel === 'off' ? 'off' : 'browser');
+      document.getElementById('tts-enabled').checked = c.tts.enabled;
+      const isKokoroProvider = provider === 'kokoro';
+      const kokoroSpeed = isKokoroProvider && c.tts.speed != null ? c.tts.speed : KOKORO_DEFAULTS.speed;
+      const kokoroVolume = isKokoroProvider && c.tts.volume != null ? c.tts.volume : KOKORO_DEFAULTS.volume;
+      document.getElementById('tts-url').value        = isKokoroProvider && c.tts.url ? c.tts.url : KOKORO_DEFAULTS.url;
+      document.getElementById('tts-voice').value      = isKokoroProvider && c.tts.voice ? c.tts.voice : KOKORO_DEFAULTS.voice;
+      document.getElementById('tts-speed').value      = kokoroSpeed;
+      document.getElementById('tts-speed-val').textContent = parseFloat(kokoroSpeed).toFixed(1);
+      document.getElementById('tts-volume').value     = kokoroVolume;
+      document.getElementById('tts-volume-val').textContent = parseFloat(kokoroVolume).toFixed(2);
+      const isCustomProvider = provider === 'custom_http';
+      document.getElementById('tts-custom-url').value = isCustomProvider ? (c.tts.url || '') : '';
+      document.getElementById('tts-api-key').value = isCustomProvider && c.tts.api_key && c.tts.api_key !== '***' ? c.tts.api_key : '';
+      document.getElementById('tts-model-name').value = isCustomProvider ? (c.tts.model || '') : '';
+      document.getElementById('tts-custom-voice').value = isCustomProvider ? (c.tts.voice || '') : '';
+      document.getElementById('tts-custom-speed').value = isCustomProvider && c.tts.speed != null ? c.tts.speed : '';
+      document.getElementById('tts-custom-volume').value = isCustomProvider && c.tts.volume != null ? c.tts.volume : '';
+      document.getElementById('tts-response-format').value = isCustomProvider && c.tts.response_format ? c.tts.response_format : '';
+      document.getElementById('tts-response-audio-field').value = isCustomProvider ? (c.tts.response_audio_field || '') : '';
+      document.getElementById('tts-mime').value = isCustomProvider ? (c.tts.mime || '') : '';
+      document.getElementById('tts-request-template').value = isCustomProvider ? (c.tts.request_template || '') : '';
+    }
+    updateTtsModelUI();
   } catch(e) { console.warn('loadConfig:', e); }
 }
 
@@ -619,7 +828,7 @@ async function saveApi() {
       stream:   document.getElementById('st').checked,
     }),
   });
-  note('n1', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
+  note('n1', r.ok ? '✓ Applied' : '✗ Failed', r.ok);
 }
 
 async function saveCtx() {
@@ -633,24 +842,32 @@ async function saveCtx() {
   });
   const d = await r.json();
   if (d.stats) updateStats(d.stats);
-  note('n2', r.ok ? '✓ Saved' : '✗ Failed', r.ok);
+  note('n2', r.ok ? '✓ Applied' : '✗ Failed', r.ok);
 }
 
 async function clearAll() {
   await fetch('/api/commentary/clear', { method: 'POST' });
   hideSubtitle();
   showLoading(false);
-  speechSynthesis.cancel();
+  stopSpeech();
+  stopTtsAudio();
   pendingText = '';
 }
 
 async function saveAuto() {
   const v = parseInt(document.getElementById('ar').value);
-  const r = await fetch('/api/config/auto_interval', {
+  const selectedMode = document.getElementById('commentary-mode').value;
+  const mode = v <= 0 && selectedMode === 'interval' ? 'off' : selectedMode;
+  const r = await fetch('/api/commentary/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ interval: v }),
+    body: JSON.stringify({
+      mode,
+      baseline_interval: v,
+      window_seconds: parseFloat(document.getElementById('event-window').value),
+      event_cooldown: parseFloat(document.getElementById('event-cooldown').value),
+    }),
   });
-  note('n3', r.ok ? (v > 0 ? `✓ Every ${v}s` : '✓ Disabled') : '✗ Failed', r.ok);
+  note('n3', r.ok ? (mode !== 'off' ? `✓ ${mode} / ${v}s` : '✓ Disabled') : '✗ Failed', r.ok);
 }
 
 async function loadCsv() {
@@ -681,6 +898,35 @@ async function injectDemo() {
   note('n4', '✓ Demo data injected', true);
 }
 
+async function saveTts() {
+  const model = getTtsModel();
+  const enabled = model === 'kokoro' || model === 'custom_http';
+  document.getElementById('tts-enabled').checked = enabled;
+  document.getElementById('ve').checked = model === 'browser';
+  const isCustom = model === 'custom_http';
+  const customSpeed = parseFloat(document.getElementById('tts-custom-speed').value);
+  const customVolume = parseFloat(document.getElementById('tts-custom-volume').value);
+  const r = await fetch('/api/config/tts', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      enabled,
+      provider: model,
+      url:     (isCustom ? document.getElementById('tts-custom-url') : document.getElementById('tts-url')).value.trim(),
+      api_key: isCustom ? document.getElementById('tts-api-key').value : '',
+      model:   isCustom ? document.getElementById('tts-model-name').value.trim() : '',
+      voice:   isCustom ? document.getElementById('tts-custom-voice').value.trim() : document.getElementById('tts-voice').value,
+      speed:   isCustom ? (Number.isFinite(customSpeed) ? customSpeed : null) : parseFloat(document.getElementById('tts-speed').value),
+      volume:  isCustom ? (Number.isFinite(customVolume) ? customVolume : null) : parseFloat(document.getElementById('tts-volume').value),
+      response_format: isCustom ? document.getElementById('tts-response-format').value : 'audio_bytes',
+      response_audio_field: isCustom ? document.getElementById('tts-response-audio-field').value.trim() : 'audio',
+      mime: isCustom ? document.getElementById('tts-mime').value.trim() : 'audio/wav',
+      request_template: isCustom ? document.getElementById('tts-request-template').value : '',
+    }),
+  });
+  const label = model === 'kokoro' ? 'Kokoro TTS' : model === 'custom_http' ? 'Custom HTTP' : model === 'browser' ? 'Browser Speech' : 'Voice off';
+  note('n5', r.ok ? `✓ ${label}` : '✗ Failed', r.ok);
+}
+
 async function manual() {
   await fetch('/api/commentary/manual', {
     method: 'POST', headers: {'Content-Type':'application/json'},
@@ -695,7 +941,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
-window.addEventListener('load', () => { connectWS(); loadConfig(); initVoices(); });
+window.addEventListener('load', () => { connectWS(); loadConfig(); initVoices(); updateTtsModelUI(); });
 </script>
 </body>
 </html>
