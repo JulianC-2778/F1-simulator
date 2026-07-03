@@ -185,6 +185,9 @@ def format_scr_control(
     focus  = int(clamp(float(focus), -90.0, 90.0))
     gear   = int(gear)
     meta   = 1 if meta else 0
+    # Single choke point for every control we emit — capture it for the drive
+    # log so a stuck car can be diagnosed from what was actually COMMANDED.
+    _dbg.update(cmd_accel=accel, cmd_brake=brake, cmd_gear=gear, cmd_steer=steer)
     return (
         f"(accel {accel:.3f})"
         f"(brake {brake:.3f})"
@@ -221,11 +224,10 @@ class ScrClient:
                 state = client.receive_state()
                 if state is None:     # race ended / restarted
                     break
-                if not state:         # timeout — resend last controls
-                    client.send_control(last_ctrl)
-                    continue
-                last_ctrl = format_scr_control(...)
-                client.send_control(last_ctrl)
+                if not state:         # timeout — keep waiting (NEVER re-send:
+                    continue          # the server reuses old controls itself,
+                                      # and extra packets make it run behind)
+                client.send_control(format_scr_control(...))
     """
 
     def __init__(self, host: str = "localhost", port: int = 3001) -> None:
@@ -238,6 +240,21 @@ class ScrClient:
     def connect(self) -> None:
         """Send SCR(init …) and wait for ***identified***."""
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Claim a fixed local port so a SECOND bot instance for the same TORCS
+        # slot fails fast here instead of silently splitting the packet stream
+        # with the first one.  Two clients on one slot means interleaved
+        # controls — a car that crawls at ~50 km/h at "full throttle", gears
+        # that flap for no reason, and races that die to a stray meta/restart.
+        try:
+            self._sock.bind(("", 3100 + (self._addr[1] % 100)))
+        except OSError as e:
+            self._sock.close()
+            self._sock = None
+            raise ConnectionError(
+                f"Another bot instance appears to be connected to this TORCS "
+                f"slot (local port {3100 + (self._addr[1] % 100)} busy). "
+                f"Kill the other ai_bot process first: {e}"
+            )
         self._sock.settimeout(_HANDSHAKE_TIMEOUT)
 
         payload = ("SCR(init " + " ".join(str(a) for a in _INIT_ANGLES) + ")").encode()
@@ -279,6 +296,25 @@ class ScrClient:
             # TORCS closed the port (race ended or simulator quit).
             self._done = True
             return None
+
+        # Drain any backlog and act on the NEWEST state only.  Under GUI
+        # real-time mode a brief scheduling stall (WSLg's llvmpipe software
+        # rendering hogs every core) queues several states; answering them
+        # one-by-one puts the client permanently behind, and the server then
+        # drives on stale controls — observed as a car crawling at ~52 km/h
+        # with gears flapping while we "send" full throttle.
+        self._sock.setblocking(False)
+        try:
+            while True:
+                try:
+                    data = self._sock.recv(_SCR_BUF)
+                except (BlockingIOError, InterruptedError):
+                    break
+                except ConnectionRefusedError:
+                    self._done = True
+                    return None
+        finally:
+            self._sock.settimeout(_STEP_TIMEOUT)
 
         text = data.rstrip(b"\x00").decode(errors="replace")
 
@@ -343,13 +379,48 @@ _DOWN_SPEED = (0,  0, 28, 50,  72,  95,  120)
 
 
 def _gear_from_speed(gear: int, speed: float) -> int:
-    """Speed-based gear selector (more reliable than RPM across car types)."""
+    """Speed-based gear selector (fallback when RPM is unavailable)."""
     if gear <= 0:
         return 1
     g = min(gear, _MAX_GEAR)                      # guard table lookups against any out-of-range gear
     if gear < _MAX_GEAR and speed > _UP_SPEED[g]:
         return gear + 1
     if gear > 1 and speed < _DOWN_SPEED[g]:
+        return gear - 1
+    return gear
+
+
+# RPM-first shifting: the speed table short-shifted badly (2nd at 35 km/h with
+# the engine barely spinning), which is why acceleration felt flat.  Ride each
+# gear out to high revs, downshift on falling revs for engine braking; fall
+# back to the speed table only when the packet carries no usable rpm.
+_RPM_UP   = 8500.0
+_RPM_DOWN = 4000.0   # was dropped to 3500 to stop gearbox hunting, but the
+                     # speed guard in _gear_shift now blocks the hunt case
+                     # directly, so 4000 is safe again — and it stops the car
+                     # lugging out of slow corners in 5th at ~3900 rpm
+
+# NOTE: a "speed-based upshift backstop" (shift if rpm merely healthy and road
+# speed past the gear) was tried here twice to cure a damaged car pinned at
+# the limiter in 1st — BOTH attempts coincided with the car launching to only
+# ~52-56 km/h and going no further.  Reverted to the pure-rpm rule that
+# verifiably reached 215 km/h while the launch problem is instrumented (see
+# the mode/acc/brk fields in the drive log).  Do not re-add without that data.
+
+
+def _gear_shift(gear: int, rpm: float, speed: float) -> int:
+    if gear <= 0:
+        return 1
+    if rpm <= 0.0:
+        return _gear_from_speed(gear, speed)
+    if gear < _MAX_GEAR and rpm > _RPM_UP:
+        return gear + 1
+    # Downshift needs BOTH low revs and a road speed the lower gear can
+    # actually carry (its own upshift point, plus margin).  The rpm reading
+    # alone can be stale by a few ticks when the machine is loaded (race-start
+    # rendering spike) — without the speed guard that briefly-stale rpm
+    # bounced the box 1st↔2nd at 51 km/h and strangled the launch.
+    if gear > 1 and rpm < _RPM_DOWN and speed < _UP_SPEED[gear - 1] + 10.0:
         return gear - 1
     return gear
 
@@ -446,9 +517,11 @@ class _DriveParams:
 
 
 #                          max_spd  accel  brake_g  steer_g  cntr_g  spd_factor
+# NORMAL runs full throttle too — the strategies differ in top speed, corner
+# speed (spd_factor) and brake gain, not in dribbling the pedal on straights.
 _PARAMS: dict[str, _DriveParams] = {
     ATTACK:    _DriveParams(300,    1.00,   1.20,    0.90,    0.20,  290),
-    NORMAL:    _DriveParams(250,    0.95,   1.00,    0.85,    0.20,  230),
+    NORMAL:    _DriveParams(250,    1.00,   1.00,    0.85,    0.20,  230),
     DEFEND:    _DriveParams(180,    0.80,   0.90,    0.80,    0.25,  150),
     SAVE_FUEL: _DriveParams(150,    0.65,   0.80,    0.80,    0.20,   80),
     PIT:       _DriveParams( 50,    0.30,   1.50,    0.70,    0.30,   10),
@@ -487,9 +560,36 @@ _STEER_DEADZONE = 0.02
 # mean LEFT.  So we negate the beam angles here; then a left-opening track gives
 # a positive target → positive (left) steer, matching the forward-drive convention.
 _SENSOR_ANGLES_RAD = tuple(-math.radians(a) for a in _INIT_ANGLES)
-_PP_ARC   = range(2, 17)   # beams within ±60° (ignore near-sideways ±75/±90)
+_PP_ARC   = range(2, 17)   # beams within ±60°.  Do NOT widen this to ±75: on
+                           # corner entry the near-sideways beam grazes the
+                           # inside edge tangentially and reads very long, and
+                           # the power-4 weighting then drags the aim point
+                           # straight into the inside wall (verified on track).
 _PP_POWER = 4.0            # >1 sharpens the weighting toward the longest beams
 _PP_GAIN  = 1.0            # target heading (rad) → steer command
+
+# Soft deadband on the pursuit STEER (speed planning has its own _SHARP_FREE).
+# Geometry: on a straight only the 0° beam saturates; the ±5°/±10° beams graze
+# the edges, so their lengths swing with lateral position and edge raggedness,
+# and the d⁴ weighting turns that into a small wandering aim (±0.10-0.17 rad
+# observed at ~200 km/h) which the car chased into a growing pendulum.  A real
+# driver holds the line on a straight instead of hunting the widest gap — so
+# aim contributions below this band are ignored; genuine corners command
+# 0.3-0.8 rad and lose only the band width.
+_PP_FREE = 0.10
+
+# WHY the angle-alignment term (params.steer_gain) is added to pursuit:
+# the lateral loop is second-order — offset y feeds the aim, the aim turns the
+# heading, the heading integrates back into y.  Pursuit alone supplies the
+# "stiffness" (pull toward open road) but almost no damping, so at speed the
+# car weaves down straights with irregular edges in a growing pendulum.  The
+# heading term angle·steer_gain is the damping of that loop (it resists the
+# swing, not the corner: in a steady corner pursuit dominates and the angle
+# stays small).  Do NOT try to damp the pendulum with a yaw-RATE term or by
+# clipping beam lengths — both were tried on track: rate damping lowers the
+# loop's damping ratio (the steer→angle plant is already an integrator), and
+# clipping erases the near/far contrast that corner entry aiming and corner
+# speed both depend on (the car drove straight off the first corner).
 
 # Edge barrier (replaces the old centre-line pull): don't force the car to the
 # middle — let it use the track width (racing line) in the middle band, and only
@@ -506,20 +606,70 @@ _EDGE_GAIN = 1.2           # gentle tuck-in once past the free band
 # AND how sharp the corner is.  Sharpness = angle of the most-open direction off
 # straight-ahead (|pursuit target|): a 90° corner has a big angle and must be
 # taken far slower than a gentle bend with the same sight distance.
-#   corner_speed = sqrt(dist * factor) / (1 + _CORNER_SHARPNESS * open_angle)
+#   corner_speed = sqrt(floor² + sight·factor) / (1 + _CORNER_SHARPNESS·sharpness)
 _CORNER_SHARPNESS = 1.3
-_STRAIGHT_ANGLE   = 0.12   # rad (~7°): below this the open road counts as straight
 
-# Forward distance (m) at/above which the road is treated as an open straight
-# and the corner-speed cap is lifted (track sensors saturate ~200 m).  Kept above
-# the 150 m used in the unit tests so their assertions are unchanged.
+# Corner-speed floor, as a fraction of the strategy's max_speed.  Without it
+# the braking curve sqrt(sight·factor) ends at ZERO — "must be able to come to
+# a complete stop within sight" — which is wildly conservative: with ~100 m of
+# sight it capped the car at ~150 km/h on a near-straight, lifting half a
+# straight early.  A racing car only ever needs to slow to the CORNER speed;
+# the floor moves the curve's endpoint there.  Genuinely sharp corners are
+# still slowed further by the sharpness divisor.
+_CORNER_FLOOR = 0.35
+_STRAIGHT_ANGLE   = 0.20   # rad (~11°): below this the open road counts as straight
+
+# Sharpness free band: |pursuit| below this is the off-centre pull (pursuit is
+# nonzero whenever the car is off the centre line — that is HOW it re-centres),
+# not track curvature.  Penalising it cut the throttle on straights whenever
+# the car ran off-centre; only the excess above this band counts as a corner.
+_SHARP_FREE = 0.10
+
+# Forward sight (m) at/above which the road is treated as an open straight
+# and the corner-speed cap is lifted (track sensors saturate ~200 m).
 _STRAIGHT_CLEAR = 180.0
 
-# Brake deadband: tolerate a small overspeed before touching the brakes, so a
-# twitchy corner-speed target doesn't tap the brake on a clear straight (which
-# scrubs speed and stops it building up).  Brake only once speed exceeds the
-# target by this fraction.
-_BRAKE_DEADBAND = 0.07
+# Throttle ease-off band: proportional throttle within this many km/h of the
+# target instead of bang-bang.  Full-below/zero-above pulsed the pedal the
+# whole way down a straight once the car touched its top speed — cruise is a
+# steady partial throttle, not taps.
+_ACCEL_BAND = 15.0
+
+# Target-speed smoothing (asymmetric): drops apply INSTANTLY so braking never
+# lags a corner, but the target may only climb this many km/h per tick
+# (~150 km/h/s at 50 Hz — still faster than the car can accelerate).  Kills
+# the per-tick flicker between the straight cap and the corner curve near a
+# threshold crossing, which was the other source of throttle stutter.
+_TARGET_RISE = 3.0
+_target_lp: float | None = None   # module state: smoothed target speed
+
+# Last computed speed-planning values, surfaced in run_bot's periodic log so a
+# throttle lift on track can be traced to its cause (short sight? big angle?).
+_dbg: dict[str, float] = {}
+
+# Brake deadband: tolerate a small overspeed before touching the brakes.
+# Kept SMALL: the anti-tap job this used to do is now handled by the smoothed
+# target (_TARGET_RISE) and the hold-line rule, while a wide band let the car
+# ride 5-15% above the braking curve all the way into a tightening corner and
+# arrive too hot (the same corner claimed it two runs in a row).
+_BRAKE_DEADBAND = 0.02
+
+# Brake response: how hard the brake ramps once past the deadband.  The target
+# speed curve sqrt(d·factor) implies ~9-11 m/s² of deceleration — near full
+# braking — but a proportional term with gain ~1 commanded only ~15% brake at
+# 15% overspeed, so the car tracked the curve arriving into corners far too hot
+# and ran wide.  Do NOT raise this much further: the corner-sharpness factor
+# lowers the target DURING turn-in, so an over-eager response slams the brakes
+# while the wheel is turned and spins the car into the inside wall (verified —
+# 5.0 was undrivable).  _BRAKE_STEER_CUT below is the matching protection and
+# is what makes 3.0 safe where the unguarded 5.0 was not.
+_BRAKE_RESPONSE = 3.0
+
+# Trail-brake protection: release the brake as steering builds.  Hard braking
+# with the wheel turned unloads the rear axle and snaps the car toward the
+# apex; brake hard in a straight line, gently once turned in.
+#   brake *= 1 − cut·|steer|   → full steer keeps 40% of the brake.
+_BRAKE_STEER_CUT = 0.6
 
 # Stuck / crash recovery: if the car sits at a crawl for a sustained spell while
 # JAMMED (nose into a wall/car, or pinned at the track edge), back up for a
@@ -533,6 +683,43 @@ _REVERSE_FRAMES = 40      # how long to hold reverse once triggered
 _stuck_frames   = 0       # module state: consecutive jammed frames seen
 _reverse_frames = 0       # module state: reverse-burst frames remaining
 
+# Recovery mode: off-track re-entry and wrong-way turn-around.  Track sensors
+# read -1 out there, so this mode drives purely on angle + track_pos.
+# ENTER threshold must sit clearly above 1.0: riding the apex kerb legitimately
+# pushes |track_pos| just past 1 (the racing line is SUPPOSED to do that), and
+# a recovery grab there yanked the car to the centre mid-corner and threw it
+# off the outside.  The 1.0–1.15 band is covered by the blind-sensor fallback
+# in compute_control, which is gentle and stateless.
+_RECOVERY_MAX_KMH   = 55.0          # speed cap while returning to the track
+_RECOVER_ENTER_TPOS = 1.15          # genuinely off (wheels on the grass), not a kerb
+_RECOVER_EXIT_TPOS  = 0.85          # hand back to normal driving only once well
+_RECOVER_EXIT_ANGLE = 0.35          #   inside the track AND roughly aligned
+_WRONG_WAY          = math.pi / 2   # |angle| beyond this = facing the wrong way
+_TURNAROUND_EXIT    = 0.5           # rad: keep turning until this aligned (hysteresis)
+_TA_JAM_FRAMES      = 40            # jammed-in-reverse frames before a forward leg
+_TA_FWD_FRAMES      = 40            # length of the forward leg (three-point turn)
+_TA_JAM_SPEED       = 6.0           # km/h: below this a turnaround leg counts as
+                                    # jammed.  Was 2.0 — a car rocking against a
+                                    # wall bounced to 3-7 km/h, kept resetting
+                                    # the counter, and sat in reverse for the
+                                    # rest of the race; 6 lets the three-point
+                                    # turn actually alternate and rock free.
+
+_recovering = False   # module state: in off-track re-entry (with hysteresis)
+_turnaround = False   # module state: executing a wrong-way turn-around
+_ta_fwd     = 0       # module state: forward-leg frames remaining
+_ta_jam     = 0       # module state: consecutive jammed frames while reversing
+
+
+def _reset_driver_state() -> None:
+    """Reset all module-level driving state (tests / new race)."""
+    global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam
+    global _target_lp
+    _stuck_frames = _reverse_frames = 0
+    _recovering = _turnaround = False
+    _ta_fwd = _ta_jam = 0
+    _target_lp = None
+
 
 def _recovery_steer(angle: float, tpos: float) -> float:
     """Steer command for backing out of a crash: de-rotate + drift to centre.
@@ -541,11 +728,80 @@ def _recovery_steer(angle: float, tpos: float) -> float:
     return clamp(-angle * 0.5 + tpos * 0.4, -0.6, 0.6)
 
 
-def _pursuit_target(track: list[float]) -> float:
+def _recovery_control(state: dict[str, Any]) -> str:
+    """Bring the car back to normal driving after an excursion.
+
+    Handles two situations the old code got wrong:
+      * off-track re-entry — the old steer aimed at the centre line while
+        ignoring the car's heading, so the car crossed the track sideways and
+        often shot straight off the opposite edge;
+      * facing the wrong way — there was NO wrong-way handling at all: a spun
+        car (|angle| > 90°) inside the track fell through to the normal branch,
+        whose sensors read -1, and calmly drove off in the reverse direction.
+    """
+    global _turnaround, _ta_fwd, _ta_jam
+
+    speed   = state.get("speed_x", 0.0)
+    speed_y = state.get("speed_y", 0.0) / 3.6
+    gear    = state.get("gear", 1)
+    angle   = state.get("angle", 0.0)
+    tpos    = clamp(state.get("track_pos", 0.0), -2.0, 2.0)
+    wheels  = state.get("wheel_spin_vel", [])
+
+    # --- wrong way: turn the car around (hysteresis: finish the manoeuvre) ---
+    if abs(angle) > _WRONG_WAY:
+        _turnaround = True
+    if _turnaround:
+        if abs(angle) < _TURNAROUND_EXIT:
+            _turnaround = False              # aligned — fall through to re-entry
+            _ta_fwd = _ta_jam = 0
+        elif speed > 15.0:
+            # Still rolling forward in the wrong direction — stop first.
+            _dbg["mode"] = "turn-stop"
+            return format_scr_control(accel=0.0, brake=0.8, gear=max(gear, 1),
+                                      steer=clamp(angle * 0.3, -1.0, 1.0))
+        elif _ta_fwd > 0:
+            # Forward leg of a three-point turn (the reverse leg was blocked).
+            _ta_fwd -= 1
+            _dbg["mode"] = "turn-fwd"
+            return format_scr_control(accel=0.4, brake=0.0, gear=1,
+                                      steer=clamp(angle, -1.0, 1.0))
+        else:
+            # Reverse leg: steering inverts in reverse, so -angle swings the
+            # nose toward the track direction while backing off the obstacle.
+            if abs(speed) < _TA_JAM_SPEED:
+                _ta_jam += 1
+                if _ta_jam >= _TA_JAM_FRAMES:    # blocked behind too → go forward
+                    _ta_jam = 0
+                    _ta_fwd = _TA_FWD_FRAMES
+            else:
+                _ta_jam = 0
+            _dbg["mode"] = "turn-rev"
+            return format_scr_control(accel=0.5, brake=0.0, gear=-1,
+                                      steer=clamp(-angle * 0.8 + tpos * 0.3, -1.0, 1.0))
+
+    # --- facing roughly the right way: drive back to the centre line ---
+    # Classic (angle − 0.5·track_pos) controller: heading and offset errors
+    # balance out so the car approaches the centre line at a shallow angle and
+    # straightens as it gets there — no sideways crossing, no overshoot.
+    steer = clamp(angle - tpos * 0.5 - speed_y * _STEER_DAMP, -1.0, 1.0)
+    if speed > _RECOVERY_MAX_KMH:
+        accel, brake = 0.0, 0.5      # too hot for grass/kerbs — shed speed first
+    else:
+        accel, brake = 0.5, 0.0
+    accel = _apply_tcl(accel, speed, wheels)   # grass has next to no grip
+    brake = _apply_abs(brake, speed, wheels)
+    fwd_gear = 1 if speed < 30.0 else _gear_from_speed(max(gear, 1), speed)
+    _dbg["mode"] = "re-entry"
+    return format_scr_control(accel=accel, brake=brake, gear=fwd_gear, steer=steer)
+
+
+def _pursuit_target(track: list[float]) -> float | None:
     """Pure-pursuit heading: the direction (radians, car frame, steer convention)
     the track extends furthest — a distance-weighted average of the beam angles,
-    longer beams dominating (``** _PP_POWER``).  0.0 (straight ahead) if no beams
-    are usable.  ``|return|`` doubles as the corner-sharpness measure."""
+    longer beams dominating (``** _PP_POWER``).  None if no beams are usable
+    (sensors read -1 off-track / facing backwards — do NOT trust them).
+    ``|return|`` doubles as the corner-sharpness measure."""
     num = den = 0.0
     for i in _PP_ARC:
         d = track[i] if i < len(track) else -1.0
@@ -554,7 +810,7 @@ def _pursuit_target(track: list[float]) -> float:
         w = d ** _PP_POWER
         num += _SENSOR_ANGLES_RAD[i] * w
         den += w
-    return num / den if den > 0.0 else 0.0
+    return num / den if den > 0.0 else None
 
 
 def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
@@ -568,12 +824,13 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     speed      = state.get("speed_x",      0.0)
     speed_y    = state.get("speed_y",      0.0) / 3.6   # SCR sends km/h → m/s for damping
     gear       = state.get("gear",           0)
+    rpm        = state.get("rpm",          0.0)
     angle      = state.get("angle",        0.0)
     tpos       = state.get("track_pos",    0.0)
     track      = state.get("track",         [])
     wheel_vels = state.get("wheel_spin_vel", [])
 
-    global _stuck_frames, _reverse_frames
+    global _stuck_frames, _reverse_frames, _recovering, _target_lp
 
     # --- stuck / crash recovery (works on OR off track, takes priority) ---
     # Once we've committed to a reverse burst, see it through; then resume normal
@@ -581,6 +838,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # crawl, which is the signature of having rammed a wall or another car.
     if _reverse_frames > 0:
         _reverse_frames -= 1
+        _dbg["mode"] = "burst"
         return format_scr_control(accel=0.5, brake=0.0, gear=-1,
                                   steer=_recovery_steer(angle, tpos))
     # "jammed" = crawling AND something is right in front, or we're pinned at the
@@ -595,76 +853,113 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     if _stuck_frames >= _STUCK_FRAMES:
         _stuck_frames   = 0
         _reverse_frames = _REVERSE_FRAMES
+        _dbg["mode"] = "burst"
         return format_scr_control(accel=0.5, brake=0.0, gear=-1,
                                   steer=_recovery_steer(angle, tpos))
 
-    # --- off-track recovery (before gear shifting so gear=-1 is never clobbered) ---
-    # Philosophy: out here we ease back on gently — never floor the throttle and
-    # never slam into reverse (that just spins the wheels / digs in).  Scrub off
-    # any speed, then crawl forward toward the centre line; only reverse when
-    # we're stopped AND pointing the wrong way (stuck against a barrier).  Full
-    # throttle resumes automatically once tpos is back inside ±1 (below).
-    if abs(tpos) > 1.0:
-        to_centre = clamp(-tpos, -1.0, 1.0)          # steer sign back to centre
-        if speed > 20.0:
-            # Carrying speed off-track — lift off, light brake, steer back gently.
-            recovery_steer = clamp(to_centre * 0.5 - speed_y * _STEER_DAMP, -1.0, 1.0)
-            return format_scr_control(accel=0.0, brake=0.3, gear=max(gear, 1), steer=recovery_steer)
-        if abs(angle) < math.pi / 2.0:
-            # Roughly facing along the track — crawl forward back onto it.
-            recovery_steer = clamp(to_centre * 0.6, -1.0, 1.0)
-            return format_scr_control(accel=0.30, brake=0.0, gear=1, steer=recovery_steer)
-        # Stopped/slow and facing away from the track — back out gently, steer
-        # inverted so the rear of the car tracks toward the centre line.
-        recovery_steer = clamp(-to_centre * 0.6, -1.0, 1.0)
-        return format_scr_control(accel=0.25, brake=0.0, gear=-1, steer=recovery_steer)
+    # --- recovery gate: off-track, wrong-way, or mid-manoeuvre ---
+    # Hysteresis: recovery starts only when genuinely off (kerb-riding at the
+    # apex stays with the racing controller) and hands control back once the
+    # car is well inside the track AND roughly aligned — otherwise the normal
+    # controller grabbed a car still crossing the edge at an angle and fired it
+    # straight across to the opposite side.  The |angle| > 90° check is the
+    # wrong-way detector: it also catches a car spun around INSIDE the track,
+    # which previously fell through here and drove off backwards.
+    if abs(tpos) > _RECOVER_ENTER_TPOS:
+        _recovering = True
+    elif abs(tpos) < _RECOVER_EXIT_TPOS and abs(angle) < _RECOVER_EXIT_ANGLE:
+        _recovering = False
+    if _recovering or _turnaround or abs(angle) > _WRONG_WAY:
+        return _recovery_control(state)
 
-    # --- gear (speed-based, from snakeoil.py) ---
-    gear = _gear_from_speed(gear, speed)
+    # --- gear (RPM-first, speed table as fallback) ---
+    gear = _gear_shift(gear, rpm, speed)
 
-    # --- steering: pure pursuit + edge barrier ---
+    # --- steering: pure pursuit + heading alignment + edge barrier ---
     #   pursuit : aim at the direction the track extends furthest (geometry, so
     #             it follows the road and self-centres softly, without snaking)
+    #   align   : angle·steer_gain — damps the lateral loop; see the comment at
+    #             _PP_GAIN for why this term (and only this term) stops the
+    #             pendulum weave down straights
     #   barrier : no centring in the middle band; only push back near the edge,
     #             so the car is free to use the track width (racing line)
     #   damping : small counter to a sideways slide (speed_y)
     pursuit = _pursuit_target(track)
+    if pursuit is None:
+        # Nominally on track yet no usable beams — sensor glitch.  Fall back to
+        # the angle/centre controller at a modest pace rather than flooring it
+        # blind with steer 0.
+        steer = clamp(angle - clamp(tpos, -2.0, 2.0) * 0.5 - speed_y * _STEER_DAMP, -1.0, 1.0)
+        accel = 0.4 if speed < 60.0 else 0.0
+        brake = 0.3 if speed > 80.0 else 0.0
+        _dbg["mode"] = "blind"
+        return format_scr_control(accel=accel, brake=brake, gear=gear, steer=steer)
+
     edge    = max(0.0, abs(tpos) - _EDGE_FREE)
     barrier = -math.copysign(edge * _EDGE_GAIN, tpos)
-    steer   = pursuit * _PP_GAIN + barrier - speed_y * _STEER_DAMP
+    aim     = math.copysign(max(0.0, abs(pursuit) - _PP_FREE), pursuit)
+    steer   = aim * _PP_GAIN + barrier - speed_y * _STEER_DAMP
     steer  /= (1.0 + max(speed, 0.0) * _STEER_SPEED_K)
+    # The alignment damper is deliberately OUTSIDE the speed attenuation: the
+    # lateral loop loses damping as speed rises (ζ ~ 1/√v) — that is exactly
+    # why the weave only ever appeared at high speed — so the one term that
+    # damps it must not be softened with speed like the path-following terms.
+    steer  += angle * params.steer_gain
     if abs(steer) < _STEER_DEADZONE:
         steer = 0.0
     steer = clamp(steer, -1.0, 1.0)
 
-    # --- corner speed limit: distance + sharpness ---
-    # Distance: median of the ±5° rays (one ray briefly catching the edge won't
-    # trigger phantom braking, but a real corner shortens the whole window).
-    # Sharpness: how far off straight-ahead the open road is (|pursuit|) — a 90°
-    # corner has a big angle and must be taken far slower than a gentle bend with
-    # the same sight distance.  This is what lets it slow down for a sharp corner
-    # in time instead of arriving too hot to turn.
-    fwd          = [track[i] for i in range(8, 11)] if len(track) >= 11 else []
-    fwd_dist     = sorted(fwd)[1] if len(fwd) == 3 else (min(fwd) if fwd else 100.0)
-    open_angle   = abs(pursuit)
-    if fwd_dist >= _STRAIGHT_CLEAR and open_angle < _STRAIGHT_ANGLE:
+    # --- corner speed limit: sight distance + sharpness ---
+    # Sight: the LONGEST of the ±10° beams.  The old ±5° median collapsed under
+    # a tiny heading misalignment on a dead straight — the 0° beam grazes the
+    # edge of the straight and reads ~100 m — which silently capped the car
+    # ~100 km/h under its potential (the "never full throttle" bug).  A near-
+    # forward beam aligned with the road keeps sight honest, while a real
+    # corner still shortens every beam in the window.
+    # Sharpness: how far off straight-ahead the open road is (|pursuit|), minus
+    # the free band that is just the off-centre pull.  A 90° corner has a big
+    # angle and must be taken far slower than a gentle bend with the same sight.
+    fwd        = [track[i] for i in range(7, 12) if i < len(track)]
+    sight      = max([d for d in fwd if d > 0.0], default=100.0)
+    open_angle = abs(pursuit)
+    if sight >= _STRAIGHT_CLEAR and open_angle < _STRAIGHT_ANGLE:
         # Clear AND straight ahead — run to the strategy's top speed.
         target_speed = params.max_speed
     else:
-        dist_limit   = math.sqrt(max(fwd_dist, 1.0) * params.speed_factor)
-        sharp_factor = 1.0 / (1.0 + _CORNER_SHARPNESS * open_angle)
-        target_speed = min(params.max_speed, dist_limit * sharp_factor)
+        sharp        = max(0.0, open_angle - _SHARP_FREE)
+        floor        = params.max_speed * _CORNER_FLOOR
+        dist_limit   = math.sqrt(floor * floor + max(sight, 1.0) * params.speed_factor)
+        target_speed = min(params.max_speed,
+                           dist_limit / (1.0 + _CORNER_SHARPNESS * sharp))
+
+    # Smooth the target: drops are instant (braking must never lag), rises are
+    # rate-limited so a flickering straight/corner classification can't strobe
+    # the pedals.
+    if _target_lp is None or target_speed < _target_lp:
+        _target_lp = target_speed
+    else:
+        _target_lp = min(target_speed, _target_lp + _TARGET_RISE)
+    target_speed = _target_lp
+    _dbg.update(sight=sight, open_angle=open_angle, target=target_speed, mode="race")
 
     # --- accel / brake ---
+    # Proportional throttle: full when well below the target, easing off inside
+    # _ACCEL_BAND so cruising at the cap is a steady partial throttle — the old
+    # bang-bang (full under / zero over) tapped the pedal all the way down a
+    # straight once the car reached its top speed.
     # Brake only past a small overspeed deadband, so a slightly twitchy target
     # doesn't tap the brake on a clear straight and bleed off speed.
     if speed <= target_speed * (1.0 + _BRAKE_DEADBAND):
-        accel = params.accel_limit if speed < target_speed else 0.0
+        accel = params.accel_limit * clamp((target_speed - speed) / _ACCEL_BAND, 0.0, 1.0)
         brake = 0.0
     else:
         excess = (speed - target_speed) / max(target_speed, 1.0)
         accel  = 0.0
-        brake  = clamp((excess - _BRAKE_DEADBAND) * params.brake_gain, 0.0, 1.0)
+        brake  = clamp((excess - _BRAKE_DEADBAND) * params.brake_gain * _BRAKE_RESPONSE,
+                       0.0, 1.0)
+        # Straight-line braking is strong; release it as the wheel turns so a
+        # mid-corner target drop can't snap the rear loose (trail-brake guard).
+        brake *= 1.0 - _BRAKE_STEER_CUT * min(abs(steer), 1.0)
 
     # ABS: prevent wheel lock-up under braking (snakeoil.py)
     brake = _apply_abs(brake, speed, wheel_vels)
@@ -894,10 +1189,10 @@ def run_bot(
 
     with ScrClient(host, port) as client:
         client.connect()
+        _reset_driver_state()   # fresh race — clear recovery / target-speed state
         print("Identified! Entering drive loop. Press Ctrl-C to stop.\n")
 
         step             = 0
-        last_ctrl        = format_scr_control()   # idle
         current_strategy = strategy               # updated by Granite each tick
 
         try:
@@ -909,8 +1204,12 @@ def run_bot(
                     break
 
                 if not state:
-                    # Recv timed out — TORCS reuses last control; we echo ours.
-                    client.send_control(last_ctrl)
+                    # Recv timed out — just keep waiting.  scr_server reuses
+                    # the previous controls on its own (scr_server.cpp:602);
+                    # re-sending here injects an EXTRA packet per timeout, the
+                    # server's queue then runs permanently behind, and the car
+                    # spends the first ~30 s of the race executing stale
+                    # launch-phase commands (the 1st↔2nd gear ghost-flap).
                     continue
 
                 # --- Step 7: Granite strategy update (non-blocking) ---
@@ -920,8 +1219,7 @@ def run_bot(
                 else:
                     current_strategy = safety_filter(strategy, state)
 
-                last_ctrl = compute_control(state, current_strategy)
-                client.send_control(last_ctrl)
+                client.send_control(compute_control(state, current_strategy))
                 step += 1
 
                 if verbose and step % 100 == 0:
@@ -929,10 +1227,20 @@ def run_bot(
                     gear  = state.get("gear",    0)
                     fuel  = state.get("fuel",    0.0)
                     tpos  = state.get("track_pos", 0.0)
+                    dmg   = state.get("damage",  0.0)
+                    rpm   = state.get("rpm",     0.0)
                     print(
                         f"  step={step:6d}  {speed:6.1f} km/h  "
                         f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}  "
-                        f"strategy={current_strategy}"
+                        f"strategy={current_strategy}  "
+                        f"tgt={_dbg.get('target', 0.0):5.1f}  "
+                        f"sight={_dbg.get('sight', 0.0):5.1f}  "
+                        f"open={_dbg.get('open_angle', 0.0):+.2f}  "
+                        f"rpm={rpm:5.0f}  dmg={dmg:5.0f}  "
+                        f"acc={_dbg.get('cmd_accel', 0.0):.2f}  "
+                        f"brk={_dbg.get('cmd_brake', 0.0):.2f}  "
+                        f"cgear={_dbg.get('cmd_gear', 0)}  "
+                        f"mode={_dbg.get('mode', '?')}"
                     )
 
         except KeyboardInterrupt:
@@ -1039,55 +1347,160 @@ def _run_tests() -> None:
     cs = {"speed_x": 80.0, "rpm": 5000.0, "gear": 3,
           "angle": 0.0, "track_pos": 0.0, "track": track_vals}
 
-    # clear straight at 80 km/h — each strategy should accelerate
-    # (corner_limit @ min_fwd=150: ATTACK=190, NORMAL=140, SAVE_FUEL=110, PIT=39)
+    # clear straight at 80 km/h — each strategy should accelerate at its limit
+    # (sight=180 ≥ _STRAIGHT_CLEAR and pursuit=0 → straight → strategy max_speed)
     cc_attack = compute_control(cs, ATTACK)
     assert "(accel 1.000)" in cc_attack,  f"FAIL ATTACK accel: {cc_attack}"
     assert "(brake 0.000)" in cc_attack,  f"FAIL ATTACK brake: {cc_attack}"
     print(f"compute_control ATTACK    ... OK  →  {cc_attack}")
 
     cc_normal = compute_control(cs, NORMAL)
-    assert "(accel 0.950)" in cc_normal,  f"FAIL NORMAL accel: {cc_normal}"
+    assert "(accel 1.000)" in cc_normal,  f"FAIL NORMAL accel (full throttle on a straight): {cc_normal}"
     print(f"compute_control NORMAL    ... OK  →  {cc_normal}")
 
     cc_save = compute_control(cs, SAVE_FUEL)
     assert "(accel 0.650)" in cc_save,    f"FAIL SAVE_FUEL accel: {cc_save}"
     print(f"compute_control SAVE_FUEL ... OK  →  {cc_save}")
 
-    # NORMAL over target speed → should brake
-    cs_fast = {**cs, "speed_x": 250.0}
+    # NORMAL arriving hot at a corner (short sight all around) → should brake
+    cs_fast = {**cs, "speed_x": 250.0, "track": [60.0] * 19}
     cc_over = compute_control(cs_fast, NORMAL)
     assert "(accel 0.000)" in cc_over, f"FAIL: over target should not accelerate: {cc_over}"
     assert "(brake 0.000)" not in cc_over, f"FAIL: over target should brake: {cc_over}"
     print(f"compute_control NORMAL over-speed ... OK  →  {cc_over}")
 
-    # off-track + still carrying speed → lift off, light brake, steer back gently
-    # speed=80 > 20: to_centre=clamp(-1.5,-1,1)=-1.0; steer=clamp(-1.0*0.5,-1,1)=-0.5
+    # off-track + still carrying speed → shed speed, steer back at a SHALLOW angle
+    # speed=80 > 55 cap: accel 0, brake 0.5; steer = clamp(angle − 0.5·tpos) = −0.75
+    _reset_driver_state()
     cs_offt = {**cs, "track_pos": 1.5}   # speed_x=80 in cs → still rolling
     cc_offt = compute_control(cs_offt, ATTACK)
     assert "(accel 0.000)" in cc_offt, f"FAIL off-track accel: {cc_offt}"
-    assert "(brake 0.300)" in cc_offt, f"FAIL off-track brake (gentle, not slam): {cc_offt}"
-    assert "(steer -0.500)" in cc_offt, f"FAIL off-track steer: {cc_offt}"
+    assert "(brake 0.500)" in cc_offt, f"FAIL off-track brake: {cc_offt}"
+    assert "(steer -0.750)" in cc_offt, f"FAIL off-track steer (angle−0.5·tpos): {cc_offt}"
     print(f"compute_control off-track (moving)  ... OK  →  {cc_offt}")
 
-    # off-track + slow + facing forward → gentle FORWARD crawl (no flooring, no reverse)
-    # speed=2 (<20), angle=0 (<pi/2): forward branch; steer=clamp(-1.0*0.6,-1,1)=-0.6
+    # hysteresis: back over the edge (|tpos|<1) but not yet well inside →
+    # STILL in recovery mode (gentle pace), not full pursuit throttle
+    cc_edge = compute_control({**cs, "track_pos": 0.95, "speed_x": 40.0}, ATTACK)
+    assert "(accel 0.500)" in cc_edge, f"FAIL edge hysteresis (should stay in recovery): {cc_edge}"
+    # well inside + aligned → recovery exits, normal driving resumes
+    cc_back = compute_control({**cs, "track_pos": 0.2, "speed_x": 40.0}, ATTACK)
+    assert "(accel 1.000)" in cc_back, f"FAIL recovery exit (should resume ATTACK): {cc_back}"
+    print("compute_control re-entry hysteresis  ... OK")
+
+    # apex kerb-ride (|tpos| just past 1) must NOT trigger recovery — the racing
+    # line legitimately clips the kerb; a recovery grab here yanked the car to
+    # the centre mid-corner and threw it off the outside (regression)
+    _reset_driver_state()
+    cc_apex = compute_control({**cs, "track_pos": 1.05, "speed_x": 120.0}, NORMAL)
+    assert "(gear -1)"     not in cc_apex, f"FAIL apex kerb-ride must not reverse: {cc_apex}"
+    assert "(accel 1.000)" in cc_apex, f"FAIL apex kerb-ride should keep racing: {cc_apex}"
+    print(f"compute_control apex kerb-ride (regression) ... OK  →  {cc_apex}")
+
+    # misaligned straight: the 0° beam grazes the edge of the straight (90 m)
+    # but a ±5-10° beam still runs the length of the road → must stay FULL
+    # throttle (regression: the ±5° median used to cap the car ~100 km/h low)
+    graze = [150.0] * 9 + [90.0, 200.0, 200.0] + [150.0] * 7
+    cc_graze = compute_control({**cs, "track": graze}, NORMAL)
+    assert "(accel 1.000)" in cc_graze, f"FAIL grazing straight must keep full throttle: {cc_graze}"
+    print(f"compute_control grazing straight (regression) ... OK  →  {cc_graze}")
+
+    # cruising AT the cap must be a steady partial throttle — the old bang-bang
+    # (full below target / zero above) tapped the pedal down the whole straight
+    _reset_driver_state()
+    cc_cruise = compute_control({**cs, "speed_x": 245.0, "gear": 6,
+                                 "track": [200.0] * 19}, NORMAL)
+    assert "(brake 0.000)" in cc_cruise, f"FAIL cruise must not brake: {cc_cruise}"
+    assert "(accel 0.333)" in cc_cruise, f"FAIL cruise throttle should be proportional: {cc_cruise}"
+    print(f"compute_control cruise at cap (regression) ... OK  →  {cc_cruise}")
+
+    # 150 km/h with 100 m of sight on a straight-ish road must KEEP PUSHING —
+    # the old zero-endpoint braking curve capped exactly this case at ~151 and
+    # lifted half a straight early (regression for the "tops out at 150" bug)
+    _reset_driver_state()
+    cc_mid = compute_control({**cs, "speed_x": 150.0, "gear": 5,
+                              "track": [100.0] * 19}, NORMAL)
+    assert "(accel 1.000)" in cc_mid, f"FAIL: 150 km/h @ 100 m sight must keep pushing: {cc_mid}"
+    assert "(brake 0.000)" in cc_mid, f"FAIL: 150 km/h @ 100 m sight must not brake: {cc_mid}"
+    print(f"compute_control mid-straight pace (regression) ... OK  →  {cc_mid}")
+
+    # weave damping: a heading offset on a straight must produce corrective
+    # steer from the angle-alignment term — this is the damping that stops the
+    # pendulum from building up (regression)
+    _reset_driver_state()
+    cc_align = compute_control({**cs, "angle": 0.10, "track": [200.0] * 19}, NORMAL)
+    assert "(steer 0.000)" not in cc_align and "(steer -" not in cc_align, \
+        f"FAIL: heading offset must produce positive corrective steer: {cc_align}"
+    print(f"compute_control heading alignment (regression) ... OK  →  {cc_align}")
+
+    # realistic ragged straight: front beam saturated, the ±5°/±10° beams read
+    # unevenly (edge grazing) — the small wandering aim must be ignored, full
+    # throttle held, wheel dead ahead (regression for the high-speed pendulum)
+    _reset_driver_state()
+    ragged = [15.0] * 7 + [90.0, 200.0, 200.0, 140.0, 52.0] + [15.0] * 7
+    cc_rag = compute_control({**cs, "track": ragged, "speed_x": 180.0}, NORMAL)
+    assert "(steer 0.000)" in cc_rag, f"FAIL: ragged straight must not pull sideways: {cc_rag}"
+    assert "(accel 1.000)" in cc_rag, f"FAIL: ragged straight must hold full throttle: {cc_rag}"
+    print(f"compute_control ragged straight (regression) ... OK  →  {cc_rag}")
+
+    # rpm-first gear shifting (the speed table short-shifted and killed pickup)
+    assert _gear_shift(3, 9000.0, 100.0) == 4, "FAIL: high rpm must upshift"
+    assert _gear_shift(3, 3000.0,  60.0) == 2, "FAIL: low rpm at low speed must downshift"
+    assert _gear_shift(3, 5000.0, 100.0) == 3, "FAIL: mid rpm holds gear"
+    # speed guard: a stale low-rpm reading at road speed the lower gear cannot
+    # carry must NOT downshift (the launch-strangling 1st↔2nd flap)
+    assert _gear_shift(2, 3400.0,  51.0) == 2, "FAIL: 51 km/h must not drop to 1st"
+    assert _gear_shift(3, 3000.0, 100.0) == 3, "FAIL: 100 km/h must not drop to 2nd"
+    assert _gear_shift(6, 9500.0, 300.0) == 6, "FAIL: no upshift past top gear"
+    assert _gear_shift(2,    0.0, 100.0) == 3, "FAIL: rpm missing → speed table"
+    assert _gear_shift(1, 8600.0,  66.0) == 2, "FAIL: past _RPM_UP must upshift"
+    assert _gear_shift(1, 8200.0,  66.0) == 1, "FAIL: below _RPM_UP must hold (no speed backstop)"
+    # anti-hunting: right after a 1→2 upshift the revs land ~4000-4800 and sag
+    # briefly — must HOLD 2nd, not bounce straight back down (this exact loop
+    # once pinned the car at 56 km/h churning gears for a whole race)
+    assert _gear_shift(2, 4045.0,  56.0) == 2, "FAIL: post-upshift revs must hold gear"
+    assert _gear_shift(2, 3800.0,  56.0) == 2, "FAIL: shift sag must not re-downshift"
+    print("_gear_shift (rpm-first + anti-hunt) ... OK")
+
+    # off-track + slow + facing forward → forward crawl in 1st, shallow-angle steer
+    _reset_driver_state()
     cs_crawl = {**cs, "track_pos": 1.5, "speed_x": 2.0, "angle": 0.0}
     cc_crawl = compute_control(cs_crawl, ATTACK)
     assert "(gear 1)"      in cc_crawl, f"FAIL crawl gear: {cc_crawl}"
-    assert "(accel 0.300)" in cc_crawl, f"FAIL crawl accel (gentle): {cc_crawl}"
+    assert "(accel 0.500)" in cc_crawl, f"FAIL crawl accel: {cc_crawl}"
     assert "(brake 0.000)" in cc_crawl, f"FAIL crawl brake: {cc_crawl}"
-    assert "(steer -0.600)" in cc_crawl, f"FAIL crawl steer: {cc_crawl}"
+    assert "(steer -0.750)" in cc_crawl, f"FAIL crawl steer (angle−0.5·tpos): {cc_crawl}"
     print(f"compute_control off-track (crawl fwd) ... OK  →  {cc_crawl}")
 
-    # off-track + stopped + facing AWAY from track → gentle reverse, steer inverted
-    # speed=0, angle=3.0 (>pi/2): reverse branch; steer=clamp(-(-1.0)*0.6,-1,1)=+0.6
+    # off-track + stopped + facing AWAY (angle 3.0 rad) → reverse-turn: back up
+    # with inverted steer so the nose swings toward the track direction
+    _reset_driver_state()
     cs_stuck = {**cs, "track_pos": 1.5, "speed_x": 0.0, "angle": 3.0}
     cc_stuck = compute_control(cs_stuck, ATTACK)
     assert "(gear -1)"     in cc_stuck, f"FAIL stuck gear: {cc_stuck}"
-    assert "(accel 0.250)" in cc_stuck, f"FAIL stuck accel (gentle reverse, not floored): {cc_stuck}"
-    assert "(steer 0.600)" in cc_stuck, f"FAIL stuck steer (should be inverted): {cc_stuck}"
-    print(f"compute_control off-track (stuck rev) ... OK  →  {cc_stuck}")
+    assert "(accel 0.500)" in cc_stuck, f"FAIL stuck accel: {cc_stuck}"
+    assert "(steer -1.000)" in cc_stuck, f"FAIL stuck steer (−angle·0.8+tpos·0.3): {cc_stuck}"
+    print(f"compute_control off-track (turn-around) ... OK  →  {cc_stuck}")
+
+    # WRONG WAY *inside* the track (spun car): must trigger the turn-around,
+    # not fall through to normal driving — the old code drove off backwards here.
+    _reset_driver_state()
+    wrong = {**cs, "track_pos": 0.0, "speed_x": 0.0, "angle": 3.0,
+             "track": [-1.0] * 19}   # sensors read -1 when facing backwards
+    cc_wrong = compute_control(wrong, NORMAL)
+    assert "(gear -1)" in cc_wrong, f"FAIL wrong-way on track must reverse-turn: {cc_wrong}"
+    # same but still rolling forward fast → brake to a stop before manoeuvring
+    cc_wf = compute_control({**wrong, "speed_x": 80.0}, NORMAL)
+    assert "(brake 0.800)" in cc_wf, f"FAIL wrong-way at speed must brake: {cc_wf}"
+    assert "(accel 0.000)" in cc_wf, f"FAIL wrong-way at speed must not accelerate: {cc_wf}"
+    print(f"compute_control wrong-way (regression) ... OK  →  {cc_wrong}")
+    _reset_driver_state()
+
+    # on-track but ALL beams unusable (sensor glitch) → angle/centre fallback,
+    # never floor it blind with steer 0
+    cc_blind = compute_control({**cs, "track": [-1.0] * 19}, ATTACK)
+    assert "(accel 1.000)" not in cc_blind, f"FAIL blind fallback must not floor it: {cc_blind}"
+    print("compute_control blind-sensor fallback ... OK")
 
     # gear selector must handle TOP gear without IndexError (regression):
     # once the car got fast enough to reach 6th, _DOWN_SPEED[6] used to crash,
@@ -1113,8 +1526,7 @@ def _run_tests() -> None:
 
     # stuck → reverse recovery: a sustained crawl must trigger a reverse burst
     # even ON track (tpos < 1) — old code only knew how to reverse off-track.
-    global _stuck_frames, _reverse_frames
-    _stuck_frames = _reverse_frames = 0
+    _reset_driver_state()
     wall = [150.0] * 9 + [2.0] + [150.0] * 9          # nose 2 m from a wall
     jammed = {**cs, "speed_x": 1.0, "gear": 1, "angle": 0.1, "track_pos": 0.2,
               "track": wall}
@@ -1125,14 +1537,14 @@ def _run_tests() -> None:
     assert "(accel 0.500)" in out, f"FAIL: reverse throttle: {out}"
     print(f"compute_control stuck → reverse (regression) ... OK  →  {out}")
     # a clear standing start (slow, but open road ahead) must NOT reverse
-    _stuck_frames = _reverse_frames = 0
+    _reset_driver_state()
     start = {**cs, "speed_x": 0.0, "gear": 1, "track_pos": 0.0}   # track[9]=180 clear
     out = ""
     for _ in range(_STUCK_FRAMES + 5):
         out = compute_control(start, NORMAL)
     assert "(gear -1)" not in out, f"FAIL: clear standing start wrongly reversed: {out}"
     print("compute_control clear start (no false reverse) ... OK")
-    _stuck_frames = _reverse_frames = 0
+    _reset_driver_state()
 
     # PIT + speed < 10 → meta=1
     cs_pit = {**cs, "speed_x": 5.0, "rpm": 800.0, "gear": 1}
