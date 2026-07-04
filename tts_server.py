@@ -24,6 +24,7 @@ Endpoints:
 
 import io
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +63,7 @@ pipelines = {}
 
 def load_model():
     global pipelines
+    import torch
     from kokoro import KPipeline
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
@@ -69,12 +71,17 @@ def load_model():
             "Run: python -c \"from huggingface_hub import hf_hub_download; "
             "hf_hub_download('hexgrad/Kokoro-82M', 'kokoro-v1_0.pth', local_dir='.')\""
         )
-    log.info(f"Loading Kokoro model from {MODEL_PATH} ...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        log.info(f"CUDA available -> using GPU ({torch.cuda.get_device_name(0)})")
+    else:
+        log.warning("CUDA not available -> falling back to CPU (synthesis will be much slower)")
+    log.info(f"Loading Kokoro model from {MODEL_PATH} on {device} ...")
     pipelines = {
-        "a": KPipeline(lang_code="a", model=str(MODEL_PATH)),
-        "b": KPipeline(lang_code="b", model=str(MODEL_PATH)),
+        "a": KPipeline(lang_code="a", model=str(MODEL_PATH), device=device),
+        "b": KPipeline(lang_code="b", model=str(MODEL_PATH), device=device),
     }
-    log.info("Kokoro model loaded.")
+    log.info(f"Kokoro model loaded on {device}.")
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -144,6 +151,7 @@ def synthesize(req: TTSRequest):
 
     log.info(f"TTS: voice={req.voice} speed={req.speed} volume={req.volume} chars={len(req.text)}")
 
+    start = time.perf_counter()
     try:
         lang_code = "b" if req.voice.startswith("b") else LANG_MAP.get(req.lang, "a")
         pipeline = pipelines.get(lang_code) or pipelines["a"]
@@ -159,6 +167,7 @@ def synthesize(req: TTSRequest):
     except Exception as e:
         log.error(f"Synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    log.info(f"TTS synthesis took {time.perf_counter() - start:.2f}s")
 
     buf = io.BytesIO()
     sf.write(buf, samples, SAMPLE_RATE, format="WAV", subtype="PCM_16")

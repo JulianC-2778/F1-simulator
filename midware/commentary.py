@@ -320,21 +320,26 @@ async def generate_commentary(
     # 6. 把 AI 回复存入历史
     ctx_mgr.add_assistant(reply)
 
-    # 7. 广播完成信号
-    await broadcast({
-        "type": "ai_done",
-        "content": reply,
-        "stats": ctx_mgr.stats(),
-    })
-
-    # 8. TTS
+    # 7. TTS — 先合成语音，再广播字幕，确保字幕和音频始终一起出现。
+    # 如果这期间被新事件取消（见 _auto_commentary_loop 的抢占逻辑），
+    # 这条解说会连字幕带音频一起被丢弃，不会出现"有字没声"的半吊子状态。
     audio = await call_tts(reply)
-    if audio:
+
+    # 8. 广播字幕 + 音频（一起提交，用 shield 保护不被取消打断）
+    async def _commit():
         await broadcast({
-            "type": "tts_audio",
-            "audio": base64.b64encode(audio).decode(),
-            "mime":  tts_config.get("mime") or "audio/wav",
+            "type": "ai_done",
+            "content": reply,
+            "stats": ctx_mgr.stats(),
         })
+        if audio:
+            await broadcast({
+                "type": "tts_audio",
+                "audio": base64.b64encode(audio).decode(),
+                "mime":  tts_config.get("mime") or "audio/wav",
+            })
+
+    await asyncio.shield(asyncio.create_task(_commit()))
 
     return reply
 
