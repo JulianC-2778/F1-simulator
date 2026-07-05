@@ -112,6 +112,68 @@
       </section>
 
       <section class="panel">
+        <h2>Text-to-Speech (Server)</h2>
+        <label class="check-row">
+          <input id="ttsEnabled" type="checkbox" />
+          Enable server-side TTS (audio comes from midware, not the browser)
+        </label>
+        <label>
+          Provider
+          <select id="ttsProvider">
+            <option value="kokoro">Kokoro</option>
+            <option value="custom_http">Custom HTTP</option>
+          </select>
+        </label>
+        <label>
+          Server URL
+          <input id="ttsUrl" type="text" spellcheck="false" placeholder="http://127.0.0.1:8881/tts" />
+        </label>
+        <label>
+          Voice
+          <input id="ttsVoice" type="text" spellcheck="false" placeholder="af_heart" />
+        </label>
+        <label>
+          Speed <span id="ttsSpeedValue">1.2</span>
+          <input id="ttsSpeed" type="range" min="0.5" max="2" step="0.1" />
+        </label>
+        <label>
+          Volume <span id="ttsVolumeValue">1.00</span>
+          <input id="ttsVolume" type="range" min="0" max="4" step="0.05" />
+        </label>
+        <div id="ttsCustomFields" class="split" hidden>
+          <label>
+            API Key
+            <input id="ttsApiKey" type="password" spellcheck="false" placeholder="Leave blank to keep saved key" />
+          </label>
+          <label>
+            Model
+            <input id="ttsModel" type="text" spellcheck="false" />
+          </label>
+          <label>
+            Response format
+            <select id="ttsResponseFormat">
+              <option value="audio_bytes">Raw audio bytes</option>
+              <option value="json_base64">JSON (base64 audio field)</option>
+            </select>
+          </label>
+          <label>
+            Audio field (JSON response only)
+            <input id="ttsResponseAudioField" type="text" spellcheck="false" placeholder="audio" />
+          </label>
+          <label>
+            MIME type
+            <input id="ttsMime" type="text" spellcheck="false" placeholder="audio/wav" />
+          </label>
+          <label>
+            Request body template
+            <textarea id="ttsRequestTemplate" rows="6" spellcheck="false"></textarea>
+          </label>
+        </div>
+        <button id="saveTts" type="button">Save TTS</button>
+        <p id="ttsNote" class="note"></p>
+      </section>
+
+      <section class="panel">
         <h2>Auto Commentary</h2>
         <label>
           Mode

@@ -5,7 +5,11 @@ const ids = [
   'contextTokens', 'contextTokensValue', 'responseTokens', 'responseTokensValue',
   'persona', 'saveContext', 'contextNote', 'voiceEnabled', 'voiceSelect',
   'voiceRate', 'voiceRateValue', 'voicePitch', 'voicePitchValue', 'voiceVolume',
-  'voiceVolumeValue', 'testVoice', 'saveVoice', 'voiceNote', 'autoMode',
+  'voiceVolumeValue', 'testVoice', 'saveVoice', 'voiceNote',
+  'ttsEnabled', 'ttsProvider', 'ttsUrl', 'ttsVoice', 'ttsSpeed', 'ttsSpeedValue',
+  'ttsVolume', 'ttsVolumeValue', 'ttsCustomFields', 'ttsApiKey', 'ttsModel',
+  'ttsResponseFormat', 'ttsResponseAudioField', 'ttsMime', 'ttsRequestTemplate',
+  'saveTts', 'ttsNote', 'autoMode',
   'baselineInterval', 'baselineIntervalValue', 'windowSeconds', 'windowSecondsValue',
   'eventCooldown', 'eventCooldownValue', 'dedupeSeconds', 'dedupeSecondsValue',
   'maxWords', 'maxWordsValue', 'saveAuto', 'autoNote', 'csvPath', 'rankingsPath',
@@ -94,11 +98,17 @@ function syncRangeLabels() {
   setRangeLabel(el.voiceRate, el.voiceRateValue, 1);
   setRangeLabel(el.voicePitch, el.voicePitchValue, 1);
   setRangeLabel(el.voiceVolume, el.voiceVolumeValue, 2);
+  setRangeLabel(el.ttsSpeed, el.ttsSpeedValue, 1);
+  setRangeLabel(el.ttsVolume, el.ttsVolumeValue, 2);
   setRangeLabel(el.baselineInterval, el.baselineIntervalValue);
   setRangeLabel(el.windowSeconds, el.windowSecondsValue);
   setRangeLabel(el.eventCooldown, el.eventCooldownValue, 1);
   setRangeLabel(el.dedupeSeconds, el.dedupeSecondsValue);
   setRangeLabel(el.maxWords, el.maxWordsValue);
+}
+
+function updateTtsProviderUI() {
+  el.ttsCustomFields.hidden = el.ttsProvider.value !== 'custom_http';
 }
 
 function populateVoiceSelect(selectedVoiceURI = '') {
@@ -165,6 +175,21 @@ async function loadBackendConfig() {
     el.responseTokens.value = config.context.max_response_tokens || 512;
     el.persona.value = config.context.commentator_persona || '';
 
+    const tts = config.tts || {};
+    el.ttsEnabled.checked = Boolean(tts.enabled);
+    el.ttsProvider.value = tts.provider || 'kokoro';
+    el.ttsUrl.value = tts.url || '';
+    el.ttsVoice.value = tts.voice || '';
+    el.ttsSpeed.value = tts.speed ?? 1.2;
+    el.ttsVolume.value = tts.volume ?? 1.0;
+    el.ttsApiKey.value = '';
+    el.ttsModel.value = tts.model || '';
+    el.ttsResponseFormat.value = tts.response_format || 'audio_bytes';
+    el.ttsResponseAudioField.value = tts.response_audio_field || '';
+    el.ttsMime.value = tts.mime || '';
+    el.ttsRequestTemplate.value = tts.request_template || '';
+    updateTtsProviderUI();
+
     el.autoMode.value = commentary.mode || (config.auto_interval > 0 ? 'interval' : 'off');
     el.baselineInterval.value = commentary.baseline_interval ?? config.auto_interval ?? 10;
     el.windowSeconds.value = commentary.window_seconds ?? 6;
@@ -175,6 +200,7 @@ async function loadBackendConfig() {
     syncRangeLabels();
     note(el.apiNote, 'Backend configuration loaded.');
     note(el.contextNote, 'Context configuration loaded.');
+    note(el.ttsNote, 'TTS configuration loaded.');
     note(el.autoNote, 'Auto commentary configuration loaded.');
   } catch (error) {
     el.backendStatus.textContent = `Cannot reach ${backendBase()}`;
@@ -215,6 +241,38 @@ async function saveApi() {
     note(el.apiNote, 'Model API saved.');
   } catch (error) {
     note(el.apiNote, error.message, false);
+  }
+}
+
+async function saveTts() {
+  try {
+    const payload = {
+      enabled: el.ttsEnabled.checked,
+      provider: el.ttsProvider.value,
+      url: el.ttsUrl.value.trim(),
+      voice: el.ttsVoice.value.trim(),
+      speed: Number(el.ttsSpeed.value),
+      volume: Number(el.ttsVolume.value),
+      model: el.ttsModel.value.trim(),
+      response_format: el.ttsResponseFormat.value,
+      response_audio_field: el.ttsResponseAudioField.value.trim(),
+      mime: el.ttsMime.value.trim(),
+      request_template: el.ttsRequestTemplate.value
+    };
+
+    if (el.ttsApiKey.value) {
+      payload.api_key = el.ttsApiKey.value;
+    }
+
+    await request('/api/config/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    el.ttsApiKey.value = '';
+    note(el.ttsNote, 'TTS settings saved.');
+  } catch (error) {
+    note(el.ttsNote, error.message, false);
   }
 }
 
@@ -343,6 +401,8 @@ async function init() {
   [el.voiceRate, () => setRangeLabel(el.voiceRate, el.voiceRateValue, 1)],
   [el.voicePitch, () => setRangeLabel(el.voicePitch, el.voicePitchValue, 1)],
   [el.voiceVolume, () => setRangeLabel(el.voiceVolume, el.voiceVolumeValue, 2)],
+  [el.ttsSpeed, () => setRangeLabel(el.ttsSpeed, el.ttsSpeedValue, 1)],
+  [el.ttsVolume, () => setRangeLabel(el.ttsVolume, el.ttsVolumeValue, 2)],
   [el.baselineInterval, () => setRangeLabel(el.baselineInterval, el.baselineIntervalValue)],
   [el.windowSeconds, () => setRangeLabel(el.windowSeconds, el.windowSecondsValue)],
   [el.eventCooldown, () => setRangeLabel(el.eventCooldown, el.eventCooldownValue, 1)],
@@ -354,6 +414,8 @@ el.reloadBackend.addEventListener('click', loadBackendConfig);
 el.saveOverlay.addEventListener('click', saveOverlaySettings);
 el.saveApi.addEventListener('click', saveApi);
 el.saveContext.addEventListener('click', saveContext);
+el.saveTts.addEventListener('click', saveTts);
+el.ttsProvider.addEventListener('change', updateTtsProviderUI);
 el.saveAuto.addEventListener('click', saveAuto);
 el.saveVoice.addEventListener('click', saveOverlaySettings);
 el.testVoice.addEventListener('click', speakTest);

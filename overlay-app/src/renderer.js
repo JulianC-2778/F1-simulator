@@ -32,7 +32,7 @@ function setCaption(text) {
 }
 
 function splitSentences(text) {
-  const parts = text.match(/[^.!?。！？]+[.!?。！？]+\s*/g);
+  const parts = text.match(/[^.!?,，。！？]+[.!?,，。！？]+\s*/g);
   return parts ? parts.map(s => s.trim()).filter(Boolean) : [text.trim()];
 }
 

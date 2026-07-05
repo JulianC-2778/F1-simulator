@@ -278,16 +278,30 @@ function speakNative(text, voiceSettings = {}, sender = null) {
   const proc = spawn('spd-say', args, { stdio: 'ignore', shell: true });
   speechProcess = proc;
 
-  const notifyEnded = () => {
+  // Only a clean exit (code 0) counts as "actually finished speaking". If
+  // spd-say errors out or exits non-zero (e.g. no speech-dispatcher backend
+  // configured), don't report success — that would make the renderer's
+  // sentence queue race ahead instantly instead of pacing at all. Falling
+  // through to the renderer's own timer-based fallback at least keeps each
+  // caption on screen for a plausible duration even when no audio can play.
+  const notifyEnded = (code) => {
     if (speechProcess === proc) {
       speechProcess = null;
     }
-    if (!proc.superseded) {
+    if (!proc.superseded && code === 0) {
       sender?.send('voice:speech-ended');
     }
   };
-  proc.on('error', notifyEnded);
-  proc.on('exit', notifyEnded);
+  proc.on('error', (err) => {
+    console.warn('spd-say failed to start:', err.message);
+    notifyEnded(-1);
+  });
+  proc.on('exit', (code) => {
+    if (code !== 0) {
+      console.warn(`spd-say exited with code ${code} (no speech-dispatcher backend? check "spd-say test" manually)`);
+    }
+    notifyEnded(code);
+  });
 
   return { ok: true };
 }
