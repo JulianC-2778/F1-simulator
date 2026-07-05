@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ UPSTREAM_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_UPSTREAM_TIMEOUT", "4
 OVERLAY_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_OVERLAY_TIMEOUT", "18.0"))
 OVERLAY_CACHE_LIMIT = int(os.getenv("TORCS_FEATURE2_OVERLAY_CACHE_LIMIT", "48"))
 OVERLAY_MAX_TOKENS = int(os.getenv("TORCS_FEATURE2_OVERLAY_MAX_TOKENS", "160"))
+LIVE_FRAME_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_LIVE_TIMEOUT_SECONDS", "5.0"))
 
 app = FastAPI(title="TORCS Feature 2 Standalone Service")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -130,6 +132,29 @@ async def _fetch_upstream_frames(seconds: float) -> list[dict[str, Any]]:
     return frames if isinstance(frames, list) else []
 
 
+def _frame_wall_time(frame: dict[str, Any]) -> float:
+    try:
+        return float(frame.get("_wall_time", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _latest_frame_age_seconds(frames: list[dict[str, Any]]) -> float | None:
+    latest_wall_time = max((_frame_wall_time(frame) for frame in frames), default=0.0)
+    if latest_wall_time <= 0.0:
+        return None
+    return max(0.0, time.time() - latest_wall_time)
+
+
+def _latest_session_id(frames: list[dict[str, Any]]) -> int | None:
+    if not frames:
+        return None
+    try:
+        return int(float(frames[-1].get("_session_id", 0)))
+    except (TypeError, ValueError):
+        return None
+
+
 async def _build_dashboard(window_seconds: float, history_seconds: float) -> dict[str, Any]:
     lookback_seconds = max(window_seconds, history_seconds)
     try:
@@ -143,11 +168,36 @@ async def _build_dashboard(window_seconds: float, history_seconds: float) -> dic
             upstream_ok=False,
         )
 
+    if not frames:
+        return empty_dashboard(
+            window_seconds,
+            history_seconds,
+            message="Waiting for a new telemetry session.",
+            session_state="waiting",
+        )
+
+    data_age_seconds = _latest_frame_age_seconds(frames)
+    session_id = _latest_session_id(frames)
+    if data_age_seconds is not None and data_age_seconds > LIVE_FRAME_TIMEOUT_SECONDS:
+        return empty_dashboard(
+            window_seconds,
+            history_seconds,
+            message=f"No active session. Last telemetry arrived {data_age_seconds:.1f} s ago. Start a new run to repopulate the dashboard.",
+            session_state="stale",
+            session_id=session_id,
+            data_age_seconds=round(data_age_seconds, 3),
+        )
+
     dashboard = build_dashboard_payload(
         frames,
         window_seconds=window_seconds,
         history_seconds=history_seconds,
     )
+    dashboard_status = dashboard.get("status") or {}
+    dashboard_status["session_id"] = session_id
+    dashboard_status["data_age_seconds"] = round(data_age_seconds or 0.0, 3)
+    dashboard_status["message"] = "Telemetry live."
+    dashboard["status"] = dashboard_status
 
     overlay_request = dashboard.pop("_overlay_request", None)
     overlay_cache_key = dashboard.pop("_overlay_cache_key", None)

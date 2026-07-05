@@ -27,6 +27,8 @@ MAIN_CSV_FIELDS = [
 ]
 
 RANK_CSV_FIELDS = ["sim_time", "car_index", "car_name", "race_pos", "laps", "dist_from_start"]
+SESSION_RESET_TIME_ROLLBACK_SECONDS = 2.0
+SESSION_RESET_DISTANCE_ROLLBACK_METERS = 100.0
 
 
 @dataclass
@@ -95,6 +97,20 @@ def telemetry_time(frame: dict[str, Any]) -> float:
         return 0.0
 
 
+def telemetry_distance(frame: dict[str, Any]) -> float:
+    try:
+        return float(frame.get("distRaced", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def telemetry_lap(frame: dict[str, Any]) -> int:
+    try:
+        return int(float(frame.get("lap", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 class TelemetryStore:
     def __init__(self, window_seconds: float = 30.0) -> None:
         self.window_seconds = window_seconds
@@ -102,20 +118,38 @@ class TelemetryStore:
         self._ranking_snapshots: deque[dict[str, Any]] = deque()
         self._latest_frame: dict[str, Any] | None = None
         self._latest_rankings: list[dict[str, Any]] | None = None
+        self._session_id = 1
         self._lock = threading.Lock()
 
     def push(self, telemetry: dict[str, Any] | None, rankings: list[dict[str, Any]] | None = None) -> None:
         if telemetry is None and not rankings:
             return
         with self._lock:
+            if telemetry and self._should_reset_session_locked(telemetry):
+                self._session_id += 1
+                self._frames.clear()
+                self._ranking_snapshots.clear()
+                self._latest_frame = None
+                self._latest_rankings = None
+
             latest_time = telemetry_time(telemetry) if telemetry else self._latest_sim_time_locked()
+            wall_time = time.time()
             if telemetry:
-                self._latest_frame = dict(telemetry)
-                self._frames.append(dict(telemetry))
+                stamped_frame = dict(telemetry)
+                stamped_frame["_wall_time"] = wall_time
+                stamped_frame["_session_id"] = self._session_id
+                self._latest_frame = stamped_frame
+                self._frames.append(stamped_frame)
             if rankings:
-                self._latest_rankings = [dict(item) for item in rankings]
+                stamped_rankings = [dict(item) for item in rankings]
+                self._latest_rankings = stamped_rankings
                 self._ranking_snapshots.append(
-                    {"sim_time": latest_time, "rankings": [dict(item) for item in rankings]}
+                    {
+                        "sim_time": latest_time,
+                        "rankings": stamped_rankings,
+                        "_wall_time": wall_time,
+                        "_session_id": self._session_id,
+                    }
                 )
             self._evict_locked(latest_time)
 
@@ -149,6 +183,30 @@ class TelemetryStore:
         if self._latest_frame:
             return telemetry_time(self._latest_frame)
         return 0.0
+
+    def _should_reset_session_locked(self, telemetry: dict[str, Any]) -> bool:
+        if self._latest_frame is None:
+            return False
+
+        previous_time = telemetry_time(self._latest_frame)
+        current_time = telemetry_time(telemetry)
+        if current_time + SESSION_RESET_TIME_ROLLBACK_SECONDS < previous_time:
+            return True
+
+        if current_time >= previous_time:
+            return False
+
+        previous_lap = telemetry_lap(self._latest_frame)
+        current_lap = telemetry_lap(telemetry)
+        if current_lap < previous_lap:
+            return True
+
+        previous_distance = telemetry_distance(self._latest_frame)
+        current_distance = telemetry_distance(telemetry)
+        if current_distance + SESSION_RESET_DISTANCE_ROLLBACK_METERS < previous_distance:
+            return True
+
+        return False
 
     def _evict_locked(self, latest_time: float) -> None:
         cutoff = latest_time - self.window_seconds
