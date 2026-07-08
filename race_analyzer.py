@@ -1,22 +1,9 @@
-
 #!/usr/bin/env python3
 """
 A module: convert raw TORCS telemetry into the agreed car_state contract.
 
-Input:
-    raw telemetry frame from TORCS / telemetry_common.py
-
-Output:
-    {
-        "speed": float,
-        "rpm": float,
-        "gear": int,
-        "track_pos": float,
-        "damage": float,
-        "fuel": float,
-        "lap_time": float,
-        "problems": [str, ...]
-    }
+This module keeps the original car_state interface unchanged, but makes
+the problems list shorter so the AI receives less text.
 """
 
 from __future__ import annotations
@@ -34,6 +21,8 @@ CAR_STATE_KEYS = (
     "lap_time",
     "problems",
 )
+
+MAX_PROBLEMS = 2
 
 
 def empty_car_state() -> dict[str, Any]:
@@ -96,12 +85,19 @@ def telemetry_to_car_state(raw: dict[str, Any]) -> dict[str, Any]:
         "fuel": _read_number(raw, "fuel"),
         "lap_time": _read_number(raw, "lap_time", "cur_lap_time", "curLapTime"),
     }
+
     state["problems"] = analyze_car_state(state)
     return validate_car_state(state)
 
 
 def analyze_car_state(state: dict[str, Any]) -> list[str]:
-    problems: list[str] = []
+    """
+    Return short English problem labels.
+
+    The list is sorted by severity and limited to MAX_PROBLEMS items.
+    This keeps the AI input shorter and helps reduce response latency.
+    """
+    candidates: list[tuple[int, str]] = []
 
     speed = float(state.get("speed", 0.0))
     rpm = float(state.get("rpm", 0.0))
@@ -111,27 +107,28 @@ def analyze_car_state(state: dict[str, Any]) -> list[str]:
     fuel = float(state.get("fuel", 0.0))
 
     if abs(track_pos) > 1.0:
-        problems.append("Car is off track -- get back on immediately.")
+        candidates.append((100, "off track"))
     elif abs(track_pos) > 0.8:
-        problems.append("Car is close to the edge -- ease off steering and move back toward the center line.")
-
-    if rpm > 8500:
-        problems.append("RPM too high -- shift up soon.")
-    elif rpm < 2500 and gear > 2:
-        problems.append("RPM too low -- current gear may be too high.")
-
-    if speed < 80 and gear > 3:
-        problems.append("Gear too high for this speed -- acceleration out of the corner may suffer.")
+        candidates.append((80, "near track edge"))
 
     if damage > 3000:
-        problems.append("Car has serious damage -- avoid further contact.")
+        candidates.append((90, "car damage high"))
     elif damage > 1500:
-        problems.append("Car has noticeable damage -- drive more conservatively.")
+        candidates.append((60, "car damage medium"))
 
     if 0 < fuel < 8:
-        problems.append("Fuel is low -- consider pitting or conserving fuel.")
+        candidates.append((85, "fuel low"))
 
-    if not problems:
-        problems.append("No issues detected.")
+    if rpm > 8500:
+        candidates.append((70, "rpm too high"))
+    elif rpm < 2500 and gear > 2:
+        candidates.append((50, "rpm too low"))
 
-    return problems
+    if speed < 80 and gear > 3:
+        candidates.append((45, "gear too high"))
+
+    if not candidates:
+        return ["normal"]
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [label for _, label in candidates[:MAX_PROBLEMS]]
