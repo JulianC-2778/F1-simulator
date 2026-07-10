@@ -742,8 +742,13 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
 # Step 6: Granite strategy caller
 # ---------------------------------------------------------------------------
 
-_STRATEGY_INTERVAL = 5.0   # seconds between Granite requests
-_GRANITE_TIMEOUT   = 4.0   # seconds to wait for a single LLM response
+_STRATEGY_INTERVAL = 5.0    # seconds between Granite requests — measured local
+                             # LM Studio round-trip is ~1.4-2.3s (granite-4.1-8b,
+                             # 985-char prompt, 80 max_tokens); 5s keeps ~2x
+                             # margin over the observed worst case while landing
+                             # in the ~0.1-1Hz strategy-refresh target.
+_GRANITE_TIMEOUT   = 10.0   # seconds to wait for a single LLM response — 4x+
+                             # margin over the 2.3s observed worst case.
 _GRANITE_MAX_TOK   = 80    # keep responses short and fast
 
 _SYSTEM_PROMPT = """\
