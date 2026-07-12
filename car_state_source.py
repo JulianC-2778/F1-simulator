@@ -1,20 +1,26 @@
-
 #!/usr/bin/env python3
 """
 Feature 1: car_state data sources.
 
 This file provides data sources for the chatbot side.
-The real telemetry conversion and problem detection are now owned by
-race_analyzer.py.
+
+A module responsibility:
+- race_analyzer.py converts raw TORCS telemetry into the agreed car_state format.
+- car_state_source.py only chooses where the data comes from.
+
+Supported sources:
+- FakeCarStateSource: demo data, no TORCS needed.
+- LiveCarStateSource: reads TORCS UDP telemetry directly.
+- HttpCarStateSource: reads telemetry from midware/commentary.py REST API.
 """
 
 from __future__ import annotations
 
 import itertools
+import json
 import time
 from typing import Any, Protocol
-
-import httpx
+from urllib import request
 
 from race_analyzer import (
     CAR_STATE_KEYS,
@@ -76,8 +82,11 @@ class FakeCarStateSource:
 class LiveCarStateSource:
     """Read live TORCS UDP telemetry and return the agreed car_state dict."""
 
-    def __init__(self, udp_port: int = 3101, retention_seconds: float = 30.0) -> None:
-        self._buffer = TelemetryBuffer(udp_port=udp_port, retention_seconds=retention_seconds)
+    def __init__(self, udp_port: int = 3101, retention_seconds: float = 3.0) -> None:
+        self._buffer = TelemetryBuffer(
+            udp_port=udp_port,
+            retention_seconds=retention_seconds,
+        )
         self._buffer.start_background()
 
     def is_ready(self) -> bool:
@@ -87,53 +96,73 @@ class LiveCarStateSource:
         frames = self._buffer.snapshot()
         if not frames:
             return empty_car_state()
+
         latest = frames[-1]
         return telemetry_to_car_state(latest)
 
 
 class HttpCarStateSource:
-    """Read live car_state via midware's REST API instead of binding UDP directly.
+    """
+    Read live telemetry from midware/commentary.py instead of binding UDP directly.
 
-    midware/commentary.py already listens on the TORCS human-driver UDP feed
-    (default port 3101) and caches the latest frame. Binding that same UDP
-    port a second time from this process fails with "Address already in
-    use" whenever midware is also running (e.g. to display replies in the
-    engineer overlay window) -- see Feature 2's standalone dashboard
-    (midware/feature2_service.py, docs/feature2-standalone-service.md) for
-    the same fix applied to Module 2. This class follows the same pattern:
-    poll midware's GET /api/telemetry endpoint over HTTP instead of opening
-    a second UDP listener, so this process and midware can run at the same
-    time without a port conflict. Requires midware/commentary.py to already
-    be running.
+    This avoids a port conflict when midware is already using UDP port 3101.
+    Expected endpoint:
+        GET http://127.0.0.1:8765/api/telemetry
+
+    Expected response shape:
+        {
+            "telemetry": {...},
+            "rankings": [...]
+        }
     """
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8765", timeout: float = 2.0) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
+    def __init__(self, base_url: str = "http://127.0.0.1:8765", timeout: float = 1.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
 
-    def _fetch_latest_frame(self) -> dict[str, Any]:
+    def _fetch_payload(self) -> dict[str, Any] | None:
+        url = f"{self.base_url}/api/telemetry"
+        req = request.Request(url, headers={"Accept": "application/json"}, method="GET")
+
         try:
-            response = httpx.get(f"{self._base_url}/api/telemetry", timeout=self._timeout)
-            response.raise_for_status()
-            frame = response.json().get("telemetry")
+            with request.urlopen(req, timeout=self.timeout) as response:
+                raw_text = response.read().decode("utf-8")
         except Exception:
-            return {}
-        return frame if isinstance(frame, dict) else {}
+            return None
+
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError:
+            return None
+
+        return payload if isinstance(payload, dict) else None
 
     def is_ready(self) -> bool:
-        return bool(self._fetch_latest_frame())
+        payload = self._fetch_payload()
+        if not payload:
+            return False
+
+        telemetry = payload.get("telemetry")
+        return isinstance(telemetry, dict) and bool(telemetry)
 
     def get_state(self) -> dict[str, Any]:
-        frame = self._fetch_latest_frame()
-        if not frame:
+        payload = self._fetch_payload()
+        if not payload:
             return empty_car_state()
-        return telemetry_to_car_state(frame)
+
+        telemetry = payload.get("telemetry")
+        if not isinstance(telemetry, dict) or not telemetry:
+            return empty_car_state()
+
+        return telemetry_to_car_state(telemetry)
 
 
-def wait_for_live_state(source: LiveCarStateSource, timeout: float = 5.0) -> bool:
+def wait_for_live_state(source: Any, timeout: float = 5.0) -> bool:
     deadline = time.time() + timeout
+
     while time.time() < deadline:
-        if source.is_ready():
+        if hasattr(source, "is_ready") and source.is_ready():
             return True
-        time.sleep(0.2)
+        time.sleep(0.05)
+
     return False
