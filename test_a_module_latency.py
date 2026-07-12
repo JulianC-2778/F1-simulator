@@ -42,7 +42,7 @@ def test_python_syntax() -> None:
         "car_state_source.py",
         "chat_engineer.py",
         "chat_engineer_gui.py",
-        "prompt_builder.py",
+        "midware/context_manager.py",
     ]
 
     for filename in files:
@@ -144,7 +144,7 @@ def test_prompt_input() -> None:
     print("[5] Checking prompt input to AI...")
 
     from race_analyzer import telemetry_to_car_state
-    from prompt_builder import build_messages
+    from midware.context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
 
     raw = {
         "speedX": 180,
@@ -157,7 +157,9 @@ def test_prompt_input() -> None:
     }
 
     state = telemetry_to_car_state(raw)
-    messages = build_messages(state, "What should I do now?")
+    ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
+    ctx_mgr.add_user(ctx_mgr.format_engineer_prompt(state, "What should I do now?"))
+    messages = ctx_mgr.build_messages()
     text = "\n".join(message["content"] for message in messages)
 
     check(len(messages) >= 2, "messages should contain system and user message")

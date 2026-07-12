@@ -11,11 +11,9 @@ import json
 import math
 import os
 import platform
-import socket
 import subprocess
 import tempfile
 import threading
-from collections import deque
 from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import Any
@@ -905,106 +903,6 @@ def speak_text(
         )
     except Exception:
         pass
-
-
-def parse_telemetry(csv_line: str) -> dict[str, Any] | None:
-    fields = csv_line.split(",")
-    if len(fields) < 91:
-        return None
-
-    has_z_column = len(fields) >= 92
-    opponent_start = 28 if has_z_column else 27
-    track_start = opponent_start + 36
-    wheel_start = track_start + 19
-    focus_start = wheel_start + 4
-
-    try:
-        frame = {
-            "seq": parse_int(fields[0]),
-            "sim_time": parse_float(fields[1]),
-            "player": parse_int(fields[2]),
-            "lap": parse_int(fields[3]),
-            "x": parse_float(fields[4]),
-            "y": parse_float(fields[5]),
-            "yaw": parse_float(fields[6]),
-            "accel_x": parse_float(fields[7]),
-            "accel_y": parse_float(fields[8]),
-            "steer": parse_float(fields[9]),
-            "throttle": parse_float(fields[10]),
-            "brake": parse_float(fields[11]),
-            "clutch": parse_float(fields[12]),
-            "angle": parse_float(fields[13]),
-            "cur_lap_time": parse_float(fields[14]),
-            "damage": parse_float(fields[15]),
-            "dist_from_start": parse_float(fields[16]),
-            "dist_raced": parse_float(fields[17]),
-            "fuel": parse_float(fields[18]),
-            "gear": parse_int(fields[19]),
-            "last_lap_time": parse_float(fields[20]),
-            "race_pos": parse_int(fields[21]),
-            "rpm": parse_float(fields[22]),
-            "speed_x": parse_float(fields[23]),
-            "speed_y": parse_float(fields[24]),
-            "speed_z": parse_float(fields[25]),
-            "track_pos": parse_float(fields[26]),
-            "z": parse_float(fields[27]) if has_z_column else 0.0,
-            "opponents": [parse_float(value, 200.0) for value in fields[opponent_start:track_start]],
-            "track": [parse_float(value, -1.0) for value in fields[track_start:wheel_start]],
-            "wheel_spin_vel": [parse_float(value) for value in fields[wheel_start:focus_start]],
-            "focus": [parse_float(value, -1.0) for value in fields[focus_start : focus_start + 5]],
-        }
-    except (IndexError, ValueError):
-        return None
-
-    if len(frame["opponents"]) != 36 or len(frame["track"]) != 19:
-        return None
-    return frame
-
-
-class TelemetryBuffer:
-    def __init__(self, udp_port: int, retention_seconds: float) -> None:
-        self.udp_port = udp_port
-        self.retention_seconds = retention_seconds
-        self.buffer: deque[dict[str, Any]] = deque()
-        self.lock = threading.Lock()
-        self.frame_count = 0
-        self._thread: threading.Thread | None = None
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("0.0.0.0", udp_port))
-        self.sock.settimeout(0.5)
-
-    def start_background(self) -> None:
-        if self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._collect_forever, daemon=True)
-        self._thread.start()
-
-    def _collect_forever(self) -> None:
-        print(f"[Collector] Listening UDP:{self.udp_port}")
-        while True:
-            try:
-                data, _ = self.sock.recvfrom(4096)
-                frame = parse_telemetry(data.decode("utf-8", errors="replace").strip())
-                if not frame:
-                    continue
-                with self.lock:
-                    self.buffer.append(frame)
-                    self.frame_count += 1
-                    cutoff = frame["sim_time"] - self.retention_seconds
-                    while self.buffer and self.buffer[0]["sim_time"] < cutoff:
-                        self.buffer.popleft()
-                    frame_count = self.frame_count
-                    buffer_size = len(self.buffer)
-                if frame_count % 100 == 0:
-                    print(f"[Collector] {frame_count} frames, buffer={buffer_size}")
-            except socket.timeout:
-                continue
-            except Exception as exc:
-                print(f"[Collector] Error: {exc}")
-
-    def snapshot(self) -> list[dict[str, Any]]:
-        with self.lock:
-            return list(self.buffer)
 
 
 def select_recent_frames(frames: list[dict[str, Any]], window_seconds: float) -> list[dict[str, Any]]:

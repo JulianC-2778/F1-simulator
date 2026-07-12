@@ -7,14 +7,23 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
 import time
+from pathlib import Path
 from typing import Any
+from urllib import request
 
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import config
+from midware.telemetry import TelemetryStore, start_udp_listener, to_common_frame
 from telemetry_common import (
     DEFAULT_MODEL_BASE_URL,
     DEFAULT_MODEL_NAME,
     LatestTaskRunner,
-    TelemetryBuffer,
     chat_completion_text,
     compact_opponent_profile,
     compact_track_profile,
@@ -30,8 +39,81 @@ from telemetry_common import (
 )
 
 
-UDP_PORT = int(os.getenv("TORCS_ANALYZER_UDP_PORT", "3101"))
+UDP_PORT = int(os.getenv("TORCS_ANALYZER_UDP_PORT", config.TELEMETRY_UDP_PORT))
 RETENTION_SECONDS = float(os.getenv("TORCS_ANALYZER_RETENTION_SECONDS", "180"))
+MIDWARE_BASE_URL = os.getenv("TORCS_ANALYZER_MIDWARE_URL", config.MIDWARE_BASE_URL)
+MIDWARE_POLL_INTERVAL = float(os.getenv("TORCS_ANALYZER_MIDWARE_POLL_INTERVAL", "0.4"))
+
+
+class MidwareBackedCollector:
+    """
+    Same .snapshot()/.start_background() interface the old telemetry_common.TelemetryBuffer
+    exposed, but backed by midware.telemetry's shared parser/store instead of a second,
+    independent UDP-parsing implementation.
+
+    On startup, probes the mainline commentary service's REST API. If it is reachable,
+    polls /api/telemetry/history over HTTP instead of binding UDP directly -- this avoids
+    the port conflict when midware/commentary.py is already running (see
+    docs/feature2-standalone-service.md for the same pattern applied to Module 2's
+    dashboard service). Falls back to binding UDP itself only when mainline isn't reachable,
+    so this script still works standalone.
+    """
+
+    def __init__(self, udp_port: int, retention_seconds: float, midware_base_url: str) -> None:
+        self._udp_port = udp_port
+        self._retention_seconds = retention_seconds
+        self._midware_base_url = midware_base_url.rstrip("/")
+        self._store: TelemetryStore | None = None
+        self._frames: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._mode = "udp"
+
+    def start_background(self) -> None:
+        if self._probe_mainline():
+            self._mode = "http"
+            print(f"[Collector] mainline commentary service detected at {self._midware_base_url}, polling via HTTP (no UDP bind).")
+            threading.Thread(target=self._poll_forever, daemon=True, name="analyzer-http-poll").start()
+            return
+
+        self._mode = "udp"
+        print(f"[Collector] mainline not reachable, listening UDP:{self._udp_port}")
+        self._store = TelemetryStore(window_seconds=self._retention_seconds)
+        start_udp_listener(self._store, port=self._udp_port)
+
+    def _probe_mainline(self) -> bool:
+        try:
+            req = request.Request(f"{self._midware_base_url}/api/telemetry", headers={"Accept": "application/json"})
+            with request.urlopen(req, timeout=1.0) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def _poll_forever(self) -> None:
+        last_sim_time = 0.0
+        while True:
+            try:
+                url = f"{self._midware_base_url}/api/telemetry/history?seconds={MIDWARE_POLL_INTERVAL * 5:.2f}"
+                req = request.Request(url, headers={"Accept": "application/json"})
+                with request.urlopen(req, timeout=2.0) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                new_frames = [to_common_frame(raw) for raw in payload.get("frames", [])]
+                with self._lock:
+                    for frame in new_frames:
+                        if frame["sim_time"] > last_sim_time:
+                            self._frames.append(frame)
+                            last_sim_time = frame["sim_time"]
+                    cutoff = last_sim_time - self._retention_seconds
+                    self._frames = [f for f in self._frames if f["sim_time"] >= cutoff]
+            except Exception as exc:
+                print(f"[Collector] HTTP poll error: {exc}")
+            time.sleep(MIDWARE_POLL_INTERVAL)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        if self._mode == "udp":
+            assert self._store is not None
+            return [to_common_frame(raw) for raw in self._store.recent_frames()]
+        with self._lock:
+            return list(self._frames)
 LIVE_INTERVAL = float(os.getenv("TORCS_ANALYZER_INTERVAL", "2.0"))
 LIVE_WINDOW = float(os.getenv("TORCS_ANALYZER_WINDOW_SECONDS", "5.0"))
 LOOP_INTERVAL = float(os.getenv("TORCS_ANALYZER_LOOP_INTERVAL", "0.4"))
@@ -770,7 +852,7 @@ def should_emit_text(history: dict[str, float], text: str, current_sim_time: flo
 
 
 def handle_completed_result(
-    collector: TelemetryBuffer,
+    collector: MidwareBackedCollector,
     history: dict[str, float],
     result: Any,
 ) -> None:
@@ -806,7 +888,11 @@ def main() -> None:
         base_url=MODEL_BASE_URL,
         requested_model=MODEL_NAME,
     )
-    collector = TelemetryBuffer(udp_port=UDP_PORT, retention_seconds=RETENTION_SECONDS)
+    collector = MidwareBackedCollector(
+        udp_port=UDP_PORT,
+        retention_seconds=RETENTION_SECONDS,
+        midware_base_url=MIDWARE_BASE_URL,
+    )
     collector.start_background()
 
     live_worker = LatestTaskRunner(lambda task: call_model(connection, task["payload"]), "live-analyzer")

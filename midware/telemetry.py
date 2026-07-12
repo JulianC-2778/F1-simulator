@@ -95,6 +95,63 @@ def telemetry_time(frame: dict[str, Any]) -> float:
         return 0.0
 
 
+def _common_float(frame: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(frame.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _common_int(frame: dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        return int(float(frame.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def to_common_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    """
+    Adapt a raw MAIN_CSV_FIELDS frame (camelCase, as produced by parse_car_row /
+    TelemetryStore) into the snake_case field names + list-shaped opponents/track/
+    wheel_spin_vel/focus that telemetry_common.py's analysis helpers (compact_track_profile,
+    compact_opponent_profile, summarize_frames, etc.) expect.
+    """
+    return {
+        "seq": _common_int(frame, "seq"),
+        "sim_time": _common_float(frame, "sim_time"),
+        "player": _common_int(frame, "player"),
+        "lap": _common_int(frame, "lap"),
+        "x": _common_float(frame, "x"),
+        "y": _common_float(frame, "y"),
+        "yaw": _common_float(frame, "yaw"),
+        "accel_x": _common_float(frame, "accel_x"),
+        "accel_y": _common_float(frame, "accel_y"),
+        "steer": _common_float(frame, "steer"),
+        "throttle": _common_float(frame, "throttle"),
+        "brake": _common_float(frame, "brake"),
+        "clutch": _common_float(frame, "clutch"),
+        "angle": _common_float(frame, "angle"),
+        "cur_lap_time": _common_float(frame, "curLapTime"),
+        "damage": _common_float(frame, "damage"),
+        "dist_from_start": _common_float(frame, "distFromStart"),
+        "dist_raced": _common_float(frame, "distRaced"),
+        "fuel": _common_float(frame, "fuel"),
+        "gear": _common_int(frame, "gear"),
+        "last_lap_time": _common_float(frame, "lastLapTime"),
+        "race_pos": _common_int(frame, "racePos"),
+        "rpm": _common_float(frame, "rpm"),
+        "speed_x": _common_float(frame, "speedX"),
+        "speed_y": _common_float(frame, "speedY"),
+        "speed_z": _common_float(frame, "speedZ"),
+        "track_pos": _common_float(frame, "trackPos"),
+        "z": _common_float(frame, "z"),
+        "opponents": [_common_float(frame, f"opponent_{i}", 200.0) for i in range(36)],
+        "track": [_common_float(frame, f"track_{i}", -1.0) for i in range(19)],
+        "wheel_spin_vel": [_common_float(frame, f"wheelSpinVel_{i}") for i in range(4)],
+        "focus": [_common_float(frame, f"focus_{i}", -1.0) for i in range(5)],
+    }
+
+
 class TelemetryStore:
     def __init__(self, window_seconds: float = 30.0) -> None:
         self.window_seconds = window_seconds

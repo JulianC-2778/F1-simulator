@@ -7,7 +7,7 @@ All new AI features should use this path:
 ```text
 AI feature
   -> midware display broadcast
-  -> WebSocket ws://127.0.0.1:8765/ws
+  -> WebSocket ws://127.0.0.1:8880/ws
   -> overlay-app
 ```
 
@@ -37,7 +37,7 @@ It does not apply to developer-only logs, debug traces, unit-test output, or bac
 - Model/API settings UI that talks to `midware`.
 - User-facing HUD presentation.
 
-`overlay-app` currently ships two floating windows, both connected to the same `ws://127.0.0.1:8765/ws` endpoint and the same shared connection/voice settings, but each only displaying messages routed to it (see "Multiple Overlay Windows" below):
+`overlay-app` currently ships two floating windows, both connected to the same `ws://127.0.0.1:8880/ws` endpoint and the same shared connection/voice settings, but each only displaying messages routed to it (see "Multiple Overlay Windows" below):
 
 | Window | Loads | Shows messages where |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ This means a feature should not stand up its own ad-hoc window *outside* `overla
 The standard endpoint is:
 
 ```text
-ws://127.0.0.1:8765/ws
+ws://127.0.0.1:8880/ws
 ```
 
 `midware/commentary.py` currently exposes this endpoint and keeps track of connected clients.

@@ -2,21 +2,24 @@
 """
 Feature 1 (AI Racing Engineer Chatbot): desktop GUI version.
 
-Same car_state -> prompt_builder -> Granite pipeline as chat_engineer.py,
-but with a Tkinter chat window (live status panel + scrollable chat
-history + input box) instead of a raw terminal loop. Meant to run as a
-floating window next to (or on top of) the TORCS game window during a
-demo, instead of alt-tabbing to a terminal.
+Same car_state -> midware.context_manager -> Granite pipeline as
+chat_engineer.py, but with a Tkinter chat window (live status panel +
+scrollable chat history + input box) instead of a raw terminal loop. Meant
+to run as a floating window next to (or on top of) the TORCS game window
+during a demo, instead of alt-tabbing to a terminal.
 
 Run:
     python3 chat_engineer_gui.py
+
+Same midware-first, UDP-fallback car_state source selection as chat_engineer.py.
 
 Env vars: same as chat_engineer.py --
     TORCS_ENGINEER_BASE_URL          - Granite/LM Studio endpoint
     TORCS_ENGINEER_MODEL             - model id override
     TORCS_ENGINEER_USE_FAKE_DATA     - "true" to force demo data instead of live telemetry
-    TORCS_ENGINEER_UDP_PORT          - live telemetry UDP port (default 3101)
-    TORCS_ENGINEER_HISTORY_TURNS     - how many past Q&A turns to keep as context (default 3)
+    TORCS_ENGINEER_UDP_PORT          - live telemetry UDP port, used only as a fallback
+                                          when midware isn't reachable (default 3101)
+    TORCS_ENGINEER_MIDWARE_URL       - midware base URL to probe first (default http://127.0.0.1:8880)
 plus one new one:
     TORCS_ENGINEER_REFRESH_MS        - status panel refresh interval in ms (default 500)
 """
@@ -25,26 +28,34 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import scrolledtext
 from typing import Any
 
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import config
 import granite_client
 import overlay_broadcast
-import prompt_builder
 from car_state_source import (
     CarStateSource,
     FakeCarStateSource,
+    HttpCarStateSource,
     LiveCarStateSource,
     wait_for_live_state,
 )
+from midware.context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
 from telemetry_common import env_flag
 
 
 USE_FAKE_DATA = env_flag("TORCS_ENGINEER_USE_FAKE_DATA", False)
-UDP_PORT = int(os.getenv("TORCS_ENGINEER_UDP_PORT", "3101"))
-HISTORY_TURNS = int(os.getenv("TORCS_ENGINEER_HISTORY_TURNS", "3"))
+MIDWARE_BASE_URL = os.getenv("TORCS_ENGINEER_MIDWARE_URL", config.MIDWARE_BASE_URL)
+UDP_PORT = int(os.getenv("TORCS_ENGINEER_UDP_PORT", config.TELEMETRY_UDP_PORT))
 REFRESH_MS = int(os.getenv("TORCS_ENGINEER_REFRESH_MS", "500"))
 
 # (car_state key, display label, format string)
@@ -65,6 +76,17 @@ def choose_car_state_source() -> CarStateSource:
         print("[ChatEngineerGUI] TORCS_ENGINEER_USE_FAKE_DATA=true -> using demo car_state data.")
         return FakeCarStateSource()
 
+    # Probe midware's REST API first -- avoids the "Address already in use"
+    # port conflict when midware (needed for the overlay window) is already
+    # running. Only falls back to binding UDP directly if midware isn't
+    # reachable, so this script still works standalone.
+    midware_source = HttpCarStateSource(base_url=MIDWARE_BASE_URL)
+    print(f"[ChatEngineerGUI] Probing midware at {MIDWARE_BASE_URL} for live telemetry (no UDP bind)...")
+    if wait_for_live_state(midware_source, timeout=2.0):
+        print("[ChatEngineerGUI] Live telemetry detected via midware, using real car_state data.")
+        return midware_source
+
+    print(f"[ChatEngineerGUI] midware not reachable at {MIDWARE_BASE_URL} (or no telemetry yet); falling back to UDP.")
     live = LiveCarStateSource(udp_port=UDP_PORT)
     print(f"[ChatEngineerGUI] Waiting up to 5s for live telemetry on UDP:{UDP_PORT} ...")
     if wait_for_live_state(live, timeout=5.0):
@@ -79,13 +101,6 @@ def choose_car_state_source() -> CarStateSource:
     return FakeCarStateSource()
 
 
-def trim_history(history: list[dict[str, str]], turns: int) -> list[dict[str, str]]:
-    max_messages = turns * 2
-    if len(history) <= max_messages:
-        return history
-    return history[-max_messages:]
-
-
 class ChatEngineerApp:
     """Tkinter chat window: status panel + chat log + input bar.
 
@@ -98,9 +113,9 @@ class ChatEngineerApp:
         self.root = root
         self.connection = connection
         self.car_state_source = car_state_source
-        self.history: list[dict[str, str]] = []
+        self.ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
         self.latest_car_state: dict[str, Any] = {}
-        self.result_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self.result_queue: "queue.Queue[str]" = queue.Queue()
         self.pending = False
 
         root.title("TORCS AI 赛车工程师")
@@ -189,13 +204,14 @@ class ChatEngineerApp:
         self._append_chat("user", f"玩家：{question}")
 
         car_state = dict(self.latest_car_state) if self.latest_car_state else self.car_state_source.get_state()
-        messages = prompt_builder.build_messages(car_state, question, history=self.history)
+        self.ctx_mgr.add_user(self.ctx_mgr.format_engineer_prompt(car_state, question))
+        messages = self.ctx_mgr.build_messages()
 
         self.pending = True
         self.send_button.configure(state="disabled", text="等待回答...")
-        threading.Thread(target=self._ask_worker, args=(question, messages), daemon=True).start()
+        threading.Thread(target=self._ask_worker, args=(messages,), daemon=True).start()
 
-    def _ask_worker(self, question: str, messages: list[dict[str, str]]) -> None:
+    def _ask_worker(self, messages: list[dict[str, str]]) -> None:
         """Runs on a background thread. Only touches the thread-safe queue,
         never the Tkinter widgets directly. Also best-effort broadcasts the
         reply to the shared overlay display layer (see overlay_broadcast.py
@@ -209,16 +225,14 @@ class ChatEngineerApp:
             overlay_broadcast.broadcast_engineer_error(str(exc))
         else:
             overlay_broadcast.broadcast_engineer_reply(answer)
-        self.result_queue.put((question, answer))
+        self.result_queue.put(answer)
 
     def _poll_results(self) -> None:
         try:
             while True:
-                question, answer = self.result_queue.get_nowait()
+                answer = self.result_queue.get_nowait()
                 self._append_chat("assistant", f"AI工程师：{answer}")
-                self.history.append({"role": "user", "content": question})
-                self.history.append({"role": "assistant", "content": answer})
-                self.history[:] = trim_history(self.history, HISTORY_TURNS)
+                self.ctx_mgr.add_assistant(answer)
                 self.pending = False
                 self.send_button.configure(state="normal", text="发送")
         except queue.Empty:

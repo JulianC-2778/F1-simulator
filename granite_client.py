@@ -5,8 +5,7 @@ Feature 1 (AI Racing Engineer Chatbot): Granite / LM Studio connection.
 Thin wrapper around the shared model-connection helpers in
 telemetry_common.py so Feature 1 follows the same
 "TORCS data -> Python middleware -> Granite endpoint -> text" pattern
-already used by Feature 2 (telemetry_analyzer.py) and Feature 3
-(race_commentator.py).
+already used by Feature 2 (telemetry_analyzer.py).
 """
 
 from __future__ import annotations

@@ -18,6 +18,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import config  # noqa: E402
 from midware.feature2_core import build_dashboard_payload, empty_dashboard, overlay_prompt, pending_overlay, truncate_text  # noqa: E402
 from telemetry_common import chat_completion_text, connect_openai_compatible_model, extract_json_object  # noqa: E402
 
@@ -28,8 +29,8 @@ log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-COMMENTARY_BASE_URL = os.getenv("TORCS_FEATURE2_COMMENTARY_URL", "http://127.0.0.1:8765").rstrip("/")
-FEATURE2_PORT = int(os.getenv("TORCS_FEATURE2_PORT", "8766"))
+COMMENTARY_BASE_URL = os.getenv("TORCS_FEATURE2_COMMENTARY_URL", config.MIDWARE_BASE_URL).rstrip("/")
+FEATURE2_PORT = int(os.getenv("TORCS_FEATURE2_PORT", config.FEATURE2_PORT))
 DEFAULT_WINDOW_SECONDS = float(os.getenv("TORCS_FEATURE2_WINDOW_SECONDS", "6.0"))
 DEFAULT_HISTORY_SECONDS = float(os.getenv("TORCS_FEATURE2_HISTORY_SECONDS", "16.0"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_UPSTREAM_TIMEOUT", "4.0"))

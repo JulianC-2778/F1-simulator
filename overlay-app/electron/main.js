@@ -8,9 +8,26 @@ let engineerWindow;
 let settingsWindow;
 let speechProcess;
 
+// Shared with the Python side via ../../config.json (repo root) -- this is
+// the same file config.py reads, so the mainline commentary service's host
+// and port only need to be edited in one place instead of drifting out of
+// sync between the Electron overlay and the Python backend (see the 8765
+// vs 8880 port mismatch this project hit before this file existed).
+function readSharedConfig() {
+  const defaults = { midware_host: '127.0.0.1', midware_port: 8880 };
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, '..', '..', 'config.json'), 'utf8');
+    return { ...defaults, ...JSON.parse(raw) };
+  } catch {
+    return defaults;
+  }
+}
+
+const sharedConfig = readSharedConfig();
+
 const defaultSettings = {
   connection: {
-    wsUrl: 'ws://127.0.0.1:8880/ws',
+    wsUrl: `ws://${sharedConfig.midware_host}:${sharedConfig.midware_port}/ws`,
     reconnectDelayMs: 3000,
     pingIntervalMs: 15000
   },

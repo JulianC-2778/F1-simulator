@@ -10,6 +10,7 @@ from telemetry_common import (
     select_recent_frames,
     summarize_frames,
 )
+from midware.telemetry import to_common_frame
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -45,43 +46,6 @@ def mean(values: list[float]) -> float:
 
 def safe_min(values: list[float], default: float = 0.0) -> float:
     return min(values) if values else default
-
-
-def midware_frame_to_common(frame: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "seq": safe_int(frame.get("seq")),
-        "sim_time": safe_float(frame.get("sim_time")),
-        "player": safe_int(frame.get("player")),
-        "lap": safe_int(frame.get("lap")),
-        "x": safe_float(frame.get("x")),
-        "y": safe_float(frame.get("y")),
-        "yaw": safe_float(frame.get("yaw")),
-        "accel_x": safe_float(frame.get("accel_x")),
-        "accel_y": safe_float(frame.get("accel_y")),
-        "steer": safe_float(frame.get("steer")),
-        "throttle": safe_float(frame.get("throttle")),
-        "brake": safe_float(frame.get("brake")),
-        "clutch": safe_float(frame.get("clutch")),
-        "angle": safe_float(frame.get("angle")),
-        "cur_lap_time": safe_float(frame.get("curLapTime")),
-        "damage": safe_float(frame.get("damage")),
-        "dist_from_start": safe_float(frame.get("distFromStart")),
-        "dist_raced": safe_float(frame.get("distRaced")),
-        "fuel": safe_float(frame.get("fuel")),
-        "gear": safe_int(frame.get("gear")),
-        "last_lap_time": safe_float(frame.get("lastLapTime")),
-        "race_pos": safe_int(frame.get("racePos")),
-        "rpm": safe_float(frame.get("rpm")),
-        "speed_x": safe_float(frame.get("speedX")),
-        "speed_y": safe_float(frame.get("speedY")),
-        "speed_z": safe_float(frame.get("speedZ")),
-        "track_pos": safe_float(frame.get("trackPos")),
-        "z": safe_float(frame.get("z")),
-        "opponents": [safe_float(frame.get(f"opponent_{i}"), 200.0) for i in range(36)],
-        "track": [safe_float(frame.get(f"track_{i}"), -1.0) for i in range(19)],
-        "wheel_spin_vel": [safe_float(frame.get(f"wheelSpinVel_{i}")) for i in range(4)],
-        "focus": [safe_float(frame.get(f"focus_{i}"), -1.0) for i in range(5)],
-    }
 
 
 def compact_live_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -332,7 +296,7 @@ def build_dashboard_payload(
     if not raw_frames:
         return empty_dashboard(window_seconds, history_seconds)
 
-    common_frames = [midware_frame_to_common(frame) for frame in raw_frames]
+    common_frames = [to_common_frame(frame) for frame in raw_frames]
     if not common_frames:
         return empty_dashboard(window_seconds, history_seconds)
 

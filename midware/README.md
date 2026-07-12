@@ -23,7 +23,7 @@ TORCS UDP :3101
   -> commentary.py + static/index.html / static/index2.html
      FastAPI 服务、REST API、WebSocket 流式输出和网页配置界面
   -> ../overlay-app
-     Electron 桌面悬浮字幕 HUD，连接 ws://127.0.0.1:8765/ws
+     Electron 桌面悬浮字幕 HUD，连接 ws://127.0.0.1:8880/ws
 ```
 
 已支持的自动解说事件：
@@ -241,13 +241,13 @@ python commentary.py --ui voice
 服务启动后访问：
 
 ```text
-http://localhost:8765
+http://localhost:8880
 ```
 
 WebSocket 解说流地址：
 
 ```text
-ws://127.0.0.1:8765/ws
+ws://127.0.0.1:8880/ws
 ```
 
 `overlay-app` 默认连接这个地址。
@@ -313,7 +313,7 @@ curl http://172.24.160.1:1234/v1/models
 检查 midware：
 
 ```bash
-curl http://localhost:8765/api/config
+curl http://localhost:8880/api/config
 ```
 
 检查 overlay 文件和 JavaScript 语法：
@@ -335,7 +335,7 @@ overlay-app/TESTING.md
 
 这是推荐的第一步，用来确认网页、midware、WebSocket、overlay 和 LM Studio 已经连通。
 
-1. 打开 `http://localhost:8765`。
+1. 打开 `http://localhost:8880`。
 2. 左侧 `AI API 配置` 填好 LM Studio 地址、模型和 API Key。
 3. 点击 `保存 API 配置`。
 4. 左侧 `数据源` 点击 `注入演示数据`。
@@ -358,7 +358,7 @@ overlay-app/TESTING.md
 - `Base URL` 是否为可 curl 通的地址。
 - 模型 id 是否和 `/v1/models` 返回的 `id` 完全一致。
 - API Key 是否非空。
-- Overlay 是否连接到 `ws://127.0.0.1:8765/ws`。
+- Overlay 是否连接到 `ws://127.0.0.1:8880/ws`。
 
 ## 七、自动解说测试
 
@@ -417,7 +417,7 @@ TORCS
   -> commentary_engine.py
   -> LM Studio
   -> Web UI
-  -> WebSocket ws://127.0.0.1:8765/ws
+  -> WebSocket ws://127.0.0.1:8880/ws
   -> Electron overlay-app
 ```
 
@@ -425,7 +425,7 @@ TORCS
 
 1. 启动 LM Studio Local Server。
 2. 启动 `midware`：`cd ~/test/torcs-1.3.7/midware && source .venv/bin/activate && python commentary.py`。
-3. 打开 `http://localhost:8765` 保存 AI 配置，并应用自动解说配置。
+3. 打开 `http://localhost:8880` 保存 AI 配置，并应用自动解说配置。
 4. 启动 overlay：`cd ~/test/torcs-1.3.7/overlay-app && npm start`。
 5. 使用上面的环境变量启动 `./BUILD/bin/torcs`。
 6. 在 TORCS 中进入比赛并驾驶。
@@ -435,7 +435,7 @@ TORCS
 保存 AI 配置：
 
 ```bash
-curl -X POST http://localhost:8765/api/config/api \
+curl -X POST http://localhost:8880/api/config/api \
   -H 'Content-Type: application/json' \
   -d '{
     "provider": "openai",
@@ -450,7 +450,7 @@ curl -X POST http://localhost:8765/api/config/api \
 注入演示遥测：
 
 ```bash
-curl -X POST http://localhost:8765/api/telemetry/push \
+curl -X POST http://localhost:8880/api/telemetry/push \
   -H 'Content-Type: application/json' \
   -d '{
     "telemetry": {
@@ -485,7 +485,7 @@ curl -X POST http://localhost:8765/api/telemetry/push \
 手动触发解说：
 
 ```bash
-curl -X POST http://localhost:8765/api/commentary/manual \
+curl -X POST http://localhost:8880/api/commentary/manual \
   -H 'Content-Type: application/json' \
   -d '{"prompt": null}'
 ```
@@ -493,19 +493,19 @@ curl -X POST http://localhost:8765/api/commentary/manual \
 读取最新遥测：
 
 ```bash
-curl http://localhost:8765/api/telemetry
+curl http://localhost:8880/api/telemetry
 ```
 
 读取最近事件：
 
 ```bash
-curl http://localhost:8765/api/events/recent
+curl http://localhost:8880/api/events/recent
 ```
 
 更新自动解说配置：
 
 ```bash
-curl -X POST http://localhost:8765/api/commentary/config \
+curl -X POST http://localhost:8880/api/commentary/config \
   -H 'Content-Type: application/json' \
   -d '{
     "mode": "hybrid",
@@ -550,16 +550,16 @@ export TORCS_PLAYER_UDP_PORT=3101
 
 ### 4. Overlay 显示 `Connection lost`
 
-确认 `midware/commentary.py` 正在运行，并且端口是 `8765`：
+确认 `midware/commentary.py` 正在运行，并且端口是 `8880`：
 
 ```bash
-curl http://localhost:8765/api/config
+curl http://localhost:8880/api/config
 ```
 
 如果网页能打开但 overlay 仍断开，确认 `overlay-app/src/renderer.js` 中的地址是：
 
 ```text
-ws://127.0.0.1:8765/ws
+ws://127.0.0.1:8880/ws
 ```
 
 ### 5. Overlay 安装时报 UNC 路径错误

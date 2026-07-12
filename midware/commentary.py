@@ -17,6 +17,7 @@ import base64
 import csv
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import config
 from commentary_engine import CommentaryConfig, CommentaryEngine
 from context_manager import ContextConfig, ContextManager
 from telemetry import TelemetryStore, start_udp_listener
@@ -55,7 +61,7 @@ api_config: dict[str, Any] = {
 tts_config: dict[str, Any] = {
     "enabled": False,
     "provider": "kokoro",
-    "url":     "http://localhost:8881/tts",
+    "url":     f"{config.TTS_BASE_URL}/tts",
     "api_key": "",
     "model":   "",
     "voice":   "af_heart",
@@ -656,15 +662,15 @@ async def startup():
     # 启动 UDP 监听线程
     start_udp_listener(
         telemetry_store,
-        port=3101,
+        port=config.TELEMETRY_UDP_PORT,
         on_error=lambda exc: log.error(f"UDP 监听器错误: {exc}"),
     )
-    log.info("UDP 监听器启动 0.0.0.0:3101")
+    log.info(f"UDP 监听器启动 0.0.0.0:{config.TELEMETRY_UDP_PORT}")
 
     # 启动自动解说循环
     global _auto_task
     _auto_task = asyncio.create_task(_auto_commentary_loop())
-    log.info("服务启动完成 → http://localhost:8880")
+    log.info(f"服务启动完成 → {config.MIDWARE_BASE_URL}")
 
 
 # ---------------------------------------------------------------------------
@@ -679,4 +685,4 @@ if __name__ == "__main__":
     UI_FILE = "index2.html" if args.ui == "voice" else "index.html"
     log.info(f"界面模式: {args.ui} → {UI_FILE}")
 
-    uvicorn.run(app, host="0.0.0.0", port=8880, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=config.MIDWARE_PORT, reload=False)

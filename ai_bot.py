@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import config
+
 try:
     from telemetry_common import (
         clamp, parse_float, parse_int,
@@ -230,7 +232,7 @@ class ScrClient:
                 client.send_control(format_scr_control(...))
     """
 
-    def __init__(self, host: str = "localhost", port: int = 3001) -> None:
+    def __init__(self, host: str = "localhost", port: int = config.SCR_UDP_PORT) -> None:
         self._addr = (host, port)
         self._sock: socket.socket | None = None
         self._done = False
@@ -1234,7 +1236,7 @@ class GraniteStrategist:
 
 def run_bot(
     host:       str   = "localhost",
-    port:       int   = 3001,
+    port:       int   = config.SCR_UDP_PORT,
     strategy:   str   = NORMAL,
     *,
     use_granite: bool = False,

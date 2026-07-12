@@ -18,10 +18,18 @@ from __future__ import annotations
 
 import itertools
 import json
+import sys
 import time
+from pathlib import Path
 from typing import Any, Protocol
 from urllib import request
 
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import config
+from midware.telemetry import TelemetryStore, start_udp_listener
 from race_analyzer import (
     CAR_STATE_KEYS,
     analyze_car_state,
@@ -29,7 +37,6 @@ from race_analyzer import (
     telemetry_to_car_state,
     validate_car_state,
 )
-from telemetry_common import TelemetryBuffer
 
 
 class CarStateSource(Protocol):
@@ -80,34 +87,37 @@ class FakeCarStateSource:
 
 
 class LiveCarStateSource:
-    """Read live TORCS UDP telemetry and return the agreed car_state dict."""
+    """
+    Read live TORCS UDP telemetry and return the agreed car_state dict.
 
-    def __init__(self, udp_port: int = 3101, retention_seconds: float = 3.0) -> None:
-        self._buffer = TelemetryBuffer(
-            udp_port=udp_port,
-            retention_seconds=retention_seconds,
-        )
-        self._buffer.start_background()
+    Uses midware.telemetry's shared parser/store (the same one midware/commentary.py
+    uses) instead of a second, independent UDP-parsing implementation. Frames come
+    back in midware's raw camelCase field names; telemetry_to_car_state() already
+    accepts both that and the snake_case style, so no extra conversion is needed here.
+    """
+
+    def __init__(self, udp_port: int = config.TELEMETRY_UDP_PORT, retention_seconds: float = 3.0) -> None:
+        self._store = TelemetryStore(window_seconds=retention_seconds)
+        start_udp_listener(self._store, port=udp_port)
 
     def is_ready(self) -> bool:
-        return len(self._buffer.snapshot()) > 0
+        return self._store.has_telemetry()
 
     def get_state(self) -> dict[str, Any]:
-        frames = self._buffer.snapshot()
-        if not frames:
+        frame, _rankings = self._store.latest()
+        if not frame:
             return empty_car_state()
 
-        latest = frames[-1]
-        return telemetry_to_car_state(latest)
+        return telemetry_to_car_state(frame)
 
 
 class HttpCarStateSource:
     """
     Read live telemetry from midware/commentary.py instead of binding UDP directly.
 
-    This avoids a port conflict when midware is already using UDP port 3101.
+    This avoids a port conflict when midware is already using the telemetry UDP port.
     Expected endpoint:
-        GET http://127.0.0.1:8765/api/telemetry
+        GET {base_url}/api/telemetry
 
     Expected response shape:
         {
@@ -116,7 +126,7 @@ class HttpCarStateSource:
         }
     """
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8765", timeout: float = 1.0) -> None:
+    def __init__(self, base_url: str = config.MIDWARE_BASE_URL, timeout: float = 1.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
