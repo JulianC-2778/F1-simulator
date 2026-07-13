@@ -18,6 +18,7 @@ import csv
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +29,23 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+MIDWARE_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+if str(MIDWARE_DIR) not in sys.path:
+    sys.path.insert(0, str(MIDWARE_DIR))
 
 import config
 from commentary_engine import CommentaryConfig, CommentaryEngine
-from context_manager import ContextConfig, ContextManager
+from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
+from midware.shared.feature_registry import feature_specs
+from midware.shared.model_gateway import OpenAICompatibleGateway
+from midware.shared.model_scheduler import MODEL_PRIORITIES, default_model_scheduler
+from midware.shared.output_bus import normalize_outbound_message
+from midware.shared.race_snapshot import build_race_snapshot
+from midware.shared.runtime_manager import FeatureRuntimeManager
+from midware.feature2_core import build_dashboard_payload
+from race_analyzer import empty_car_state, telemetry_to_car_state
 from telemetry import TelemetryStore, start_udp_listener
 
 # ---------------------------------------------------------------------------
@@ -82,6 +94,7 @@ tts_config: dict[str, Any] = {
 # -- Context 配置 --
 ctx_cfg   = ContextConfig()
 ctx_mgr   = ContextManager(ctx_cfg)
+engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
 
 # -- 遥测数据缓存（UDP 线程写入，主线程读） --
 telemetry_store = TelemetryStore(window_seconds=30.0)
@@ -103,6 +116,15 @@ commentary_engine = CommentaryEngine(
 _auto_task: asyncio.Task | None = None
 _commentary_task: asyncio.Task | None = None
 _commentary_priority: int = 0
+runtime_manager = FeatureRuntimeManager(feature_specs())
+bot_status: dict[str, Any] = {
+    "connected": False,
+    "strategy": "",
+    "last_control": {},
+    "fallback": False,
+    "error": "",
+    "updated_at": None,
+}
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -117,6 +139,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # ---------------------------------------------------------------------------
 
 async def broadcast(msg: dict):
+    msg = normalize_outbound_message(msg)
     dead = set()
     for ws in ws_clients:
         try:
@@ -223,41 +246,60 @@ async def call_ai(messages: list[dict]) -> str:
     temp     = api_config["temperature"]
     do_stream = api_config["stream"]
 
-    headers = {"Content-Type": "application/json"}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
+    gateway = OpenAICompatibleGateway(
+        base_url=base_url,
+        api_key=key,
+        model=model,
+        temperature=temp,
+        max_tokens=ctx_cfg.max_response_tokens,
+        stream=do_stream,
+        timeout=60,
+    )
 
-    payload = {
-        "model": model,
-        "max_tokens": ctx_cfg.max_response_tokens,
-        "temperature": temp,
-        "messages": messages,
-        "stream": do_stream,
-    }
-    url = f"{base_url}/chat/completions"
+    async def on_token(token: str) -> None:
+        await broadcast({"type": "token", "text": token, "source": "commentary"})
 
-    full_text = ""
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        if do_stream:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    raise RuntimeError(f"API {resp.status_code}: {body.decode()[:300]}")
-                async for line in resp.aiter_lines():
-                    token = _extract_stream_token(line)
-                    if token:
-                        full_text += token
-                        await broadcast({"type": "token", "text": token})
-        else:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code != 200:
-                raise RuntimeError(f"API {resp.status_code}: {resp.text[:300]}")
-            data = resp.json()
-            full_text = data["choices"][0]["message"]["content"]
-            await broadcast({"type": "token", "text": full_text})
-
+    full_text = await default_model_scheduler.run(
+        lambda: gateway.chat(messages, on_token=on_token if do_stream else None),
+        task="commentary",
+        priority=MODEL_PRIORITIES["commentary"],
+        timeout=75,
+    )
+    if not do_stream:
+        await broadcast({"type": "token", "text": full_text, "source": "commentary"})
     return full_text
+
+
+async def call_model_for_feature(
+    messages: list[dict[str, Any]],
+    *,
+    source: str,
+    task: str,
+    priority: int,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    stream: bool = False,
+    timeout: float = 45,
+) -> str:
+    gateway = OpenAICompatibleGateway(
+        base_url=str(api_config["base_url"]).rstrip("/"),
+        api_key=str(api_config.get("api_key") or ""),
+        model=str(api_config.get("model") or "gpt-4o-mini"),
+        temperature=float(api_config["temperature"] if temperature is None else temperature),
+        max_tokens=int(ctx_cfg.max_response_tokens if max_tokens is None else max_tokens),
+        stream=stream,
+        timeout=timeout,
+    )
+
+    async def on_token(token: str) -> None:
+        await broadcast({"type": "token", "text": token, "source": source})
+
+    return await default_model_scheduler.run(
+        lambda: gateway.chat(messages, on_token=on_token if stream else None),
+        task=task,
+        priority=priority,
+        timeout=timeout + 15,
+    )
 
 
 def _extract_stream_token(line: str) -> str:
@@ -441,6 +483,67 @@ async def get_config():
     }
 
 
+@app.get("/api/features")
+async def get_features():
+    return {
+        "features": runtime_manager.features(),
+        "combination": runtime_manager.combination(),
+    }
+
+
+@app.get("/api/features/status")
+async def get_features_status():
+    _refresh_runtime_status()
+    return {"features": runtime_manager.status(), "combination": runtime_manager.combination()}
+
+
+@app.post("/api/features/enabled")
+async def update_enabled_features(body: dict):
+    try:
+        enabled = body.get("enabled", [])
+        if not isinstance(enabled, list):
+            raise ValueError("enabled must be a list of feature names")
+        runtime_manager.set_enabled([str(name) for name in enabled])
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    _refresh_runtime_status()
+    await broadcast({"type": "config_updated", "section": "features", "source": "system"})
+    return {"ok": True, "features": runtime_manager.status(), "combination": runtime_manager.combination()}
+
+
+@app.get("/api/health")
+async def get_health():
+    telemetry, rankings = telemetry_store.latest()
+    telemetry_status = telemetry_store.status()
+    _refresh_runtime_status()
+    scheduler = default_model_scheduler.status()
+    has_telemetry = telemetry is not None
+    return {
+        "ok": has_telemetry and scheduler["failed"] == 0,
+        "midware": True,
+        "telemetry": {
+            "ok": has_telemetry,
+            "port": config.TELEMETRY_UDP_PORT,
+            "status": telemetry_status,
+            "snapshot": build_race_snapshot(telemetry, rankings),
+        },
+        "model": {
+            "base_url": api_config.get("base_url"),
+            "model": api_config.get("model"),
+            "scheduler": scheduler,
+        },
+        "tts": {
+            "enabled": bool(tts_config.get("enabled")),
+            "url": tts_config.get("url"),
+        },
+        "overlay": {
+            "ws_clients": len(ws_clients),
+        },
+        "features": runtime_manager.status(),
+        "combination": runtime_manager.combination(),
+    }
+
+
 @app.post("/api/config/tts")
 async def update_tts_config(body: dict):
     for k in (
@@ -535,9 +638,124 @@ async def get_telemetry():
     return {"telemetry": telemetry, "rankings": rankings}
 
 
+@app.get("/api/race/snapshot")
+async def get_race_snapshot():
+    telemetry, rankings = telemetry_store.latest()
+    return {"snapshot": build_race_snapshot(telemetry, rankings)}
+
+
 @app.get("/api/telemetry/history")
 async def get_telemetry_history(seconds: float | None = None):
-    return {"frames": telemetry_store.recent_frames(seconds), "rankings": telemetry_store.recent_rankings(seconds)}
+    return {
+        "frames": telemetry_store.recent_frames(seconds),
+        "rankings": telemetry_store.recent_rankings(seconds),
+        "status": telemetry_store.status(),
+    }
+
+
+@app.get("/api/coach/dashboard")
+async def get_coach_dashboard(window_seconds: float = 6.0, history_seconds: float = 16.0):
+    frames = telemetry_store.recent_frames(max(window_seconds, history_seconds))
+    return build_dashboard_payload(
+        frames,
+        window_seconds=window_seconds,
+        history_seconds=history_seconds,
+    )
+
+
+@app.post("/api/engineer/ask")
+async def ask_engineer(body: dict):
+    question = str(body.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"ok": False, "error": "question is required"}, status_code=400)
+
+    supplied_state = body.get("car_state")
+    if isinstance(supplied_state, dict) and supplied_state:
+        car_state = supplied_state
+    else:
+        telemetry, _rankings = telemetry_store.latest()
+        car_state = telemetry_to_car_state(telemetry) if telemetry else empty_car_state()
+
+    engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
+    messages = engineer_ctx_mgr.build_messages()
+    await broadcast({"type": "ai_start", "source": "engineer"})
+    try:
+        answer = await call_model_for_feature(
+            messages,
+            source="engineer",
+            task="engineer",
+            priority=MODEL_PRIORITIES["engineer"],
+            temperature=0.4,
+            max_tokens=180,
+            stream=False,
+            timeout=45,
+        )
+    except Exception as exc:
+        await broadcast({"type": "error", "source": "engineer", "message": str(exc)})
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+    engineer_ctx_mgr.add_assistant(answer)
+    await broadcast({"type": "ai_done", "source": "engineer", "content": answer})
+    return {
+        "ok": True,
+        "answer": answer,
+        "car_state": car_state,
+        "stats": engineer_ctx_mgr.stats(),
+    }
+
+
+@app.get("/api/engineer/history")
+async def get_engineer_history():
+    return {
+        "messages": [
+            {
+                "role": message.role,
+                "content": message.content,
+                "tokens": message.tokens,
+                "pinned": message.pinned,
+            }
+            for message in engineer_ctx_mgr.history
+        ],
+        "stats": engineer_ctx_mgr.stats(),
+    }
+
+
+@app.post("/api/engineer/clear")
+async def clear_engineer_history():
+    engineer_ctx_mgr.clear_history()
+    return {"ok": True, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.get("/api/bot/status")
+async def get_bot_status():
+    return {"status": bot_status}
+
+
+@app.post("/api/bot/status")
+async def update_bot_status(body: dict):
+    allowed = {
+        "connected",
+        "strategy",
+        "speed",
+        "gear",
+        "last_control",
+        "fallback",
+        "error",
+        "details",
+    }
+    for key in allowed:
+        if key in body:
+            bot_status[key] = body[key]
+    bot_status["updated_at"] = round(time.time(), 3)
+    await broadcast({
+        "type": "message",
+        "source": "bot",
+        "level": "error" if bot_status.get("error") else "info",
+        "title": "Bot Status",
+        "content": str(bot_status.get("error") or bot_status.get("strategy") or "Bot status updated"),
+        "payload": {"status": bot_status},
+    })
+    return {"ok": True, "status": bot_status}
 
 
 @app.post("/api/telemetry/push")
@@ -609,7 +827,64 @@ def _try_float(v: str):
 
 @app.get("/api/stats")
 async def get_stats():
-    return ctx_mgr.stats()
+    stats = ctx_mgr.stats()
+    stats["model_scheduler"] = default_model_scheduler.status()
+    return stats
+
+
+def _refresh_runtime_status() -> None:
+    has_telemetry = telemetry_store.has_telemetry()
+    commentary_running = bool(_commentary_task and not _commentary_task.done())
+    runtime_manager.update(
+        "commentary",
+        lifecycle="running" if commentary_engine.config.mode != "off" else "stopped",
+        running=commentary_engine.config.mode != "off",
+        healthy=True,
+        details={
+            "mode": commentary_engine.config.mode,
+            "has_telemetry": has_telemetry,
+            "active_generation": commentary_running,
+            "ws_clients": len(ws_clients),
+            "tts_enabled": bool(tts_config.get("enabled")),
+        },
+    )
+    runtime_manager.update(
+        "engineer",
+        lifecycle="running",
+        running=True,
+        healthy=True,
+        details={
+            "integration": "api_and_legacy_cli_gui",
+            "api": "/api/engineer/ask",
+            "model_base_url": api_config.get("base_url", ""),
+            "model": api_config.get("model", ""),
+            "history_messages": len(engineer_ctx_mgr.history),
+        },
+    )
+    runtime_manager.update(
+        "coach",
+        lifecycle="running" if has_telemetry else "degraded",
+        running=has_telemetry,
+        healthy=has_telemetry,
+        last_error="" if has_telemetry else "No telemetry frames available yet.",
+        details={
+            "api": "/api/coach/dashboard",
+            "legacy_api": "/api/feature2/dashboard on the standalone service",
+        },
+    )
+    runtime_manager.update(
+        "bot",
+        lifecycle="running" if bot_status.get("connected") else "stopped",
+        running=bool(bot_status.get("connected")),
+        healthy=not bool(bot_status.get("error")),
+        last_error=str(bot_status.get("error") or ""),
+        details={
+            "integration": "status_adapter",
+            "api": "/api/bot/status",
+            "strategy": bot_status.get("strategy", ""),
+            "updated_at": bot_status.get("updated_at"),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +900,7 @@ async def websocket_endpoint(ws: WebSocket):
         # 发送初始状态
         await ws.send_json({
             "type": "connected",
+            "source": "system",
             "stats": ctx_mgr.stats(),
             "has_telemetry": telemetry_store.has_telemetry(),
         })
@@ -646,6 +922,7 @@ async def websocket_endpoint(ws: WebSocket):
                 "token",
                 "ai_done",
                 "error",
+                "message",
             }:
                 await broadcast(parsed)
     except WebSocketDisconnect:

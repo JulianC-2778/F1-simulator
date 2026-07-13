@@ -34,9 +34,10 @@ FEATURE2_PORT = int(os.getenv("TORCS_FEATURE2_PORT", config.FEATURE2_PORT))
 DEFAULT_WINDOW_SECONDS = float(os.getenv("TORCS_FEATURE2_WINDOW_SECONDS", "6.0"))
 DEFAULT_HISTORY_SECONDS = float(os.getenv("TORCS_FEATURE2_HISTORY_SECONDS", "16.0"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_UPSTREAM_TIMEOUT", "4.0"))
-OVERLAY_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_OVERLAY_TIMEOUT", "18.0"))
+OVERLAY_TIMEOUT_SECONDS = float(os.getenv("TORCS_FEATURE2_OVERLAY_TIMEOUT", "60.0"))
+OVERLAY_ERROR_RETRY_SECONDS = float(os.getenv("TORCS_FEATURE2_OVERLAY_ERROR_RETRY_SECONDS", "20.0"))
 OVERLAY_CACHE_LIMIT = int(os.getenv("TORCS_FEATURE2_OVERLAY_CACHE_LIMIT", "48"))
-OVERLAY_MAX_TOKENS = int(os.getenv("TORCS_FEATURE2_OVERLAY_MAX_TOKENS", "160"))
+OVERLAY_MAX_TOKENS = int(os.getenv("TORCS_FEATURE2_OVERLAY_MAX_TOKENS", "100"))
 
 app = FastAPI(title="TORCS Feature 2 Standalone Service")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -92,6 +93,9 @@ async def _generate_overlay(cache_key: str, payload: dict[str, Any]) -> None:
             "source": "model_overlay",
             "analysis": analysis,
             "coach_note": coach_note,
+            "braking_tip": truncate_text(parsed.get("braking_tip"), 140),
+            "cornering_tip": truncate_text(parsed.get("cornering_tip"), 140),
+            "throttle_tip": truncate_text(parsed.get("throttle_tip"), 140),
             "updated_at": round(asyncio.get_running_loop().time(), 3),
             "error": "",
         }
@@ -101,6 +105,9 @@ async def _generate_overlay(cache_key: str, payload: dict[str, Any]) -> None:
             "source": "model_overlay",
             "analysis": "",
             "coach_note": "",
+            "braking_tip": "",
+            "cornering_tip": "",
+            "throttle_tip": "",
             "updated_at": round(asyncio.get_running_loop().time(), 3),
             "error": truncate_text(str(exc), 180),
         }
@@ -114,6 +121,12 @@ def _ensure_overlay(cache_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     if overlay is None:
         overlay = pending_overlay()
         _overlay_cache[cache_key] = overlay
+    elif overlay.get("status") == "error":
+        now = asyncio.get_running_loop().time()
+        updated_at = float(overlay.get("updated_at") or 0.0)
+        if now - updated_at >= OVERLAY_ERROR_RETRY_SECONDS:
+            overlay = pending_overlay()
+            _overlay_cache[cache_key] = overlay
 
     if cache_key not in _overlay_tasks and overlay.get("status") not in {"ready", "error"}:
         _overlay_tasks[cache_key] = asyncio.create_task(_generate_overlay(cache_key, payload))
@@ -121,20 +134,21 @@ def _ensure_overlay(cache_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     return dict(overlay, cache_key=cache_key)
 
 
-async def _fetch_upstream_frames(seconds: float) -> list[dict[str, Any]]:
+async def _fetch_upstream_frames(seconds: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     url = f"{COMMENTARY_BASE_URL}/api/telemetry/history"
     async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT_SECONDS) as client:
         response = await client.get(url, params={"seconds": seconds})
         response.raise_for_status()
         payload = response.json()
     frames = payload.get("frames", [])
-    return frames if isinstance(frames, list) else []
+    status = payload.get("status", {})
+    return frames if isinstance(frames, list) else [], status if isinstance(status, dict) else {}
 
 
 async def _build_dashboard(window_seconds: float, history_seconds: float) -> dict[str, Any]:
     lookback_seconds = max(window_seconds, history_seconds)
     try:
-        frames = await _fetch_upstream_frames(lookback_seconds)
+        frames, upstream_status = await _fetch_upstream_frames(lookback_seconds)
     except Exception as exc:
         message = truncate_text(f"Upstream commentary service unavailable: {exc}", 220)
         return empty_dashboard(
@@ -148,6 +162,17 @@ async def _build_dashboard(window_seconds: float, history_seconds: float) -> dic
         frames,
         window_seconds=window_seconds,
         history_seconds=history_seconds,
+    )
+    dashboard["status"].update(
+        {
+            "telemetry_packet_count": upstream_status.get("packet_count"),
+            "last_received_at": upstream_status.get("last_received_at"),
+            "last_progress_at": upstream_status.get("last_progress_at"),
+            "seconds_since_received": upstream_status.get("seconds_since_received"),
+            "seconds_since_progress": upstream_status.get("seconds_since_progress"),
+            "is_stale": bool(upstream_status.get("is_stale")),
+            "stale_reason": upstream_status.get("stale_reason", ""),
+        }
     )
 
     overlay_request = dashboard.pop("_overlay_request", None)
@@ -182,11 +207,12 @@ async def feature2_dashboard(
 @app.get("/api/feature2/health")
 async def feature2_health() -> dict[str, Any]:
     try:
-        frames = await _fetch_upstream_frames(DEFAULT_WINDOW_SECONDS)
+        frames, upstream_status = await _fetch_upstream_frames(DEFAULT_WINDOW_SECONDS)
         return {
             "ok": True,
             "commentary_base_url": COMMENTARY_BASE_URL,
             "frame_count": len(frames),
+            "telemetry_status": upstream_status,
         }
     except Exception as exc:
         return {

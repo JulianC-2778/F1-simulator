@@ -169,6 +169,11 @@
       box-shadow: 0 0 0 4px rgba(14, 159, 140, 0.16);
     }
 
+    .status-pill.stale::before {
+      background: var(--amber);
+      box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+    }
+
     .hero {
       display: grid;
       grid-template-columns: 1.18fr 0.82fr;
@@ -292,6 +297,128 @@
     }
 
     .pit-copy { margin-top: 10px; }
+
+    .coach-detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.95fr);
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .coach-detail {
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      background: rgba(255,255,255,0.66);
+      border: 1px solid rgba(17, 24, 39, 0.06);
+    }
+
+    .coach-detail.wide {
+      grid-column: 1 / -1;
+    }
+
+    .coach-detail p {
+      margin: 8px 0 0;
+      color: var(--text-soft);
+      font-size: 0.92rem;
+      line-height: 1.52;
+    }
+
+    .step-list {
+      display: grid;
+      gap: 8px;
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .step-list li {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 8px;
+      color: var(--text);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .step-list li::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      margin-top: 7px;
+      border-radius: 999px;
+      background: var(--teal);
+    }
+
+    .target-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .target-chip {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      padding: 7px 9px;
+      border-radius: 8px;
+      background: rgba(17, 24, 39, 0.06);
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 600;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .issue-stack {
+      display: grid;
+      gap: 9px;
+      margin-top: 10px;
+    }
+
+    .issue-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(17, 24, 39, 0.045);
+    }
+
+    .issue-severity {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 54px;
+      padding: 5px 7px;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .issue-severity.high { background: rgba(194, 63, 63, 0.12); color: var(--red); }
+    .issue-severity.medium { background: rgba(199, 133, 21, 0.12); color: var(--amber); }
+    .issue-severity.low { background: rgba(14, 159, 140, 0.12); color: var(--teal); }
+
+    .issue-body strong,
+    .issue-body span {
+      display: block;
+    }
+
+    .issue-body strong {
+      font-size: 0.92rem;
+      line-height: 1.35;
+    }
+
+    .issue-body span {
+      margin-top: 3px;
+      color: var(--text-soft);
+      font-size: 0.82rem;
+      line-height: 1.38;
+    }
 
     .overlay-block {
       margin-top: 16px;
@@ -671,6 +798,7 @@
       }
       .snapshot-grid,
       .signal-strip,
+      .coach-detail-grid,
       .guidance-meta,
       .summary-grid {
         grid-template-columns: 1fr;
@@ -734,6 +862,29 @@
               stable headline, action, focus area, and confidence score without depending on
               free-form model text.
             </p>
+            <div class="coach-detail-grid">
+              <div class="coach-detail">
+                <div class="small-label">Why it matters</div>
+                <p id="guidanceWhy">Telemetry context will appear with the first live window.</p>
+              </div>
+              <div class="coach-detail">
+                <div class="small-label">Risk</div>
+                <p id="riskNote">No risk signal yet.</p>
+              </div>
+              <div class="coach-detail">
+                <div class="small-label">Immediate plan</div>
+                <ul id="immediateSteps" class="step-list"></ul>
+              </div>
+              <div class="coach-detail">
+                <div class="small-label">Next lap target</div>
+                <p id="nextLapFocus">Keep the baseline until live telemetry arrives.</p>
+                <div id="targetMetrics" class="target-list"></div>
+              </div>
+              <div class="coach-detail wide">
+                <div class="small-label">Priority stack</div>
+                <div id="priorityIssues" class="issue-stack"></div>
+              </div>
+            </div>
             <div class="overlay-block">
               <div class="small-label">Async model supplement</div>
               <p id="overlayStatus" class="overlay-status pending">Pending</p>
@@ -866,6 +1017,12 @@
       guidanceHeadline: document.getElementById("guidanceHeadline"),
       guidanceAction: document.getElementById("guidanceAction"),
       guidanceAnalysis: document.getElementById("guidanceAnalysis"),
+      guidanceWhy: document.getElementById("guidanceWhy"),
+      riskNote: document.getElementById("riskNote"),
+      immediateSteps: document.getElementById("immediateSteps"),
+      nextLapFocus: document.getElementById("nextLapFocus"),
+      targetMetrics: document.getElementById("targetMetrics"),
+      priorityIssues: document.getElementById("priorityIssues"),
       overlayStatus: document.getElementById("overlayStatus"),
       overlayAnalysis: document.getElementById("overlayAnalysis"),
       pitAdvice: document.getElementById("pitAdvice"),
@@ -925,13 +1082,95 @@
       return "Pending";
     }
 
+    function renderSteps(steps) {
+      els.immediateSteps.innerHTML = "";
+      const items = Array.isArray(steps) && steps.length
+        ? steps.slice(0, 3)
+        : ["Hold a stable line and wait for live telemetry."];
+
+      items.forEach(step => {
+        const li = document.createElement("li");
+        li.textContent = step;
+        els.immediateSteps.appendChild(li);
+      });
+    }
+
+    function formatTargetKey(key) {
+      return String(key || "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, char => char.toUpperCase());
+    }
+
+    function renderTargets(metrics) {
+      els.targetMetrics.innerHTML = "";
+      const entries = Object.entries(metrics || {}).slice(0, 3);
+      if (!entries.length) {
+        const chip = document.createElement("span");
+        chip.className = "target-chip";
+        chip.textContent = "Target: keep inputs stable";
+        els.targetMetrics.appendChild(chip);
+        return;
+      }
+
+      entries.forEach(([key, value]) => {
+        const chip = document.createElement("span");
+        chip.className = "target-chip";
+        chip.textContent = `${formatTargetKey(key)}: ${value}`;
+        els.targetMetrics.appendChild(chip);
+      });
+    }
+
+    function renderPriorityIssues(issues) {
+      els.priorityIssues.innerHTML = "";
+      const items = Array.isArray(issues) && issues.length
+        ? issues.slice(0, 3)
+        : [{
+            label: "Waiting for telemetry",
+            severity: "low",
+            evidence: "No live window yet",
+            correction: "Start the simulator feed to build the first issue stack.",
+          }];
+
+      items.forEach(issue => {
+        const row = document.createElement("div");
+        const severity = priorityClass(issue.severity) || "low";
+        row.className = "issue-row";
+
+        const pill = document.createElement("span");
+        pill.className = `issue-severity ${severity}`;
+        pill.textContent = severity;
+
+        const body = document.createElement("div");
+        body.className = "issue-body";
+
+        const title = document.createElement("strong");
+        title.textContent = issue.label || "Telemetry issue";
+
+        const evidence = document.createElement("span");
+        evidence.textContent = issue.evidence || "No evidence available.";
+
+        const correction = document.createElement("span");
+        correction.textContent = issue.correction || "Keep the car stable and wait for the next window.";
+
+        body.append(title, evidence, correction);
+        row.append(pill, body);
+        els.priorityIssues.appendChild(row);
+      });
+    }
+
     function renderOverlay(overlay) {
       const status = overlay?.status || "pending";
       els.overlayStatus.className = `overlay-status ${status}`;
       els.overlayStatus.textContent = overlayStatusLabel(status);
 
       if (status === "ready") {
-        const parts = [overlay.analysis, overlay.coach_note].filter(Boolean);
+        const parts = [
+          overlay.analysis,
+          overlay.coach_note,
+          overlay.braking_tip,
+          overlay.cornering_tip,
+          overlay.throttle_tip,
+        ].filter(Boolean).slice(0, 4);
         els.overlayAnalysis.textContent = parts.join(" ");
         return;
       }
@@ -949,13 +1188,19 @@
 
       if (!guidance || !latest || !status?.has_telemetry) {
         els.liveStatus.textContent = "Waiting for telemetry";
-        els.liveStatus.classList.remove("live");
+        els.liveStatus.classList.remove("live", "stale");
         els.statusNote.textContent = "Polling local telemetry at 350 ms";
         els.priorityPill.className = "priority";
         els.priorityPill.textContent = "Pending";
         els.guidanceHeadline.textContent = "Waiting for live telemetry";
         els.guidanceAction.textContent = "Start TORCS and the local telemetry feed to see live driving instructions here.";
         els.guidanceAnalysis.textContent = "The page is ready for fixed-schema guidance. Once data arrives, it will surface a stable headline, action, focus area, and confidence score without depending on free-form model text.";
+        els.guidanceWhy.textContent = "Telemetry context will appear with the first live window.";
+        els.riskNote.textContent = "No risk signal yet.";
+        renderSteps([]);
+        els.nextLapFocus.textContent = "Keep the baseline until live telemetry arrives.";
+        renderTargets({});
+        renderPriorityIssues([]);
         renderOverlay(null);
         els.pitAdvice.textContent = "Pit advice will appear here when relevant.";
         els.focusArea.textContent = "-";
@@ -969,14 +1214,29 @@
         return;
       }
 
-      els.liveStatus.textContent = "Telemetry live";
-      els.liveStatus.classList.add("live");
-      els.statusNote.textContent = `Window ${formatNumber(status.window_seconds, 0)} s • ${status.frame_count} frames`;
+      if (status.is_stale) {
+        els.liveStatus.textContent = "Telemetry stale";
+        els.liveStatus.classList.remove("live");
+        els.liveStatus.classList.add("stale");
+        const age = status.seconds_since_progress ?? status.seconds_since_received;
+        els.statusNote.textContent = `${status.stale_reason || "Telemetry is not advancing."} Last progress ${formatNumber(age, 1)} s ago`;
+      } else {
+        els.liveStatus.textContent = "Telemetry live";
+        els.liveStatus.classList.add("live");
+        els.liveStatus.classList.remove("stale");
+        els.statusNote.textContent = `Window ${formatNumber(status.window_seconds, 0)} s • ${status.frame_count} frames`;
+      }
       els.priorityPill.className = `priority ${priorityClass(guidance.priority)}`;
       els.priorityPill.textContent = guidance.priority || "Priority";
       els.guidanceHeadline.textContent = guidance.headline || "Guidance ready";
-      els.guidanceAction.textContent = guidance.action || "No action available.";
+      els.guidanceAction.textContent = guidance.radio_cue || guidance.action || "No action available.";
       els.guidanceAnalysis.textContent = guidance.analysis || "No analysis available.";
+      els.guidanceWhy.textContent = guidance.why || "No additional context available.";
+      els.riskNote.textContent = guidance.risk || "No immediate risk signal.";
+      renderSteps(guidance.immediate_steps);
+      els.nextLapFocus.textContent = guidance.next_lap_focus || "Repeat the current reference and watch the next telemetry window.";
+      renderTargets(guidance.target_metrics);
+      renderPriorityIssues(guidance.priority_issues);
       renderOverlay(guidance.async_overlay);
       els.pitAdvice.textContent = guidance.pit_advice || "No pit guidance.";
       els.focusArea.textContent = guidance.focus_area || "-";
@@ -987,7 +1247,8 @@
       els.fuelValue.textContent = formatNumber(latest.fuel, 1);
       els.trackValue.textContent = latest.track_pos == null ? "--" : `${Number(latest.track_pos).toFixed(2)}`;
       const overlayState = guidance.async_overlay?.status || "pending";
-      els.footerNote.textContent = `Latest sim time ${formatNumber(status.latest_sim_time, 1)} s • ${guidance.source} • overlay ${overlayState}`;
+      const freshness = status.is_stale ? "stale telemetry" : "live telemetry";
+      els.footerNote.textContent = `Latest sim time ${formatNumber(status.latest_sim_time, 1)} s • ${freshness} • ${guidance.source} • overlay ${overlayState}`;
     }
 
     function renderSignals(signals) {
@@ -1193,7 +1454,7 @@
         drawTrendChart(state.chartHistory);
       } catch (error) {
         els.liveStatus.textContent = "Connection issue";
-        els.liveStatus.classList.remove("live");
+        els.liveStatus.classList.remove("live", "stale");
         els.statusNote.textContent = "Unable to load feature 2 data";
         els.footerNote.textContent = error.message;
       }
