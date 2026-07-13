@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import config
 
@@ -66,8 +67,25 @@ def _send_messages(messages: list[dict]) -> None:
     except Exception:
         return
     try:
+        # midware sends its own initial {"type": "connected", ...} status
+        # message right after accepting the connection. If we never read it
+        # and close immediately after sending, the near-simultaneous
+        # send+close from this short-lived client can race with the
+        # server's own in-flight send and trip a
+        # 'WebSocket is not connected. Need to call "accept" first.' error
+        # server-side (a known accept()/receive() ordering issue when a
+        # client connects and disconnects very quickly) -- which drops our
+        # message before it reaches the overlay windows. Draining that one
+        # message first, then giving the socket a brief moment before
+        # closing, avoids the race.
+        try:
+            connection.settimeout(0.3)
+            connection.recv()
+        except Exception:
+            pass
         for message in messages:
             connection.send(json.dumps(message))
+        time.sleep(0.05)
     except Exception:
         pass
     finally:

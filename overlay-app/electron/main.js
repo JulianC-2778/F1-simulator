@@ -8,6 +8,20 @@ let engineerWindow;
 let settingsWindow;
 let speechProcess;
 
+// Which floating window this process should own. Commentary and Engineer
+// used to always launch together from one `npm start`; they're now split
+// into two independent processes so either feature can run without the
+// other. Set via `OVERLAY_FEATURE=commentary|engineer` (see package.json's
+// `start:commentary` / `start:engineer` scripts).
+const OVERLAY_FEATURE = process.env.OVERLAY_FEATURE;
+if (OVERLAY_FEATURE !== 'commentary' && OVERLAY_FEATURE !== 'engineer') {
+  console.error(
+    'OVERLAY_FEATURE env var must be "commentary" or "engineer". ' +
+    'Run "npm run start:commentary" or "npm run start:engineer" instead of "npm start".'
+  );
+  process.exit(1);
+}
+
 // Shared with the Python side via ../../config.json (repo root) -- this is
 // the same file config.py reads, so the mainline commentary service's host
 // and port only need to be edited in one place instead of drifting out of
@@ -200,6 +214,33 @@ function showEngineerWindow() {
 }
 
 function buildMenu() {
+  // Only this process's own window ever exists here (see OVERLAY_FEATURE
+  // above), so the menu only offers Show/Hide for that one feature instead
+  // of both.
+  const featureItems = OVERLAY_FEATURE === 'commentary'
+    ? [
+        { label: 'Show Overlay', click: showOverlayWindow },
+        {
+          label: 'Hide Overlay',
+          click: () => {
+            if (overlayWindow) {
+              overlayWindow.hide();
+            }
+          }
+        }
+      ]
+    : [
+        { label: 'Show Engineer Overlay', click: showEngineerWindow },
+        {
+          label: 'Hide Engineer Overlay',
+          click: () => {
+            if (engineerWindow) {
+              engineerWindow.hide();
+            }
+          }
+        }
+      ];
+
   const template = [
     {
       label: 'TORCS AI Overlay',
@@ -208,31 +249,7 @@ function buildMenu() {
           label: 'Settings',
           click: createSettingsWindow
         },
-        {
-          label: 'Show Overlay',
-          click: showOverlayWindow
-        },
-        {
-          label: 'Hide Overlay',
-          click: () => {
-            if (overlayWindow) {
-              overlayWindow.hide();
-            }
-          }
-        },
-        { type: 'separator' },
-        {
-          label: 'Show Engineer Overlay',
-          click: showEngineerWindow
-        },
-        {
-          label: 'Hide Engineer Overlay',
-          click: () => {
-            if (engineerWindow) {
-              engineerWindow.hide();
-            }
-          }
-        },
+        ...featureItems,
         { type: 'separator' },
         { role: 'quit' }
       ]
@@ -326,13 +343,20 @@ function speakNative(text, voiceSettings = {}, sender = null) {
 app.whenReady().then(() => {
   writeSettings(readSettings());
   buildMenu();
-  createOverlayWindow();
-  createEngineerWindow();
+
+  if (OVERLAY_FEATURE === 'commentary') {
+    createOverlayWindow();
+  } else {
+    createEngineerWindow();
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createOverlayWindow();
-      createEngineerWindow();
+      if (OVERLAY_FEATURE === 'commentary') {
+        createOverlayWindow();
+      } else {
+        createEngineerWindow();
+      }
     }
   });
 });
@@ -379,9 +403,13 @@ ipcMain.handle('overlay:resize', (event, contentHeight) => {
   }
 
   // Engineer window: top edge stays put, grows downward (mirror of the above).
+  // Capped higher than the commentary window (600 vs 400) since engineer
+  // answers are multi-sentence explanations, not short commentary bursts,
+  // and were getting clipped at the shared 400px cap.
   if (engineerWindow && !engineerWindow.isDestroyed() && event.sender === engineerWindow.webContents) {
     const bounds = engineerWindow.getBounds();
-    engineerWindow.setSize(bounds.width, newH);
+    const engineerH = Math.max(80, Math.min(Math.ceil(contentHeight) + 24, 600));
+    engineerWindow.setSize(bounds.width, engineerH);
     engineerWindow.setPosition(bounds.x, Math.round(y + 56));
     return;
   }
