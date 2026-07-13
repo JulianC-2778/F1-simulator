@@ -417,7 +417,14 @@ def powershell_text_request(
     api_key: str = DEFAULT_API_KEY,
     timeout: int = 20,
 ) -> str:
-    if is_wsl() and method.upper() == "POST":
+    # Windows PowerShell 5.1's Invoke-RestMethod/Invoke-WebRequest use the
+    # legacy System.Net.HttpWebRequest, which parses the HTTP response status
+    # line very strictly and throws "Server committed a protocol violation.
+    # Section=ResponseStatusLine" against some local servers (observed with
+    # LM Studio's embedded server on GET /v1/models). curl.exe doesn't have
+    # this problem, so route every WSL request through it -- not just POST,
+    # which was already doing this -- instead of only falling back for POST.
+    if is_wsl():
         return windows_curl_text_request(
             url,
             method=method,

@@ -85,3 +85,34 @@ body {
   overflow-wrap: anywhere;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
 }
+
+/* Engineer window only: answers are multi-sentence explanations rather than
+   short commentary bursts, so use a smaller font and let the panel itself
+   scroll (top-aligned) instead of clipping when content still exceeds the
+   window's max height (see main.js's overlay:resize engineer branch). */
+body.engineer .caption-text {
+  font-size: 20px;
+  line-height: 1.4;
+}
+
+/* NOTE: deliberately NOT capping .caption-panel's own height here. The
+   renderer measures document.body.scrollHeight to ask main.js for a taller
+   window (see engineer-renderer.js's setCaption() + main.js's
+   overlay:resize handler, capped at 600px there). Constraining the panel's
+   height in CSS as well would make that measurement see the capped size
+   instead of the content's real size, and the window would never grow.
+   The scroll fallback for content still taller than the 600px window cap
+   belongs on `body` instead (overriding the shared `overflow: hidden`
+   above), since scrollHeight is unaffected by the overflow property. */
+body.engineer {
+  overflow-y: auto;
+}
+
+body.engineer .caption-panel {
+  align-items: flex-start;
+  /* The panel is otherwise a drag handle for this frameless window (see
+     .caption-panel above), which swallows mouse-wheel/scroll interaction.
+     The engineer window is auto-positioned (not meant to be dragged), so
+     trade that off here to let long answers actually scroll. */
+  -webkit-app-region: no-drag;
+}
