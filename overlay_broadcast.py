@@ -5,10 +5,10 @@ Chatbot) into the shared overlay display layer.
 
 Per docs/display-layer-contract.md, AI feature code should not build its own
 caption window -- it should send display events through midware's WebSocket
-broadcast (ws://127.0.0.1:8765/ws) and let the existing overlay-app render
-them. This module tags every message with "source": "engineer" so the
-overlay can route it to the dedicated engineer caption window
-(overlay-app/src/engineer.html) instead of the race-commentary one.
+broadcast and let the existing overlay-app render them. This module tags
+every message with "source": "engineer" so the overlay can route it to the
+dedicated engineer caption window (overlay-app/src/engineer.html) instead of
+the race-commentary one.
 
 Design goals:
   - Never raise. Never block the caller for more than ~1-2 seconds.
@@ -22,13 +22,16 @@ Design goals:
 Env vars:
     TORCS_ENGINEER_OVERLAY_BROADCAST   - "false" to disable entirely (default: true)
     TORCS_ENGINEER_OVERLAY_WS_URL      - override the midware WebSocket URL
-                                          (default: ws://127.0.0.1:8765/ws)
+                                          (default: config.MIDWARE_WS_URL)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import time
+
+import config
 
 try:
     import websocket  # "websocket-client" package (optional dependency)
@@ -36,7 +39,7 @@ except ImportError:  # pragma: no cover - optional dependency may be missing
     websocket = None  # type: ignore[assignment]
 
 
-OVERLAY_WS_URL = os.getenv("TORCS_ENGINEER_OVERLAY_WS_URL", "ws://127.0.0.1:8765/ws")
+OVERLAY_WS_URL = os.getenv("TORCS_ENGINEER_OVERLAY_WS_URL", config.MIDWARE_WS_URL)
 OVERLAY_SOURCE = "engineer"
 CONNECT_TIMEOUT_SECONDS = 1.5
 
@@ -64,8 +67,25 @@ def _send_messages(messages: list[dict]) -> None:
     except Exception:
         return
     try:
+        # midware sends its own initial {"type": "connected", ...} status
+        # message right after accepting the connection. If we never read it
+        # and close immediately after sending, the near-simultaneous
+        # send+close from this short-lived client can race with the
+        # server's own in-flight send and trip a
+        # 'WebSocket is not connected. Need to call "accept" first.' error
+        # server-side (a known accept()/receive() ordering issue when a
+        # client connects and disconnects very quickly) -- which drops our
+        # message before it reaches the overlay windows. Draining that one
+        # message first, then giving the socket a brief moment before
+        # closing, avoids the race.
+        try:
+            connection.settimeout(0.3)
+            connection.recv()
+        except Exception:
+            pass
         for message in messages:
             connection.send(json.dumps(message))
+        time.sleep(0.05)
     except Exception:
         pass
     finally:

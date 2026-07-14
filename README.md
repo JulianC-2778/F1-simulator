@@ -263,7 +263,7 @@ TORCS human 数据采集器
   -> UDP 127.0.0.1:3101
   -> midware/commentary.py
   -> OpenAI-compatible API / LM Studio
-  -> WebSocket ws://127.0.0.1:8765/ws
+  -> WebSocket ws://127.0.0.1:8880/ws
   -> overlay-app Electron 字幕悬浮窗
 ```
 
@@ -330,11 +330,11 @@ python commentary.py
 服务地址：
 
 ```text
-http://localhost:8765
-ws://127.0.0.1:8765/ws
+http://localhost:8880
+ws://127.0.0.1:8880/ws
 ```
 
-打开 `http://localhost:8765`，保存 AI 配置，并把自动解说设置为：
+打开 `http://localhost:8880`，保存 AI 配置，并把自动解说设置为：
 
 ```text
 模式: 事件 + 间隔
@@ -371,7 +371,7 @@ Waiting for commentary...
 Connection lost
 ```
 
-说明 `midware/commentary.py` 未运行，或 `ws://127.0.0.1:8765/ws` 无法连接。Overlay 会每 3 秒自动重连。
+说明 `midware/commentary.py` 未运行，或 `ws://127.0.0.1:8880/ws` 无法连接。Overlay 会每 3 秒自动重连。
 
 字幕窗口右上角的设置按钮或应用菜单会打开设置窗口。应用菜单里的 `Show Overlay` 可以恢复/显示 overlay。设置窗口支持：
 
@@ -430,7 +430,7 @@ mkdir -p logs
 
 进入 TORCS 比赛并开始驾驶后，正常现象是：
 
-- `http://localhost:8765` 页面中遥测数据变化。
+- `http://localhost:8880` 页面中遥测数据变化。
 - 自动解说或手动解说触发时，overlay 显示 `Generating captions...`。
 - 模型返回完成后，overlay 显示最终解说文本。
 
@@ -453,13 +453,15 @@ mkdir -p logs
 
 ## Granite AI Features
 
-This project now includes three Granite-powered middleware scripts:
+This project now includes two Granite-powered middleware scripts (Feature 3's earlier
+standalone prototype, `race_commentator.py`, has been retired -- its functionality is
+fully covered by the mainline `midware/commentary.py` service described earlier in
+this README):
 
-- `chat_engineer.py` / `chat_engineer_gui.py` (+ `car_state_source.py`, `prompt_builder.py`, `granite_client.py`) for Feature 1: AI racing engineer chatbot (CLI and desktop GUI entrypoints)
+- `chat_engineer.py` / `chat_engineer_gui.py` (+ `car_state_source.py`, `midware/context_manager.py`, `granite_client.py`) for Feature 1: AI racing engineer chatbot (CLI and desktop GUI entrypoints)
 - `telemetry_analyzer.py` for Feature 2: telemetry analysis and driving guidance
-- `race_commentator.py` for Feature 3: procedural race commentary
 
-All three features follow the same architecture:
+Both features follow the same architecture:
 
 ```text
 TORCS UDP CSV -> Python middleware -> Granite endpoint -> text output
@@ -513,7 +515,7 @@ You can still override the endpoint per feature with the feature-specific enviro
 This is Module 1 from the project brief, split between two teammates per the team's 分工文档:
 
 - "A 同学" owns **赛车数据采集与状态分析功能**: reading TORCS data and turning it into a `car_state` dict with a `problems` list.
-- "B 同学" owns **AI 赛车工程师问答功能**: turning that `car_state` plus a player question into a Granite-generated answer. The files below (`car_state_source.py`, `prompt_builder.py`, `granite_client.py`, `chat_engineer.py`) are B's deliverable.
+- "B 同学" owns **AI 赛车工程师问答功能**: turning that `car_state` plus a player question into a Granite-generated answer. The files below (`car_state_source.py`, `midware/context_manager.py`, `granite_client.py`, `chat_engineer.py`) are B's deliverable.
 
 Agreed `car_state` contract between A and B:
 
@@ -542,7 +544,7 @@ Run (desktop GUI version, recommended for demos -- a floating chat window with a
 python3 chat_engineer_gui.py
 ```
 
-`chat_engineer_gui.py` is a Tkinter window with three parts: a live status panel (speed/rpm/gear/track position/damage/fuel/lap time + detected problems, refreshed every `TORCS_ENGINEER_REFRESH_MS` ms), a scrollable chat log, and an input box (Enter or the 发送 button to send). It reuses `car_state_source.py`, `prompt_builder.py`, and `granite_client.py` unchanged -- only the input/output layer differs from the CLI version, and Granite calls run on a background thread so the window never freezes while waiting for a reply. Keep the CLI version around as a quick debug entrypoint (no GUI dependencies, easier to read raw errors).
+`chat_engineer_gui.py` is a Tkinter window with three parts: a live status panel (speed/rpm/gear/track position/damage/fuel/lap time + detected problems, refreshed every `TORCS_ENGINEER_REFRESH_MS` ms), a scrollable chat log, and an input box (Enter or the 发送 button to send). It reuses `car_state_source.py`, `midware/context_manager.py`, and `granite_client.py` unchanged -- only the input/output layer differs from the CLI version, and Granite calls run on a background thread so the window never freezes while waiting for a reply. Keep the CLI version around as a quick debug entrypoint (no GUI dependencies, easier to read raw errors).
 
 Optional environment variables (shared by both entrypoints, plus one GUI-only var):
 
@@ -550,21 +552,21 @@ Optional environment variables (shared by both entrypoints, plus one GUI-only va
 export TORCS_ENGINEER_BASE_URL="http://<model-host>:<port>/v1"
 export TORCS_ENGINEER_MODEL="granite"
 export TORCS_ENGINEER_USE_FAKE_DATA=true   # force demo car_state data
-export TORCS_ENGINEER_UDP_PORT=3101        # live telemetry UDP port
-export TORCS_ENGINEER_HISTORY_TURNS=3      # how many past Q&A turns to keep as context
+export TORCS_ENGINEER_MIDWARE_URL="http://127.0.0.1:8880"  # midware REST, probed first (see below)
+export TORCS_ENGINEER_UDP_PORT=3101        # live telemetry UDP port, used only as a fallback
 export TORCS_ENGINEER_REFRESH_MS=500       # GUI only: status panel refresh interval (ms)
 export TORCS_ENGINEER_OVERLAY_BROADCAST=true               # set to false to disable the overlay broadcast below
-export TORCS_ENGINEER_OVERLAY_WS_URL="ws://127.0.0.1:8765/ws"  # midware WebSocket endpoint
+export TORCS_ENGINEER_OVERLAY_WS_URL="ws://127.0.0.1:8880/ws"  # midware WebSocket endpoint
 ```
 
 What the chatbot does:
 
-1. Tries to read live `car_state` data from the same TORCS UDP telemetry feed (port `3101`) used by Feature 2/3, via `LiveCarStateSource` in `car_state_source.py`. This is a temporary bridge standing in for A's `race_analyzer.py` output, so B can build and demo the chatbot before that handoff lands.
+1. Tries to read live `car_state` data by first probing `midware/commentary.py`'s REST API (`GET /api/telemetry` at `TORCS_ENGINEER_MIDWARE_URL`) via `HttpCarStateSource` in `car_state_source.py` -- this avoids binding UDP directly when midware (needed for the overlay window) is already running. Only falls back to binding the TORCS UDP telemetry feed directly (port `3101`, via `LiveCarStateSource`, which now shares its parsing code with `midware/telemetry.py`) if midware isn't reachable, so the chatbot still works standalone.
 2. Falls back to `FakeCarStateSource` (a few hand-written demo scenarios) if no live telemetry shows up within 5 seconds, or if `TORCS_ENGINEER_USE_FAKE_DATA=true` is set.
 3. Prints the current car state and prompts for a player question on the command line.
-4. `prompt_builder.py` formats the car state and question into a Chinese system+user prompt for Granite.
+4. `midware/context_manager.py`'s `ContextManager` (shared with the main commentary pipeline) formats the car state and question into a system+user prompt for Granite, using the `ENGINEER_PERSONA` system prompt.
 5. `granite_client.py` sends the prompt to the Granite-compatible endpoint and returns the answer.
-6. Keeps a short rolling history of the last few Q&A turns so follow-up questions ("那我下一圈呢？") have context.
+6. `ContextManager` keeps a token-budgeted rolling history of past Q&A turns so follow-up questions ("那我下一圈呢？") have context, trimming from the oldest turn once the context budget (`ContextConfig.max_context_tokens`) is exceeded.
 7. Best-effort broadcasts each reply to the shared overlay display layer via `overlay_broadcast.py` (repo root), tagged `"source": "engineer"` so it shows up in the dedicated engineer floating window described above instead of the commentary one. This requires the optional `websocket-client` pip package (`pip3 install websocket-client`, add `--break-system-packages` if your environment is externally managed); if it is not installed, or `midware`/`overlay-app` are not running, this step silently does nothing -- the Tkinter GUI and CLI both keep working exactly as before. The Tkinter GUI itself is kept for local debugging per `docs/display-layer-contract.md` ("no Tkinter popups for user-facing display" applies to user-facing presentation -- this debug window is in addition to, not instead of, the overlay broadcast).
 
 Student reproduction steps:

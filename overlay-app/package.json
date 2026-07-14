@@ -5,7 +5,9 @@
   "main": "electron/main.js",
   "private": true,
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "start:commentary": "OVERLAY_FEATURE=commentary electron .",
+    "start:engineer": "OVERLAY_FEATURE=engineer electron ."
   },
   "devDependencies": {
     "electron": "^31.7.7"

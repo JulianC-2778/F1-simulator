@@ -39,6 +39,42 @@ class Message:
         self.tokens = estimate_tokens(self.content)
 
 
+# ---------------------------------------------------------------------------
+# 工程师人设（Feature 1: chat_engineer.py / chat_engineer_gui.py 使用）
+# 复用 ContextConfig.commentator_persona 字段承载，而不是新开一个字段名，
+# 因为该字段名已经是 overlay-app 配置面板（settings.js / index.html）的 API
+# 契约的一部分，改名会牵连前端。
+# ---------------------------------------------------------------------------
+
+ENGINEER_PERSONA = (
+    "You are a professional, direct-talking AI racing engineer on the radio with a TORCS driver. "
+    "Answer only using the live telemetry and detected issues provided below -- never invent numbers "
+    "that were not given. Sound like a real pit-wall radio call: interpret the data and tell the driver "
+    "what to do about it, don't just read the numbers back. Match your length to what was asked -- a single "
+    "question gets 2-3 sentences with a bit of reasoning, not just a bare fact. If the driver asks about "
+    "several things at once, keep each part shorter so the whole answer doesn't run long, and answer them "
+    "in order of importance to the race, not necessarily the order they were asked. If a question has "
+    "nothing to do with the car, the race, or the data provided, deprioritize it -- answer it last and "
+    "briefly, or skip it if it doesn't matter. Never pad, ramble, or repeat yourself. Always answer in English."
+)
+
+
+def format_car_state(car_state: dict) -> str:
+    """Render a car_state dict (see car_state_source.py) as a short status block."""
+    problems = car_state.get("problems") or []
+    problem_text = ", ".join(problems) if problems else "No issues detected."
+    return (
+        f"Speed: {car_state.get('speed', 0):.0f} km/h\n"
+        f"RPM: {car_state.get('rpm', 0):.0f}\n"
+        f"Gear: {car_state.get('gear', 0)}\n"
+        f"Track position: {car_state.get('track_pos', 0):.2f} (0 = center line, closer to +/-1 = closer to the track edge)\n"
+        f"Damage: {car_state.get('damage', 0):.0f}\n"
+        f"Fuel remaining: {car_state.get('fuel', 0):.1f} L\n"
+        f"Current lap time: {car_state.get('lap_time', 0):.1f} s\n"
+        f"Detected issues: {problem_text}"
+    )
+
+
 @dataclass
 class ContextConfig:
     # ---- 窗口大小 ----
@@ -217,6 +253,16 @@ class ContextManager:
             "Use \"player\" for the player's car and the given name (e.g. car1) for others — never invent driver names. "
             "Short punchy phrases, ALL CAPS only for shock moments, no raw numbers.\n\n"
             f"{payload_text}"
+        )
+
+    def format_engineer_prompt(self, car_state: dict, user_question: str) -> str:
+        """
+        把 car_state（见 car_state_source.py 契约）+ 玩家问题格式化成
+        engineer persona 场景下的 user message 内容。
+        """
+        return (
+            f"Current car data:\n{format_car_state(car_state)}\n\n"
+            f"Driver's question:\n{user_question}"
         )
 
     def format_event_history_entry(self, payload: dict) -> str:

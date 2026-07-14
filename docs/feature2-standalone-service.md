@@ -23,13 +23,13 @@ Feature 2 telemetry dashboard into a separate service.
 
 ## Runtime model
 
-1. Start the existing commentary service first on port `8765`.
+1. Start the existing commentary service first on port `8880`.
 2. Start the standalone Feature 2 service on port `8766`.
 3. Open `http://127.0.0.1:8766/feature2`.
 
 The Feature 2 service calls:
 
-- `http://127.0.0.1:8765/api/telemetry/history`
+- `http://127.0.0.1:8880/api/telemetry/history`
 
 to read recent telemetry frames from the main commentary service.
 
@@ -52,7 +52,7 @@ python midware/feature2_service.py
 
 ## Ports
 
-- Commentary service: `8765`
+- Commentary service: `8880`
 - Feature 2 service: `8766`
 
 You can override the Feature 2 port with:
@@ -68,4 +68,4 @@ If the Feature 2 page loads but reports no telemetry, confirm that:
 
 1. `commentary.py` is already running.
 2. TORCS is in a driving or racing state.
-3. `http://127.0.0.1:8765/api/telemetry/history` responds.
+3. `http://127.0.0.1:8880/api/telemetry/history` responds.

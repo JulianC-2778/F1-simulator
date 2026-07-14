@@ -34,6 +34,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+import config
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -93,7 +95,7 @@ app = FastAPI(title="Kokoro TTS Server")
 @app.on_event("startup")
 def startup():
     load_model()
-    log.info("TTS server ready → http://localhost:8881")
+    log.info(f"TTS server ready → {config.TTS_BASE_URL}")
 
 
 # ---------------------------------------------------------------------------
@@ -183,4 +185,4 @@ def synthesize(req: TTSRequest):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8881, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=config.TTS_PORT, reload=False)

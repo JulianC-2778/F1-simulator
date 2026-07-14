@@ -95,6 +95,63 @@ def telemetry_time(frame: dict[str, Any]) -> float:
         return 0.0
 
 
+def _common_float(frame: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(frame.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _common_int(frame: dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        return int(float(frame.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def to_common_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    """
+    Adapt a raw MAIN_CSV_FIELDS frame (camelCase, as produced by parse_car_row /
+    TelemetryStore) into the snake_case field names + list-shaped opponents/track/
+    wheel_spin_vel/focus that telemetry_common.py's analysis helpers (compact_track_profile,
+    compact_opponent_profile, summarize_frames, etc.) expect.
+    """
+    return {
+        "seq": _common_int(frame, "seq"),
+        "sim_time": _common_float(frame, "sim_time"),
+        "player": _common_int(frame, "player"),
+        "lap": _common_int(frame, "lap"),
+        "x": _common_float(frame, "x"),
+        "y": _common_float(frame, "y"),
+        "yaw": _common_float(frame, "yaw"),
+        "accel_x": _common_float(frame, "accel_x"),
+        "accel_y": _common_float(frame, "accel_y"),
+        "steer": _common_float(frame, "steer"),
+        "throttle": _common_float(frame, "throttle"),
+        "brake": _common_float(frame, "brake"),
+        "clutch": _common_float(frame, "clutch"),
+        "angle": _common_float(frame, "angle"),
+        "cur_lap_time": _common_float(frame, "curLapTime"),
+        "damage": _common_float(frame, "damage"),
+        "dist_from_start": _common_float(frame, "distFromStart"),
+        "dist_raced": _common_float(frame, "distRaced"),
+        "fuel": _common_float(frame, "fuel"),
+        "gear": _common_int(frame, "gear"),
+        "last_lap_time": _common_float(frame, "lastLapTime"),
+        "race_pos": _common_int(frame, "racePos"),
+        "rpm": _common_float(frame, "rpm"),
+        "speed_x": _common_float(frame, "speedX"),
+        "speed_y": _common_float(frame, "speedY"),
+        "speed_z": _common_float(frame, "speedZ"),
+        "track_pos": _common_float(frame, "trackPos"),
+        "z": _common_float(frame, "z"),
+        "opponents": [_common_float(frame, f"opponent_{i}", 200.0) for i in range(36)],
+        "track": [_common_float(frame, f"track_{i}", -1.0) for i in range(19)],
+        "wheel_spin_vel": [_common_float(frame, f"wheelSpinVel_{i}") for i in range(4)],
+        "focus": [_common_float(frame, f"focus_{i}", -1.0) for i in range(5)],
+    }
+
+
 class TelemetryStore:
     def __init__(self, window_seconds: float = 30.0) -> None:
         self.window_seconds = window_seconds
@@ -102,16 +159,29 @@ class TelemetryStore:
         self._ranking_snapshots: deque[dict[str, Any]] = deque()
         self._latest_frame: dict[str, Any] | None = None
         self._latest_rankings: list[dict[str, Any]] | None = None
+        self._packet_count = 0
+        self._last_received_at: float | None = None
+        self._last_progress_at: float | None = None
+        self._last_progress_sim_time: float | None = None
         self._lock = threading.Lock()
 
     def push(self, telemetry: dict[str, Any] | None, rankings: list[dict[str, Any]] | None = None) -> None:
         if telemetry is None and not rankings:
             return
         with self._lock:
+            now = time.time()
             latest_time = telemetry_time(telemetry) if telemetry else self._latest_sim_time_locked()
             if telemetry:
-                self._latest_frame = dict(telemetry)
-                self._frames.append(dict(telemetry))
+                self._packet_count += 1
+                self._last_received_at = now
+                if self._last_progress_sim_time is None or latest_time > self._last_progress_sim_time + 0.001:
+                    self._last_progress_sim_time = latest_time
+                    self._last_progress_at = now
+                frame = dict(telemetry)
+                frame["_received_at"] = now
+                frame["_packet_count"] = self._packet_count
+                self._latest_frame = frame
+                self._frames.append(dict(frame))
             if rankings:
                 self._latest_rankings = [dict(item) for item in rankings]
                 self._ranking_snapshots.append(
@@ -144,6 +214,44 @@ class TelemetryStore:
     def has_telemetry(self) -> bool:
         with self._lock:
             return self._latest_frame is not None
+
+    def status(self, stale_after_seconds: float = 3.0) -> dict[str, Any]:
+        with self._lock:
+            now = time.time()
+            latest_sim_time = self._latest_sim_time_locked() if self._latest_frame else None
+            seconds_since_received = (
+                round(now - self._last_received_at, 3) if self._last_received_at is not None else None
+            )
+            seconds_since_progress = (
+                round(now - self._last_progress_at, 3) if self._last_progress_at is not None else None
+            )
+            is_stale = bool(
+                self._latest_frame
+                and (
+                    seconds_since_received is None
+                    or seconds_since_received > stale_after_seconds
+                    or seconds_since_progress is None
+                    or seconds_since_progress > stale_after_seconds
+                )
+            )
+            reason = ""
+            if is_stale:
+                if seconds_since_received is not None and seconds_since_received > stale_after_seconds:
+                    reason = "No telemetry packets received recently."
+                else:
+                    reason = "Telemetry packets are not advancing sim_time."
+            return {
+                "has_telemetry": self._latest_frame is not None,
+                "packet_count": self._packet_count,
+                "latest_sim_time": round(latest_sim_time, 3) if latest_sim_time is not None else None,
+                "last_received_at": round(self._last_received_at, 3) if self._last_received_at else None,
+                "last_progress_at": round(self._last_progress_at, 3) if self._last_progress_at else None,
+                "seconds_since_received": seconds_since_received,
+                "seconds_since_progress": seconds_since_progress,
+                "stale_after_seconds": stale_after_seconds,
+                "is_stale": is_stale,
+                "stale_reason": reason,
+            }
 
     def _latest_sim_time_locked(self) -> float:
         if self._latest_frame:

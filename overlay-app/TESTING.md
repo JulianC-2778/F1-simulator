@@ -5,7 +5,7 @@ This document explains how to test the `TORCS AI Overlay` Electron app.
 The overlay is an English-only floating caption HUD. It connects to:
 
 ```text
-ws://127.0.0.1:8765/ws
+ws://127.0.0.1:8880/ws
 ```
 
 ## 1. Test Goals
@@ -191,7 +191,7 @@ The app should keep trying to reconnect every 3 seconds.
 Start the existing Python commentary backend that exposes:
 
 ```text
-ws://127.0.0.1:8765/ws
+ws://127.0.0.1:8880/ws
 ```
 
 Then start the overlay:
@@ -352,8 +352,8 @@ async def handler(websocket):
 
 
 async def main():
-    async with websockets.serve(handler, "127.0.0.1", 8765):
-        print("Mock WebSocket server running at ws://127.0.0.1:8765/ws")
+    async with websockets.serve(handler, "127.0.0.1", 8880):
+        print("Mock WebSocket server running at ws://127.0.0.1:8880/ws")
         await asyncio.Future()
 
 
@@ -372,7 +372,7 @@ python3 test_overlay_ws.py
 Expected terminal output:
 
 ```text
-Mock WebSocket server running at ws://127.0.0.1:8765/ws
+Mock WebSocket server running at ws://127.0.0.1:8880/ws
 ```
 
 ### 10.4 Run The Overlay
@@ -562,19 +562,19 @@ Cause:
 The backend is not running or is not listening on:
 
 ```text
-ws://127.0.0.1:8765/ws
+ws://127.0.0.1:8880/ws
 ```
 
 Fix:
 
 Start the backend, then wait up to 3 seconds for reconnect.
 
-### Port 8765 is already in use
+### Port 8880 is already in use
 
 Run:
 
 ```bash
-ss -ltnp | grep 8765
+ss -ltnp | grep 8880
 ```
 
 Stop the process using the port, or change the backend port and update `WS_URL` in:

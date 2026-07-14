@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(midware/.venv/bin/python3 -c \"import openai; print\\('openai available in midware/.venv'\\)\")",
+      "Bash(timeout 10 midware/.venv/bin/python3 -c ' *)",
+      "Bash(midware/.venv/bin/python3 -c ' *)",
+      "Bash(midware/.venv/bin/python3 test_a_module_latency.py)",
+      "Bash(awk '{print $1}')",
+      "Bash(python3 -c ' *)",
+      "Bash(TORCS_MIDWARE_PORT=9999 python3 -c \"import config; print\\(config.MIDWARE_BASE_URL\\)\")",
+      "Bash(../midware/.venv/bin/python3 -c ' *)",
+      "Bash(which node *)",
+      "Bash(node --check overlay-app/electron/main.js)",
+      "Bash(node -e ' *)",
+      "Bash(node --check overlay-app/electron/preload.js)",
+      "Bash(node --check overlay-app/src/renderer.js)",
+      "Bash(node --check overlay-app/src/engineer-renderer.js)"
+    ]
+  }
+}

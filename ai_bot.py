@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import config
+
 try:
     from telemetry_common import (
         clamp, parse_float, parse_int,
@@ -238,7 +240,7 @@ class ScrClient:
                 client.send_control(format_scr_control(...))
     """
 
-    def __init__(self, host: str = "localhost", port: int = 3001) -> None:
+    def __init__(self, host: str = "localhost", port: int = config.SCR_UDP_PORT) -> None:
         self._addr = (host, port)
         self._sock: socket.socket | None = None
         self._done = False
@@ -1180,6 +1182,10 @@ _STRATEGY_INTERVAL = 5.0    # seconds between Granite requests — measured loca
                              # in the ~0.1-1Hz strategy-refresh target.
 _GRANITE_TIMEOUT   = 10.0   # seconds to wait for a single LLM response — 4x+
                              # margin over the 2.3s observed worst case.
+_STRATEGY_CONFIRM  = 2      # consecutive matching Granite answers required
+                             # before switching the active strategy — stops a
+                             # borderline reading from flapping the car
+                             # between e.g. ATTACK/NORMAL every ~5s poll.
 _GRANITE_MAX_TOK   = 80    # keep responses short and fast
 
 _SYSTEM_PROMPT = """\
@@ -1234,6 +1240,33 @@ def _parse_strategy_response(text: str) -> tuple[str, str]:
     return strategy, reason
 
 
+def _next_debounced_strategy(
+    active: str, candidate: str | None, candidate_count: int, proposed: str,
+) -> tuple[str, str | None, int, bool]:
+    """Pure transition function for GraniteStrategist's strategy debouncing.
+
+    A new ``proposed`` strategy only becomes ``active`` once it has been
+    proposed on ``_STRATEGY_CONFIRM`` consecutive calls; a proposal that
+    doesn't match the running candidate resets the count to 1 rather than
+    accumulating across different candidates.
+
+    Returns (new_active, new_candidate, new_candidate_count, switched).
+    No I/O, no side effects — safe to unit test without a Granite connection.
+    """
+    if proposed == active:
+        return active, None, 0, False
+
+    if proposed == candidate:
+        candidate_count += 1
+    else:
+        candidate = proposed
+        candidate_count = 1
+
+    if candidate_count >= _STRATEGY_CONFIRM:
+        return proposed, None, 0, True
+    return active, candidate, candidate_count, False
+
+
 class GraniteStrategist:
     """Async Granite strategy caller.
 
@@ -1257,6 +1290,8 @@ class GraniteStrategist:
         self._last_strategy: str = NORMAL
         self._last_reason:   str = "startup"
         self._last_submit:   float = -interval   # trigger immediately on first tick
+        self._candidate_strategy: str | None = None
+        self._candidate_count:    int = 0
 
     # ------------------------------------------------------------------ #
 
@@ -1277,11 +1312,40 @@ class GraniteStrategist:
                 print(f"[Granite] error: {result.error}")
             else:
                 strategy, reason = result.output
-                self._last_strategy = strategy
-                self._last_reason   = reason
-                print(f"[Granite] {strategy}  — {reason}")
+                self._debounce(strategy, reason)
 
         return self._last_strategy, self._last_reason
+
+    def _debounce(self, strategy: str, reason: str) -> None:
+        """Only switch the active strategy once Granite proposes the SAME new
+        strategy on ``_STRATEGY_CONFIRM`` consecutive calls in a row.
+
+        Without this, a state right at a threshold (e.g. speed/gap borderline
+        between ATTACK and NORMAL) can flip the raw Granite answer back and
+        forth on successive polls, and — since each poll is now only 5s apart
+        — that flapped the car's strategy every few seconds. Note this only
+        smooths *Granite's* pick; safety_filter() still runs on every frame
+        on top of whatever this returns, so a real emergency (low fuel,
+        critical damage) is never delayed by the confirmation wait.
+        """
+        prev_active = self._last_strategy
+        self._last_strategy, self._candidate_strategy, self._candidate_count, switched = (
+            _next_debounced_strategy(
+                self._last_strategy, self._candidate_strategy, self._candidate_count, strategy,
+            )
+        )
+        if switched:
+            self._last_reason = reason
+            print(f"[Granite] {self._last_strategy}  — {reason}")
+        elif strategy == prev_active:
+            # Granite re-confirmed the strategy already in effect.
+            self._last_reason = reason
+        else:
+            print(
+                f"[Granite] candidate {strategy} "
+                f"({self._candidate_count}/{_STRATEGY_CONFIRM}) — {reason}  "
+                f"(holding {self._last_strategy})"
+            )
 
     def last_strategy(self) -> str:
         return self._last_strategy
@@ -1308,7 +1372,7 @@ class GraniteStrategist:
 
 def run_bot(
     host:       str   = "localhost",
-    port:       int   = 3001,
+    port:       int   = config.SCR_UDP_PORT,
     strategy:   str   = NORMAL,
     *,
     use_granite: bool = False,
@@ -1948,6 +2012,31 @@ def _run_tests() -> None:
     assert s == SAVE_FUEL, f"FAIL parse no-reason: {s}"
     assert r == "",         f"FAIL reason should be empty: {r!r}"
     print(f"_parse_strategy_response no-reason ... OK  ({s})")
+
+    # ---- Step 7: _next_debounced_strategy (strategy switch debouncing) -----
+    # single differing proposal → held as a candidate, active unchanged
+    active, cand, cnt, switched = _next_debounced_strategy(NORMAL, None, 0, ATTACK)
+    assert active == NORMAL and not switched, "FAIL: single flip should not switch"
+    assert cand == ATTACK and cnt == 1,        f"FAIL candidate tracking: {cand}/{cnt}"
+    print("_next_debounced_strategy single flip     ... OK  (held NORMAL, candidate ATTACK 1/2)")
+
+    # same proposal again → confirms and switches
+    active, cand, cnt, switched = _next_debounced_strategy(NORMAL, cand, cnt, ATTACK)
+    assert active == ATTACK and switched,      f"FAIL: 2nd confirm should switch: {active}"
+    assert cand is None and cnt == 0,          "FAIL: candidate should reset after switch"
+    print("_next_debounced_strategy confirmed flip  ... OK  (switched to ATTACK)")
+
+    # proposal matching the ALREADY-active strategy → no-op, clears any candidate
+    active, cand, cnt, switched = _next_debounced_strategy(NORMAL, DEFEND, 1, NORMAL)
+    assert active == NORMAL and not switched,  "FAIL: re-confirm of active should be a no-op"
+    assert cand is None and cnt == 0,          "FAIL: stale candidate should be cleared"
+    print("_next_debounced_strategy re-confirm      ... OK  (no-op, candidate cleared)")
+
+    # candidate changes mid-flight → count resets to 1 for the new candidate
+    active, cand, cnt, switched = _next_debounced_strategy(NORMAL, ATTACK, 1, DEFEND)
+    assert active == NORMAL and not switched,  "FAIL: switched candidate should not switch yet"
+    assert cand == DEFEND and cnt == 1,        f"FAIL: candidate should reset to new value: {cand}/{cnt}"
+    print("_next_debounced_strategy candidate swap  ... OK  (restarted count for DEFEND)")
 
     # ---- Step 6: _build_strategy_prompt ------------------------------------
     sample_state = {

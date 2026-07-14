@@ -1,0 +1,8 @@
+{
+  "midware_host": "127.0.0.1",
+  "midware_port": 8880,
+  "telemetry_udp_port": 3101,
+  "scr_udp_port": 3001,
+  "feature2_port": 8766,
+  "tts_port": 8881
+}

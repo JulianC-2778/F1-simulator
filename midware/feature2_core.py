@@ -10,6 +10,7 @@ from telemetry_common import (
     select_recent_frames,
     summarize_frames,
 )
+from midware.telemetry import to_common_frame
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -47,40 +48,38 @@ def safe_min(values: list[float], default: float = 0.0) -> float:
     return min(values) if values else default
 
 
-def midware_frame_to_common(frame: dict[str, Any]) -> dict[str, Any]:
+def feedback(
+    *,
+    state_id: str,
+    headline: str,
+    focus_area: str,
+    priority: str,
+    analysis: str,
+    action: str,
+    pit_advice: str,
+    confidence: float,
+    why: str,
+    immediate_steps: list[str],
+    next_lap_focus: str,
+    risk: str,
+    target_metrics: dict[str, Any],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
     return {
-        "seq": safe_int(frame.get("seq")),
-        "sim_time": safe_float(frame.get("sim_time")),
-        "player": safe_int(frame.get("player")),
-        "lap": safe_int(frame.get("lap")),
-        "x": safe_float(frame.get("x")),
-        "y": safe_float(frame.get("y")),
-        "yaw": safe_float(frame.get("yaw")),
-        "accel_x": safe_float(frame.get("accel_x")),
-        "accel_y": safe_float(frame.get("accel_y")),
-        "steer": safe_float(frame.get("steer")),
-        "throttle": safe_float(frame.get("throttle")),
-        "brake": safe_float(frame.get("brake")),
-        "clutch": safe_float(frame.get("clutch")),
-        "angle": safe_float(frame.get("angle")),
-        "cur_lap_time": safe_float(frame.get("curLapTime")),
-        "damage": safe_float(frame.get("damage")),
-        "dist_from_start": safe_float(frame.get("distFromStart")),
-        "dist_raced": safe_float(frame.get("distRaced")),
-        "fuel": safe_float(frame.get("fuel")),
-        "gear": safe_int(frame.get("gear")),
-        "last_lap_time": safe_float(frame.get("lastLapTime")),
-        "race_pos": safe_int(frame.get("racePos")),
-        "rpm": safe_float(frame.get("rpm")),
-        "speed_x": safe_float(frame.get("speedX")),
-        "speed_y": safe_float(frame.get("speedY")),
-        "speed_z": safe_float(frame.get("speedZ")),
-        "track_pos": safe_float(frame.get("trackPos")),
-        "z": safe_float(frame.get("z")),
-        "opponents": [safe_float(frame.get(f"opponent_{i}"), 200.0) for i in range(36)],
-        "track": [safe_float(frame.get(f"track_{i}"), -1.0) for i in range(19)],
-        "wheel_spin_vel": [safe_float(frame.get(f"wheelSpinVel_{i}")) for i in range(4)],
-        "focus": [safe_float(frame.get(f"focus_{i}"), -1.0) for i in range(5)],
+        "state_id": state_id,
+        "headline": headline,
+        "focus_area": focus_area,
+        "priority": priority,
+        "analysis": analysis,
+        "action": action,
+        "pit_advice": pit_advice,
+        "confidence": confidence,
+        "why": why,
+        "immediate_steps": immediate_steps[:3],
+        "next_lap_focus": next_lap_focus,
+        "risk": risk,
+        "target_metrics": target_metrics,
+        "metrics": metrics,
     }
 
 
@@ -101,6 +100,143 @@ def compact_live_summary(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def issue(
+    *,
+    label: str,
+    area: str,
+    severity: str,
+    evidence: str,
+    correction: str,
+) -> dict[str, str]:
+    return {
+        "label": label,
+        "area": area,
+        "severity": severity,
+        "evidence": evidence,
+        "correction": correction,
+    }
+
+
+def severity_rank(severity: str) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(severity, 3)
+
+
+def build_priority_issues(
+    latest: dict[str, Any],
+    summary: dict[str, Any],
+    track_profile: dict[str, Any],
+    opponent_profile: dict[str, Any],
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+
+    if opponent_profile["front_gap"] < 8.0 and latest["speed_x"] > 60.0:
+        issues.append(
+            issue(
+                label="Front gap compressed",
+                area="traffic",
+                severity="high",
+                evidence=f"{opponent_profile['front_gap']:.1f} m ahead at {latest['speed_x']:.0f} km/h",
+                correction="Brake earlier and avoid a second move before turn-in.",
+            )
+        )
+
+    if abs(latest["track_pos"]) > 1.0:
+        issues.append(
+            issue(
+                label="Track limits exceeded",
+                area="cornering",
+                severity="high",
+                evidence=f"Track position {latest['track_pos']:+.2f}",
+                correction="Straighten first, then rejoin before applying full throttle.",
+            )
+        )
+    elif abs(latest["track_pos"]) > 0.8:
+        issues.append(
+            issue(
+                label="Edge pressure",
+                area="cornering",
+                severity="medium",
+                evidence=f"Track position {latest['track_pos']:+.2f}",
+                correction="Leave half a car-width more margin on the next entry.",
+            )
+        )
+
+    if latest["fuel"] < 6.0 or latest["damage"] > 40.0:
+        issues.append(
+            issue(
+                label="Pit threshold crossed",
+                area="pit_strategy",
+                severity="high",
+                evidence=f"Fuel {latest['fuel']:.1f} L, damage {latest['damage']:.1f}",
+                correction="Box at the next safe pit entry and stop fighting marginal moves.",
+            )
+        )
+    elif latest["fuel"] < 10.0 or latest["damage"] > 25.0:
+        issues.append(
+            issue(
+                label="Strategy margin shrinking",
+                area="pit_strategy",
+                severity="medium",
+                evidence=f"Fuel {latest['fuel']:.1f} L, damage {latest['damage']:.1f}",
+                correction="Prepare the next pit window and avoid kerb damage.",
+            )
+        )
+
+    if track_profile["center_opening"] < 25.0 and latest["brake"] < 0.08 and latest["speed_x"] > 90.0:
+        issues.append(
+            issue(
+                label="Late brake risk",
+                area="braking",
+                severity="medium",
+                evidence=f"{latest['speed_x']:.0f} km/h, brake {latest['brake']:.2f}, opening {track_profile['center_opening']:.1f} m",
+                correction="Move the brake marker earlier and release as steering builds.",
+            )
+        )
+
+    if summary.get("steering_stddev", 0.0) > 0.35 and abs(latest["track_pos"]) > 0.6:
+        issues.append(
+            issue(
+                label="Reactive steering",
+                area="cornering",
+                severity="medium",
+                evidence=f"Steering variation {summary.get('steering_stddev', 0.0):.2f}",
+                correction="Commit to one arc and delay throttle until the wheel opens.",
+            )
+        )
+
+    if summary.get("avg_throttle", 0.0) < 0.35 and track_profile["center_opening"] > 60.0 and latest["speed_x"] > 70.0:
+        issues.append(
+            issue(
+                label="Exit throttle left unused",
+                area="throttle",
+                severity="medium",
+                evidence=f"Average throttle {summary.get('avg_throttle', 0.0):.2f}, opening {track_profile['center_opening']:.1f} m",
+                correction="Start power at 30-40% as soon as steering unwinds.",
+            )
+        )
+
+    if not issues:
+        issues.append(
+            issue(
+                label="Baseline rhythm",
+                area="consistency",
+                severity="low",
+                evidence=f"Avg speed {summary.get('avg_speed', 0.0):.0f} km/h, steering variation {summary.get('steering_stddev', 0.0):.2f}",
+                correction="Improve one reference point instead of changing every input.",
+            )
+        )
+
+    return sorted(issues, key=lambda item: severity_rank(item["severity"]))[:3]
+
+
+def build_radio_cue(rule_feedback: dict[str, Any]) -> str:
+    focus = clean_text(rule_feedback.get("focus_area") or "pace")
+    correction = clean_text(rule_feedback.get("action"))
+    if not correction:
+        return "Hold the rhythm and wait for the next telemetry window."
+    return f"{focus.title()}: {correction}"
+
+
 def build_rule_feedback(frames: list[dict[str, Any]]) -> dict[str, Any]:
     latest = frames[-1]
     summary = summarize_frames(frames)
@@ -114,88 +250,186 @@ def build_rule_feedback(frames: list[dict[str, Any]]) -> dict[str, Any]:
         pit_advice = "Pit soon. Fuel or damage is trending risky."
 
     if opponent_profile["front_gap"] < 8.0 and latest["speed_x"] > 60.0:
-        return {
-            "state_id": "collision_risk",
-            "headline": "Traffic Alert",
-            "focus_area": "traffic",
-            "priority": "high",
-            "analysis": f"Front gap is only {opponent_profile['front_gap']:.1f} m, so the overtake or braking window is tight.",
-            "action": "Defend the inside and brake slightly earlier to avoid contact with the car ahead.",
-            "pit_advice": pit_advice,
-            "confidence": 0.95,
-        }
+        return feedback(
+            state_id="collision_risk",
+            headline="Traffic Alert",
+            focus_area="traffic",
+            priority="high",
+            analysis=f"Front gap is {opponent_profile['front_gap']:.1f} m at {latest['speed_x']:.0f} km/h, so the braking and overtake window is compressed.",
+            action="Brake a touch earlier, hold one predictable line, and avoid diving into the car ahead.",
+            pit_advice=pit_advice,
+            confidence=0.95,
+            why="At this gap, late braking or a second steering correction can turn a normal battle into contact.",
+            immediate_steps=[
+                "Move once to cover or follow; do not weave.",
+                "Lift or brake 0.2-0.4 s earlier than the previous marker.",
+                "Keep the steering settled until the front gap opens above 12 m.",
+            ],
+            next_lap_focus="Use the same braking marker once, then compare whether the front gap grows on corner exit.",
+            risk="High contact risk if throttle stays high into the braking zone.",
+            target_metrics={"front_gap_min_m": 12.0, "avg_brake_min": 0.18, "steering_stddev_max": 0.30},
+            metrics={
+                "front_gap": opponent_profile["front_gap"],
+                "nearest_gap": opponent_profile["nearest_gap"],
+                "speed_x": latest["speed_x"],
+                "avg_brake": summary.get("avg_brake", 0.0),
+            },
+        )
 
     if abs(latest["track_pos"]) > 1.0:
         side = "left" if latest["track_pos"] < 0 else "right"
-        return {
-            "state_id": "off_track_recovery",
-            "headline": "Off Track Risk",
-            "focus_area": "cornering",
-            "priority": "high",
-            "analysis": f"The car is already beyond the {side} track edge with track position {latest['track_pos']:.2f}.",
-            "action": "Straighten the steering, ease off the throttle, and rejoin the track smoothly before pushing again.",
-            "pit_advice": pit_advice,
-            "confidence": 0.98,
-        }
+        return feedback(
+            state_id="off_track_recovery",
+            headline="Rejoin Cleanly",
+            focus_area="cornering",
+            priority="high",
+            analysis=f"The car is beyond the {side} edge with track position {latest['track_pos']:.2f}, so grip and steering response are unreliable.",
+            action="Straighten the wheel, reduce throttle, and rejoin gradually before asking for full power.",
+            pit_advice=pit_advice,
+            confidence=0.98,
+            why="The fastest recovery is a stable rejoin; aggressive steering while off track usually creates a spin or damage spike.",
+            immediate_steps=[
+                "Hold the wheel closer to center until the car is back inside the limits.",
+                "Keep throttle below 40% during the rejoin.",
+                "Wait one clean car length before accelerating hard again.",
+            ],
+            next_lap_focus="Reduce corner entry speed slightly and aim to keep track position inside +/-0.75 through the same section.",
+            risk="Spin or wall contact if throttle rises before the car is straight.",
+            target_metrics={"track_pos_abs_max": 0.75, "throttle_rejoin_max": 0.40, "damage_delta_max": 0.0},
+            metrics={
+                "track_pos": latest["track_pos"],
+                "speed_x": latest["speed_x"],
+                "damage_delta": summary.get("damage_delta", 0.0),
+                "off_track_moments": summary.get("off_track_moments", 0),
+            },
+        )
 
     if latest["fuel"] < 6.0 or latest["damage"] > 40.0:
-        return {
-            "state_id": "pit_now",
-            "headline": "Pit Window Open",
-            "focus_area": "pit_strategy",
-            "priority": "high",
-            "analysis": "Fuel or damage has crossed the local safety threshold.",
-            "action": "Commit to a pit stop at the next safe opportunity.",
-            "pit_advice": pit_advice,
-            "confidence": 0.97,
-        }
+        return feedback(
+            state_id="pit_now",
+            headline="Box This Lap",
+            focus_area="pit_strategy",
+            priority="high",
+            analysis=f"Fuel is {latest['fuel']:.1f} L and damage is {latest['damage']:.1f}, which crosses the local safety threshold.",
+            action="Commit to the pit entry; avoid extra fights and protect the car until the stop.",
+            pit_advice=pit_advice,
+            confidence=0.97,
+            why="Continuing to push with this fuel or damage level risks losing more time than the pit stop costs.",
+            immediate_steps=[
+                "Confirm pit entry line early and avoid late defensive moves.",
+                "Short-shift and stay off kerbs to reduce damage risk.",
+                "Give up a marginal battle if it compromises pit entry.",
+            ],
+            next_lap_focus="After the stop, rebuild rhythm for one lap before attacking.",
+            risk="Running out of fuel margin or accumulating race-ending damage.",
+            target_metrics={"fuel_min_l": 6.0, "damage_max": 40.0, "extra_damage_max": 0.0},
+            metrics={"fuel": latest["fuel"], "damage": latest["damage"], "damage_delta": summary.get("damage_delta", 0.0)},
+        )
 
     if track_profile["center_opening"] < 25.0 and latest["brake"] < 0.08 and latest["speed_x"] > 90.0:
-        return {
-            "state_id": "late_braking",
-            "headline": "Braking Point",
-            "focus_area": "braking",
-            "priority": "medium",
-            "analysis": "The road ahead is tightening, but brake pressure is still very low for the current speed.",
-            "action": "Brake earlier for the next corner and finish most of the braking before turn-in.",
-            "pit_advice": pit_advice,
-            "confidence": 0.82,
-        }
+        return feedback(
+            state_id="late_braking",
+            headline="Brake Earlier",
+            focus_area="braking",
+            priority="medium",
+            analysis=f"Center track opening is only {track_profile['center_opening']:.1f} m while speed is {latest['speed_x']:.0f} km/h and brake input is {latest['brake']:.2f}.",
+            action="Move the braking marker earlier and finish the heavy braking before turn-in.",
+            pit_advice=pit_advice,
+            confidence=0.82,
+            why="The car is arriving too quickly for the available road, so late braking will force understeer or a wide exit.",
+            immediate_steps=[
+                "Begin braking before the road visually tightens.",
+                "Use one firm initial brake input instead of trailing in too late.",
+                "Release brake progressively as steering angle increases.",
+            ],
+            next_lap_focus="Compare minimum corner speed and exit track position; the target is a calmer entry with earlier throttle on exit.",
+            risk="Overshooting the apex and losing exit speed.",
+            target_metrics={"brake_now_min": 0.18, "center_opening_min_m": 25.0, "track_pos_abs_max": 0.80},
+            metrics={
+                "speed_x": latest["speed_x"],
+                "brake": latest["brake"],
+                "center_opening": track_profile["center_opening"],
+                "front_track_clearance_now": summary.get("front_track_clearance_now", 0.0),
+            },
+        )
 
     if summary.get("steering_stddev", 0.0) > 0.35 and abs(latest["track_pos"]) > 0.6:
-        return {
-            "state_id": "unstable_line",
-            "headline": "Line Stability",
-            "focus_area": "cornering",
-            "priority": "medium",
-            "analysis": "Steering corrections are high while the car is already close to the edge of the track.",
-            "action": "Use one smoother steering input and let the car breathe back toward the center on exit.",
-            "pit_advice": pit_advice,
-            "confidence": 0.80,
-        }
+        return feedback(
+            state_id="unstable_line",
+            headline="Calm The Wheel",
+            focus_area="cornering",
+            priority="medium",
+            analysis=f"Steering variation is {summary.get('steering_stddev', 0.0):.2f} while track position is {latest['track_pos']:.2f}, so the line is becoming reactive near the edge.",
+            action="Commit to one steering arc and let the car drift back toward the middle before adding more throttle.",
+            pit_advice=pit_advice,
+            confidence=0.80,
+            why="Multiple corrections near the edge usually mean the entry line was not settled early enough.",
+            immediate_steps=[
+                "Turn in once, then hold the steering angle for longer.",
+                "Delay throttle until the wheel starts to open.",
+                "Use the full road on exit but avoid crossing +/-0.85 track position.",
+            ],
+            next_lap_focus="Enter the same corner half a car-width wider and reduce mid-corner steering corrections.",
+            risk="A snap correction can push the car beyond track limits or scrub speed.",
+            target_metrics={"steering_stddev_max": 0.30, "track_pos_abs_max": 0.85, "avg_throttle_exit_min": 0.45},
+            metrics={
+                "steering_stddev": summary.get("steering_stddev", 0.0),
+                "track_pos": latest["track_pos"],
+                "track_pos_stddev": summary.get("track_pos_stddev", 0.0),
+            },
+        )
 
     if summary.get("avg_throttle", 0.0) < 0.35 and track_profile["center_opening"] > 60.0 and latest["speed_x"] > 70.0:
-        return {
-            "state_id": "throttle_hesitation",
-            "headline": "Throttle Timing",
-            "focus_area": "throttle",
-            "priority": "medium",
-            "analysis": "There is open road ahead, but throttle application over the last window has stayed conservative.",
-            "action": "Start squeezing on the throttle earlier once the steering wheel begins to unwind.",
-            "pit_advice": pit_advice,
-            "confidence": 0.76,
-        }
+        return feedback(
+            state_id="throttle_hesitation",
+            headline="Earlier Throttle",
+            focus_area="throttle",
+            priority="medium",
+            analysis=f"Average throttle is only {summary.get('avg_throttle', 0.0):.2f} with {track_profile['center_opening']:.1f} m of center opening, so exit acceleration is being left unused.",
+            action="Start squeezing throttle earlier as soon as steering begins to unwind.",
+            pit_advice=pit_advice,
+            confidence=0.76,
+            why="The road is open enough to build speed, but the throttle trace shows hesitation after the corner opens.",
+            immediate_steps=[
+                "Begin throttle at 30-40% before the wheel is fully straight.",
+                "Add power progressively, not as one late punch.",
+                "If the rear steps out, pause throttle rather than adding steering correction.",
+            ],
+            next_lap_focus="Aim for smoother throttle build-up over the same exit and compare speed delta on the following straight.",
+            risk="Leaving exit speed on the table and losing time down the next straight.",
+            target_metrics={"avg_throttle_min": 0.45, "center_opening_min_m": 60.0, "speed_delta_min": 5.0},
+            metrics={
+                "avg_throttle": summary.get("avg_throttle", 0.0),
+                "center_opening": track_profile["center_opening"],
+                "speed_delta": summary.get("speed_delta", 0.0),
+            },
+        )
 
-    return {
-        "state_id": "stable_rhythm",
-        "headline": "Rhythm Check",
-        "focus_area": "cornering",
-        "priority": "low",
-        "analysis": "The current window looks stable, with no urgent danger signal from the local rules.",
-        "action": "Keep building rhythm and focus on a clean entry-to-exit line.",
-        "pit_advice": pit_advice,
-        "confidence": 0.62,
-    }
+    return feedback(
+        state_id="stable_rhythm",
+        headline="Build Rhythm",
+        focus_area="cornering",
+        priority="low",
+        analysis=f"The window is stable: average speed is {summary.get('avg_speed', 0.0):.0f} km/h, steering variation is {summary.get('steering_stddev', 0.0):.2f}, and no urgent risk trigger fired.",
+        action="Keep the current rhythm, then choose one corner to improve rather than changing every input.",
+        pit_advice=pit_advice,
+        confidence=0.62,
+        why="The cleanest gains now come from repeatability: same brake marker, same turn-in, smoother throttle build-up.",
+        immediate_steps=[
+            "Pick one reference marker for the next corner.",
+            "Hold a steady steering arc through mid-corner.",
+            "Review whether exit throttle can start slightly earlier.",
+        ],
+        next_lap_focus="Keep this baseline and improve one measurable item: either brake consistency, steering smoothness, or exit throttle.",
+        risk="Low immediate risk; over-driving from a stable state could create unnecessary mistakes.",
+        target_metrics={"steering_stddev_max": 0.30, "track_pos_abs_max": 0.80, "avg_throttle_min": 0.40},
+        metrics={
+            "avg_speed": summary.get("avg_speed", 0.0),
+            "steering_stddev": summary.get("steering_stddev", 0.0),
+            "avg_throttle": summary.get("avg_throttle", 0.0),
+            "nearest_opponent_now": summary.get("nearest_opponent_now", 200.0),
+        },
+    )
 
 
 def series_points(frames: list[dict[str, Any]], key: str) -> list[dict[str, float]]:
@@ -225,6 +459,7 @@ def overlay_payload(
     track_profile: dict[str, Any],
     opponent_profile: dict[str, Any],
     rule_feedback: dict[str, Any],
+    priority_issues: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "state_id": rule_feedback.get("state_id", "stable_rhythm"),
@@ -234,6 +469,12 @@ def overlay_payload(
         "action": rule_feedback.get("action", ""),
         "pit_advice": rule_feedback.get("pit_advice", "No pit stop needed yet."),
         "rule_reason": rule_feedback.get("analysis", ""),
+        "why": rule_feedback.get("why", ""),
+        "immediate_steps": rule_feedback.get("immediate_steps", []),
+        "next_lap_focus": rule_feedback.get("next_lap_focus", ""),
+        "risk": rule_feedback.get("risk", ""),
+        "priority_issues": priority_issues or [],
+        "radio_cue": build_radio_cue(rule_feedback),
         "latest_state": {
             "lap": latest["lap"],
             "speed_x": round(latest["speed_x"], 3),
@@ -253,27 +494,33 @@ def overlay_payload(
             "steering_stddev": round(summary.get("steering_stddev", 0.0), 3),
             "damage_delta": round(summary.get("damage_delta", 0.0), 3),
         },
-        "track_profile": track_profile,
-        "opponent_profile": opponent_profile,
+        "track_profile": {
+            "center_opening": round(track_profile.get("center_opening", 0.0), 3),
+            "left_opening": round(track_profile.get("left_opening", 0.0), 3),
+            "right_opening": round(track_profile.get("right_opening", 0.0), 3),
+        },
+        "opponent_profile": {
+            "front_gap": round(opponent_profile.get("front_gap", 200.0), 3),
+            "left_gap": round(opponent_profile.get("left_gap", 200.0), 3),
+            "rear_gap": round(opponent_profile.get("rear_gap", 200.0), 3),
+        },
     }
 
 
 def overlay_prompt(payload: dict[str, Any]) -> str:
-    return f"""You are supplementing a rule-based TORCS telemetry dashboard.
-The rule guidance is already fixed. Do not replace the action, headline, focus area, or pit advice.
-Your only job is to add a short, useful explanation for the dashboard.
+    return f"""Add a short model supplement for this fixed TORCS coaching card.
+Return one valid JSON object only. English only.
+Do not change the fixed radio_cue, action, priority_issues, pit_advice, or targets.
+Keep it fast: analysis <= 32 words, coach_note <= 18 words, each tip <= 14 words.
+Use only telemetry values present in the payload.
 
-Rules:
-1. Output one valid JSON object only.
-2. Use English only.
-3. Keep the response concise and telemetry-grounded.
-4. "analysis" should explain why the current rule guidance makes sense.
-5. "coach_note" should be one short supporting sentence for the driver.
-
-Return this schema:
+Schema:
 {{
-  "analysis": "1-2 short sentences",
-  "coach_note": "one short supporting sentence"
+  "analysis": "cause and consequence",
+  "coach_note": "radio-style support",
+  "braking_tip": "braking adjustment or empty string",
+  "cornering_tip": "line adjustment or empty string",
+  "throttle_tip": "throttle adjustment or empty string"
 }}
 
 Payload:
@@ -286,6 +533,9 @@ def pending_overlay() -> dict[str, Any]:
         "source": "model_overlay",
         "analysis": "",
         "coach_note": "",
+        "braking_tip": "",
+        "cornering_tip": "",
+        "throttle_tip": "",
         "updated_at": None,
         "error": "",
     }
@@ -332,7 +582,7 @@ def build_dashboard_payload(
     if not raw_frames:
         return empty_dashboard(window_seconds, history_seconds)
 
-    common_frames = [midware_frame_to_common(frame) for frame in raw_frames]
+    common_frames = [to_common_frame(frame) for frame in raw_frames]
     if not common_frames:
         return empty_dashboard(window_seconds, history_seconds)
 
@@ -340,10 +590,19 @@ def build_dashboard_payload(
     history_frames = select_recent_frames(common_frames, history_seconds) or common_frames
     latest = live_frames[-1]
     summary = summarize_frames(live_frames)
-    rule_feedback = build_rule_feedback(live_frames)
     track_profile = compact_track_profile(latest["track"])
     opponent_profile = compact_opponent_profile(latest["opponents"])
-    overlay_request = overlay_payload(latest, summary, track_profile, opponent_profile, rule_feedback)
+    rule_feedback = build_rule_feedback(live_frames)
+    priority_issues = build_priority_issues(latest, summary, track_profile, opponent_profile)
+    radio_cue = build_radio_cue(rule_feedback)
+    overlay_request = overlay_payload(
+        latest,
+        summary,
+        track_profile,
+        opponent_profile,
+        rule_feedback,
+        priority_issues,
+    )
 
     track_pos = latest["track_pos"]
     signals = [
@@ -399,6 +658,14 @@ def build_dashboard_payload(
             "action": rule_feedback["action"],
             "pit_advice": rule_feedback["pit_advice"],
             "confidence": round(safe_float(rule_feedback.get("confidence"), 0.0), 2),
+            "why": rule_feedback.get("why", ""),
+            "immediate_steps": rule_feedback.get("immediate_steps", []),
+            "next_lap_focus": rule_feedback.get("next_lap_focus", ""),
+            "risk": rule_feedback.get("risk", ""),
+            "target_metrics": rule_feedback.get("target_metrics", {}),
+            "metrics": rule_feedback.get("metrics", {}),
+            "priority_issues": priority_issues,
+            "radio_cue": radio_cue,
             "async_overlay": pending_overlay(),
         },
         "signals": signals,
