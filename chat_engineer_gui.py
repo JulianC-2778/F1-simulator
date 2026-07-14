@@ -42,6 +42,7 @@ if str(ROOT_DIR) not in sys.path:
 import config
 import granite_client
 import overlay_broadcast
+import voice_input
 from car_state_source import (
     CarStateSource,
     FakeCarStateSource,
@@ -118,6 +119,12 @@ class ChatEngineerApp:
         self.result_queue: "queue.Queue[str]" = queue.Queue()
         self.pending = False
 
+        # Voice input (English-only, see voice_input.py). `self.recorder` is
+        # non-None exactly while a recording is in progress -- the mic
+        # button toggles between start/stop based on that.
+        self.recorder: voice_input.Recorder | None = None
+        self.voice_queue: "queue.Queue[str]" = queue.Queue()
+
         root.title("TORCS AI 赛车工程师")
         root.geometry("760x600")
 
@@ -127,6 +134,7 @@ class ChatEngineerApp:
 
         self.root.after(0, self._refresh_status)
         self.root.after(100, self._poll_results)
+        self.root.after(150, self._poll_voice_results)
 
     # ---- layout ----
     def _build_status_panel(self) -> None:
@@ -170,6 +178,8 @@ class ChatEngineerApp:
         self.entry = tk.Entry(frame, font=("Microsoft YaHei UI", 11))
         self.entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.entry.bind("<Return>", lambda _event: self._on_send())
+        self.mic_button = tk.Button(frame, text="🎤", width=4, command=self._on_mic_click)
+        self.mic_button.pack(side="left", padx=(0, 8))
         self.send_button = tk.Button(frame, text="发送", width=8, command=self._on_send)
         self.send_button.pack(side="left")
 
@@ -238,6 +248,46 @@ class ChatEngineerApp:
         except queue.Empty:
             pass
         self.root.after(100, self._poll_results)
+
+    # ---- voice input (English-only, see voice_input.py) ----
+    def _on_mic_click(self) -> None:
+        if self.recorder is None:
+            if self.pending:
+                return  # don't start recording while waiting on an answer
+            self.recorder = voice_input.Recorder()
+            self.recorder.start()
+            self.mic_button.configure(text="■", fg="#c0392b")
+            self._append_chat("system", "[录音中...再次点击麦克风按钮结束（英文提问）]")
+            return
+
+        # Recording in progress -- stop it and transcribe on a background
+        # thread (stopping parecord + running Whisper can both take a
+        # moment; never touch Tkinter widgets off the main thread, mirrors
+        # _ask_worker's pattern via the thread-safe voice_queue).
+        recorder = self.recorder
+        self.recorder = None
+        self.mic_button.configure(text="…", state="disabled", fg="black")
+        threading.Thread(target=self._voice_worker, args=(recorder,), daemon=True).start()
+
+    def _voice_worker(self, recorder: "voice_input.Recorder") -> None:
+        wav_path = recorder.stop()
+        text = voice_input.transcribe(wav_path) if wav_path else ""
+        self.voice_queue.put(text)
+
+    def _poll_voice_results(self) -> None:
+        try:
+            while True:
+                text = self.voice_queue.get_nowait()
+                self.mic_button.configure(text="🎤", state="normal")
+                if text:
+                    self.entry.delete(0, "end")
+                    self.entry.insert(0, text)
+                    self._append_chat("system", f"[语音识别结果：{text}（可编辑后按回车/发送）]")
+                else:
+                    self._append_chat("system", "[未识别到语音内容，请重试或直接打字提问]")
+        except queue.Empty:
+            pass
+        self.root.after(150, self._poll_voice_results)
 
 
 def main() -> None:
