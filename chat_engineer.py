@@ -46,6 +46,7 @@ if str(ROOT_DIR) not in sys.path:
 import config
 import granite_client
 import overlay_broadcast
+import voice_input
 from car_state_source import (
     CarStateSource,
     FakeCarStateSource,
@@ -105,16 +106,31 @@ def main() -> None:
     car_state_source = choose_car_state_source()
     ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
 
-    print("\n输入你的问题（例如：我的轮胎状态怎么样？/ 现在该不该进站？），输入 exit 退出。\n")
+    print(
+        "\n输入你的问题（例如：我的轮胎状态怎么样？/ 现在该不该进站？），"
+        "输入 v 用语音提问（英文），输入 exit 退出。\n"
+    )
 
     while True:
         try:
             car_state = car_state_source.get_state()
             print_car_state(car_state)
-            user_question = input("\n玩家：").strip()
+            raw_input_text = input("\n玩家：").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n再见。")
             break
+
+        if raw_input_text.lower() == "v":
+            # Voice input is English-only (see voice_input.py) -- ENGINEER_PERSONA
+            # always answers in English regardless of how the question was typed,
+            # so this doesn't change the rest of the pipeline at all.
+            user_question = voice_input.record_and_transcribe_blocking()
+            if not user_question:
+                print("[ChatEngineer] 没有识别到内容，请重试（或直接打字提问）。")
+                continue
+            print(f"[VoiceInput] 识别结果：{user_question}")
+        else:
+            user_question = raw_input_text
 
         if not user_question:
             continue
