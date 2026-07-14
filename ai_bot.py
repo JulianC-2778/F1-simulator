@@ -73,6 +73,14 @@ except ImportError:
         close = [o for o in opponents if o < 30.0]
         return {"closest": round(min(opponents), 1), "close_count": len(close)}
 
+try:
+    from track_model import load_track_model
+    _TRACK_MODEL_AVAILABLE = True
+except ImportError:
+    # The pre-race map is optional: without track_model.py the bot drives on
+    # sensors alone, exactly as before.
+    _TRACK_MODEL_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # SCR field metadata
@@ -590,6 +598,30 @@ _PP_FREE = 0.10
 # a big gain here would re-create the pendulum the deadband cured.
 _HOLD_CENTRE = 0.08
 
+# A+ racing line: pull strength toward the map's entry-line setpoint (outside
+# edge on the approach to a mapped corner — out-in-out).  Stronger than the
+# plain hold-centre drift because it must actually MOVE the car across the
+# road on the straight, but still a suggestion, not a command: it rides the
+# same fade as hold-centre (dies as soon as the pursuit aim wakes up), so
+# mid-corner steering stays with pursuit + sensors alone.
+_LINE_GAIN = 0.18
+
+# The raw setpoint FLIPS sides between alternating corners; feeding those
+# steps straight into the steering re-created the twisty-section weave that
+# was cured before P1.  Slew-limit the setpoint instead: full swing takes
+# ~1 s, so repositioning is a drift, never a dart.
+_LINE_SLEW = 0.02          # max setpoint change per 20 ms tick
+_line_lp   = 0.0           # module state: slewed line setpoint
+
+# NOTE: a PD upgrade of this term (damping on the low-passed tpos rate) was
+# tried and REVERTED twice in one day.  Unguarded, stale corner-sweep rate
+# leaked into the straight and threw the car off track; guarded, it measured
+# smoother in headless runs but turned into visible SNAKING in the WSLg GUI —
+# derivative feedback plus rendering-stall latency ADDS energy instead of
+# damping (the rate signal arrives stale).  On this machine the GUI is the
+# demo environment, so: no D term here.  Do not re-add without testing under
+# GUI load.
+
 # WHY the angle-alignment term (params.steer_gain) is added to pursuit:
 # the lateral loop is second-order — offset y feeds the aim, the aim turns the
 # heading, the heading integrates back into y.  Pursuit alone supplies the
@@ -654,6 +686,54 @@ _ACCEL_BAND = 15.0
 # threshold crossing, which was the other source of throttle stutter.
 _TARGET_RISE = 3.0
 _target_lp: float | None = None   # module state: smoothed target speed
+
+# Pre-race track map (P1): distFromStart → speed-limit lookup built from the
+# track's own XML before the race, exactly the way a human driver studies the
+# circuit map.  It caps the target speed via min() — the map can only slow
+# the car for corners the sensors cannot see yet, never speed it up, so a
+# missing or misaligned map degrades to plain sensor driving, not a crash.
+_track_model: Any = None          # module state: TrackModel or None
+
+# Map TRUST mode: min() alone can never beat the sensors, so on stretches
+# where the map is provably reliable it is allowed to RAISE the target too —
+# cancelling the sensors' false straight-line lifts (the 0° beam grazing the
+# edge misreads sight and taps the brake at 200+ km/h several times a lap)
+# and braking later into known corners.  Five gates, ALL required; any
+# failure falls back to the plain min() behaviour:
+#   1. the practice-lap odometer calibration has completed (real_lap set);
+#   2. the car is on line and aligned (|tpos|, |angle| small);
+#   3. no opponent in the forward cone — the map cannot see traffic;
+#   4. sensor sight is consistent with the map's next-corner distance —
+#      if the road looks far more blocked than the map predicts, something
+#      is out there that the map does not know about;
+#   5. the local map limit is fast (≥ _TRUST_MIN_KMH): slow corners and
+#      apexes are NEVER trusted — they stay with the sensors entirely.
+_TRUST_MIN_KMH    = 150.0   # gate 5: never trust the map below this limit
+_TRUST_TPOS       = 0.9     # gate 2: max |track_pos| to count as "on line"
+_TRUST_ANGLE      = 0.3     # gate 2: max |angle| (rad) to count as aligned
+_TRUST_OPP_CLEAR  = 100.0   # gate 3: forward cone must be clear this far (m)
+_TRUST_SIGHT_FRAC = 0.6     # gate 4: sight ≥ frac · min(next corner, 200 m)
+_TRUST_MARGIN     = 0.97    # trusted target = map limit × this safety margin
+
+# Brake-point mode: when the MAP's braking curve is what limits the target,
+# drive it like a racing driver — hold FULL throttle until the curve is
+# reached, then brake firmly to track it.  The gentle throttle-easing band
+# (_ACCEL_BAND) exists to stop pedal-tapping while cruising at a cap; applied
+# to a descending braking curve it made the car lift ~180 m out and coast to
+# the corner instead of powering to the brake point (user-visible, and slow).
+_MAP_THROTTLE_BAND  = 0.97  # full throttle below this fraction of the curve;
+                            # the 3% neutral gap prevents throttle/brake sawtooth
+_MAP_BRAKE_RESPONSE = 5.0   # curve needs ~11 m/s²; the cruise gain (3.0) let
+                            # the car ride 20-30% hot into every corner.  5.0
+                            # is safe HERE because it only applies on the map
+                            # curve (straight-line braking) and the trail-brake
+                            # steer cut still protects corner entry.
+
+
+def set_track_model(model: Any) -> None:
+    """Install the pre-race track map (None disables it)."""
+    global _track_model
+    _track_model = model
 
 # Last computed speed-planning values, surfaced in run_bot's periodic log so a
 # throttle lift on track can be traced to its cause (short sight? big angle?).
@@ -726,11 +806,12 @@ _ta_jam     = 0       # module state: consecutive jammed frames while reversing
 def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
     global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam
-    global _target_lp
+    global _target_lp, _line_lp
     _stuck_frames = _reverse_frames = 0
     _recovering = _turnaround = False
     _ta_fwd = _ta_jam = 0
     _target_lp = None
+    _line_lp = 0.0
 
 
 def _recovery_steer(angle: float, tpos: float) -> float:
@@ -841,8 +922,9 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     tpos       = state.get("track_pos",    0.0)
     track      = state.get("track",         [])
     wheel_vels = state.get("wheel_spin_vel", [])
+    dist_from_start = state.get("dist_from_start", -1.0)   # -1 = not in packet
 
-    global _stuck_frames, _reverse_frames, _recovering, _target_lp
+    global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp
 
     # --- stuck / crash recovery (works on OR off track, takes priority) ---
     # Once we've committed to a reverse burst, see it through; then resume normal
@@ -910,7 +992,20 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     edge    = max(0.0, abs(tpos) - _EDGE_FREE)
     barrier = -math.copysign(edge * _EDGE_GAIN, tpos)
     aim     = math.copysign(max(0.0, abs(pursuit) - _PP_FREE), pursuit)
-    centre  = -tpos * _HOLD_CENTRE * max(0.0, 1.0 - abs(pursuit) / _PP_FREE)
+    # A+ racing line: hold-line setpoint.  0 (centre) on open road, but on
+    # the approach to a mapped corner the map moves it to the OUTSIDE edge
+    # (out-in-out entry).  Same fade as before: the term only acts while the
+    # pursuit aim is quiet, so it positions the car on straights/braking
+    # zones and never wrestles pursuit for the wheel mid-corner.
+    line_raw = 0.0
+    if _track_model is not None and dist_from_start >= 0.0:
+        line_raw = _track_model.line_tpos(dist_from_start)
+    # Slew toward the raw setpoint — side flips between alternating corners
+    # become a ~1 s drift instead of a dart (the twisty-section weave fix).
+    _line_lp += clamp(line_raw - _line_lp, -_LINE_SLEW, _LINE_SLEW)
+    hold_gain = _LINE_GAIN if abs(_line_lp) > 0.05 else _HOLD_CENTRE
+    fade    = max(0.0, 1.0 - abs(pursuit) / _PP_FREE)
+    centre  = clamp((_line_lp - tpos) * hold_gain, -0.25, 0.25) * fade
     steer   = aim * _PP_GAIN + centre + barrier - speed_y * _STEER_DAMP
     steer  /= (1.0 + max(speed, 0.0) * _STEER_SPEED_K)
     # The alignment damper is deliberately OUTSIDE the speed attenuation: the
@@ -945,6 +1040,39 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         target_speed = min(params.max_speed,
                            dist_limit / (1.0 + _CORNER_SHARPNESS * sharp))
 
+    # --- pre-race map lookahead: brake for corners the sensors can't see ---
+    # min() with the reactive target, never a replacement: the map knows the
+    # geometry but not traffic, damage, or whether we're even on the line.
+    # map_bound feeds the per-lap "% of frames the map governed" statistic —
+    # the calibration gauge: near 0% = pure backstop, high = map is taxing.
+    _dbg["map_bound"] = 0.0
+    _dbg["trust"]     = 0.0
+    map_curve = False           # target comes from the map's braking curve
+    if _track_model is not None and dist_from_start >= 0.0:
+        map_limit = _track_model.limit_kmh(dist_from_start)
+        _dbg["map"] = map_limit
+        if map_limit < target_speed:
+            _dbg["map_bound"] = 1.0
+            target_speed = map_limit
+            map_curve    = map_limit < params.max_speed - 1.0
+        # --- TRUST mode: all five gates (see constants above) → the map may
+        # RAISE the target: cancels false straight-line lifts, brakes later.
+        elif (_track_model.real_lap is not None                    # gate 1
+                and map_limit >= _TRUST_MIN_KMH                    # gate 5
+                and abs(tpos) <= _TRUST_TPOS
+                and abs(angle) <= _TRUST_ANGLE):                   # gate 2
+            opps      = state.get("opponents", [])
+            front_opp = min(opps[16:20]) if len(opps) >= 20 else 200.0
+            nc        = _track_model.next_corner(dist_from_start)
+            nc_dist   = nc["dist_m"] if nc else 800.0
+            if (front_opp > _TRUST_OPP_CLEAR                       # gate 3
+                    and sight >= min(nc_dist, 200.0) * _TRUST_SIGHT_FRAC):  # gate 4
+                trusted = min(map_limit * _TRUST_MARGIN, params.max_speed)
+                if trusted > target_speed:
+                    target_speed  = trusted
+                    _dbg["trust"] = 1.0
+                    map_curve     = trusted < params.max_speed - 1.0
+
     # Smooth the target: drops are instant (braking must never lag), rises are
     # rate-limited so a flickering straight/corner classification can't strobe
     # the pedals.
@@ -963,12 +1091,20 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # Brake only past a small overspeed deadband, so a slightly twitchy target
     # doesn't tap the brake on a clear straight and bleed off speed.
     if speed <= target_speed * (1.0 + _BRAKE_DEADBAND):
-        accel = params.accel_limit * clamp((target_speed - speed) / _ACCEL_BAND, 0.0, 1.0)
+        if map_curve:
+            # Brake-point mode: the map curve is a BRAKE trigger, not a
+            # cruise setpoint — power to it flat out (racing-driver style;
+            # the easing band made the car lift 180 m early and coast).
+            # The small neutral gap below the curve prevents a sawtooth.
+            accel = params.accel_limit if speed < target_speed * _MAP_THROTTLE_BAND else 0.0
+        else:
+            accel = params.accel_limit * clamp((target_speed - speed) / _ACCEL_BAND, 0.0, 1.0)
         brake = 0.0
     else:
         excess = (speed - target_speed) / max(target_speed, 1.0)
         accel  = 0.0
-        brake  = clamp((excess - _BRAKE_DEADBAND) * params.brake_gain * _BRAKE_RESPONSE,
+        brake  = clamp((excess - _BRAKE_DEADBAND) * params.brake_gain
+                       * (_MAP_BRAKE_RESPONSE if map_curve else _BRAKE_RESPONSE),
                        0.0, 1.0)
         # Straight-line braking is strong; release it as the wheel turns so a
         # mid-corner target drop can't snap the rear loose (trail-brake guard).
@@ -1240,6 +1376,7 @@ def run_bot(
     strategy:   str   = NORMAL,
     *,
     use_granite: bool = False,
+    track:      str | None = None,
     verbose:    bool  = True,
 ) -> None:
     """Connect to TORCS and drive.
@@ -1247,10 +1384,28 @@ def run_bot(
     With ``use_granite=True`` (Step 7), a GraniteStrategist is created and
     queried every few seconds to update the driving strategy dynamically.
     Without it, the fixed ``strategy`` argument is used throughout.
+
+    ``track`` selects the pre-race map: a track name (``g-track-2``), a path
+    to the track XML, or None to auto-detect from the TORCS raceman config.
+    No map found → the bot drives on sensors alone, as before.
     """
     if strategy not in _ALL_STRATEGIES:
         print(f"Unknown strategy '{strategy}', falling back to NORMAL.")
         strategy = NORMAL
+
+    # --- P1: study the circuit map before the race ---
+    set_track_model(None)
+    if track and track.lower() in ("off", "none", "no"):
+        print("[map] disabled by --track off — sensors only (A/B baseline).")
+    elif _TRACK_MODEL_AVAILABLE:
+        _model = load_track_model(track or "auto", quiet=track is None)
+        if _model is not None:
+            set_track_model(_model)
+            print(f"[map] {_model.summary()}")
+        elif track:
+            print(f"[warn] track map '{track}' not loaded — driving on sensors only.")
+    elif track:
+        print("[warn] --track given but track_model.py is missing — driving on sensors only.")
 
     # --- Step 7: optionally connect Granite ---
     strategist: GraniteStrategist | None = None
@@ -1274,6 +1429,11 @@ def run_bot(
 
         step             = 0
         current_strategy = strategy               # updated by Granite each tick
+        last_lap         = 0.0                    # lastLapTime seen so far
+        lap_frames       = 0                      # frames driven this lap
+        lap_bound        = 0                      # … of which the map governed
+        lap_trust        = 0                      # … of which trust mode ruled
+        prev_dist        = -1.0                   # distFromStart last frame
 
         try:
             while True:
@@ -1292,6 +1452,40 @@ def run_bot(
                     # launch-phase commands (the 1st↔2nd gear ghost-flap).
                     continue
 
+                # Practice-lap odometer calibration: the XML geometry can be
+                # ~1% long (spiral-corner approximation) and the error is
+                # CUMULATIVE — late-lap corners land tens of metres off, so
+                # the map braked late into them and dragged every exit
+                # (measured: +3.4 s/lap on Forza).  The car itself knows the
+                # true lap length: it is where distFromStart wraps to 0.
+                # Measure it at each start-line crossing and rescale.
+                if _track_model is not None:
+                    d_now = state.get("dist_from_start", -1.0)
+                    if (prev_dist > _track_model.lap_length * 0.5
+                            and 0.0 <= d_now < _track_model.lap_length * 0.3):
+                        travel   = state.get("speed_x", 0.0) / 3.6 * 0.02
+                        measured = prev_dist + max(0.0, travel - d_now)
+                        if abs(measured - _track_model.lap_length) \
+                                < _track_model.lap_length * 0.3:
+                            if _track_model.real_lap is None:
+                                print(f"[map] odometer calibrated: XML "
+                                      f"{_track_model.lap_length:.0f} m → "
+                                      f"measured {measured:.0f} m")
+                            _track_model.calibrate(measured)
+                    prev_dist = d_now
+
+                # Map sanity: distFromStart beyond the map's lap length means
+                # the loaded map is for a DIFFERENT track — a wrong braking
+                # plan is worse than none, so drop it and fall back to sensors.
+                if (_track_model is not None
+                        and state.get("dist_from_start", 0.0)
+                            > _track_model.lap_length * 1.02 + 10.0):
+                    print(f"[map] WARNING: distFromStart "
+                          f"{state['dist_from_start']:.0f} m exceeds map lap "
+                          f"length {_track_model.lap_length:.0f} m — wrong "
+                          f"track loaded?  Map disabled, sensors only.")
+                    set_track_model(None)
+
                 # --- Step 7: Granite strategy update (non-blocking) ---
                 if strategist is not None:
                     raw_strategy, _reason = strategist.tick(state)
@@ -1301,6 +1495,19 @@ def run_bot(
 
                 client.send_control(compute_control(state, current_strategy))
                 step += 1
+
+                # --- per-lap A/B gauge: lap time + how often the map ruled ---
+                lap_frames += 1
+                lap_bound  += int(_dbg.get("map_bound", 0.0))
+                lap_trust  += int(_dbg.get("trust", 0.0))
+                llt = state.get("last_lap_time", 0.0)
+                if llt > 0.0 and abs(llt - last_lap) > 1e-3:
+                    pct_b = 100.0 * lap_bound / max(lap_frames, 1)
+                    pct_t = 100.0 * lap_trust / max(lap_frames, 1)
+                    print(f"[lap] {llt:7.2f} s   map-bound {pct_b:3.0f}%   "
+                          f"trust {pct_t:3.0f}% of frames")
+                    last_lap   = llt
+                    lap_frames = lap_bound = lap_trust = 0
 
                 if verbose and step % 100 == 0:
                     speed = state.get("speed_x", 0.0)
@@ -1314,6 +1521,8 @@ def run_bot(
                         f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}  "
                         f"strategy={current_strategy}  "
                         f"tgt={_dbg.get('target', 0.0):5.1f}  "
+                        f"map={_dbg.get('map', -1.0):5.0f}  "
+                        f"tru={int(_dbg.get('trust', 0.0))}  "
                         f"sight={_dbg.get('sight', 0.0):5.1f}  "
                         f"open={_dbg.get('open_angle', 0.0):+.2f}  "
                         f"rpm={rpm:5.0f}  dmg={dmg:5.0f}  "
@@ -1336,6 +1545,9 @@ def run_bot(
 #   python3 ai_bot.py --bot                        → localhost:3001, NORMAL
 #   python3 ai_bot.py --bot HOST PORT              → custom address
 #   python3 ai_bot.py --bot HOST PORT STRATEGY     → e.g. ATTACK
+#   --track NAME|XML   pre-race map (default: auto-detect from ~/.torcs)
+#   --track off        disable the map — sensors-only A/B baseline
+#   --granite          enable the Granite strategist
 # ---------------------------------------------------------------------------
 
 def _run_tests() -> None:
@@ -1642,6 +1854,97 @@ def _run_tests() -> None:
     assert "(meta 1)" in cc_pit, f"FAIL PIT meta: {cc_pit}"
     print(f"compute_control PIT       ... OK  →  {cc_pit}")
 
+    # ---- P1: pre-race map lookahead --------------------------------------
+    if _TRACK_MODEL_AVAILABLE:
+        from track_model import Segment, TrackModel
+        tm = TrackModel([Segment("str", 600.0, 0.0, 0.0),
+                         Segment("rgt", math.pi * 30.0, 30.0, 30.0),
+                         Segment("str", 400.0, 0.0, 0.0)],
+                        width=12.0, name="unit-map")
+        set_track_model(tm)
+        # sensors say clear straight, but the MAP knows a hairpin starts in
+        # 20 m — the map cap must beat the reactive target and brake the car
+        _reset_driver_state()
+        cs_map = {**cs, "speed_x": 200.0, "gear": 6, "dist_from_start": 580.0,
+                  "track": [200.0] * 19}
+        out_map = compute_control(cs_map, NORMAL)
+        assert "(accel 0.000)" in out_map, f"FAIL map cap must lift throttle: {out_map}"
+        assert "(brake 0.000)" not in out_map, f"FAIL map cap must brake: {out_map}"
+        # far from any corner the map must NOT interfere with a clear straight
+        _reset_driver_state()
+        out_far = compute_control({**cs_map, "speed_x": 80.0,
+                                   "dist_from_start": 100.0}, NORMAL)
+        assert "(accel 1.000)" in out_far, f"FAIL map must not bind on open straight: {out_far}"
+        # no dist_from_start in the state → map silently skipped
+        _reset_driver_state()
+        out_nod = compute_control({**cs, "speed_x": 80.0}, NORMAL)
+        assert "(accel 1.000)" in out_nod, f"FAIL missing dist must skip map: {out_nod}"
+        # A+ entry line: right-hander 150 m ahead (beyond sensor braking need,
+        # inside the entry zone) → drift LEFT (positive steer) to take the
+        # entry from the outside.  The setpoint is slew-limited (weave fix),
+        # so it needs ~0.8 s of frames to build up.
+        _reset_driver_state()
+        cs_line = {**cs, "speed_x": 80.0, "dist_from_start": 450.0,
+                   "track": [200.0] * 19}
+        out_line = ""
+        for _ in range(40):
+            out_line = compute_control(cs_line, NORMAL)
+        m_steer = re.search(r"\(steer ([-0-9.]+)\)", out_line)
+        assert m_steer and float(m_steer.group(1)) > 0.05, \
+            f"FAIL entry bias must steer toward the outside: {out_line}"
+        print("compute_control map lookahead + entry line (P1/A+) ... OK")
+
+        # Brake-point mode: powering toward a mapped corner must hold FULL
+        # throttle up to the braking curve (the old easing band lifted
+        # ~15 km/h early and coasted the whole approach)…
+        _reset_driver_state()
+        out_bp = compute_control({**cs_line, "speed_x": 200.0, "gear": 5}, NORMAL)
+        assert "(accel 1.000)" in out_bp, \
+            f"FAIL: must power flat-out to the brake point: {out_bp}"
+        # …and just below the curve sits a small neutral gap (no sawtooth).
+        _reset_driver_state()
+        out_coast = compute_control({**cs_line, "speed_x": 211.0, "gear": 5}, NORMAL)
+        assert "(accel 0.000)" in out_coast and "(brake 0.000)" in out_coast, \
+            f"FAIL: neutral gap just below the curve: {out_coast}"
+        print("compute_control map brake-point mode ... OK")
+
+        # TRUST mode: the sensors misread a grazed straight (sight 150 →
+        # reactive lift at 200 km/h) but the map knows the next corner is
+        # 500 m away.  Uncalibrated → gate 1 must veto; calibrated → the
+        # false lift is cancelled and the car stays at full throttle.
+        cs_trust = {**cs, "speed_x": 200.0, "gear": 5,
+                    "dist_from_start": 100.0, "track": [150.0] * 19}
+        _reset_driver_state()
+        out_raw = compute_control(cs_trust, NORMAL)      # tm not calibrated yet
+        assert _dbg["trust"] == 0.0, "FAIL gate 1: uncalibrated map trusted"
+        assert "(accel 1.000)" not in out_raw, \
+            f"FAIL: sensor lift expected without trust: {out_raw}"
+        tm.calibrate(tm.lap_length)                      # practice lap done
+        _reset_driver_state()
+        out_tr = compute_control(cs_trust, NORMAL)
+        assert _dbg["trust"] == 1.0, "FAIL: all gates pass → must trust"
+        assert "(accel 1.000)" in out_tr, \
+            f"FAIL: trust must cancel the false lift: {out_tr}"
+        # gate 3: an opponent 50 m ahead vetoes trust (map can't see traffic)
+        opps_ahead = [200.0] * 36
+        opps_ahead[17] = 50.0
+        _reset_driver_state()
+        compute_control({**cs_trust, "opponents": opps_ahead}, NORMAL)
+        assert _dbg["trust"] == 0.0, "FAIL gate 3: traffic must veto trust"
+        # gate 5: slow corners are NEVER trusted — the map still binds min()
+        _reset_driver_state()
+        out_slow = compute_control({**cs_trust, "dist_from_start": 580.0,
+                                    "track": [200.0] * 19}, NORMAL)
+        assert _dbg["trust"] == 0.0, "FAIL gate 5: slow corner trusted"
+        assert "(brake 0.000)" not in out_slow, \
+            f"FAIL: map must still brake for the hairpin: {out_slow}"
+        tm.real_lap = None
+        set_track_model(None)
+        _reset_driver_state()
+        print("compute_control map trust mode (5 gates) ... OK")
+    else:
+        print("compute_control map lookahead (P1) ... SKIPPED (track_model.py not found)")
+
     # ---- safety_filter ------------------------------------------------------
     base = {"fuel": 50.0, "damage": 0.0}
 
@@ -1758,11 +2061,15 @@ if __name__ == "__main__":
     if args and args[0] == "--bot":
         _host, _port, _strategy = "localhost", 3001, NORMAL
         _granite = False
+        _track: str | None = None
         positional: list[str] = []
         i = 1
         while i < len(args):
             if args[i] == "--strategy" and i + 1 < len(args):
                 _strategy = args[i + 1].upper()
+                i += 2
+            elif args[i] == "--track" and i + 1 < len(args):
+                _track = args[i + 1]
                 i += 2
             elif args[i] == "--granite":
                 _granite = True
@@ -1776,6 +2083,6 @@ if __name__ == "__main__":
             _port = int(positional[1])
         elif len(positional) > 1:
             _strategy = positional[1].upper()
-        run_bot(_host, _port, _strategy, use_granite=_granite)
+        run_bot(_host, _port, _strategy, use_granite=_granite, track=_track)
     else:
         _run_tests()
