@@ -26,6 +26,7 @@ plus one new one:
 
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import sys
@@ -116,8 +117,13 @@ class ChatEngineerApp:
         self.car_state_source = car_state_source
         self.ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
         self.latest_car_state: dict[str, Any] = {}
-        self.result_queue: "queue.Queue[str]" = queue.Queue()
+        self.result_queue: "queue.Queue[tuple[str, bool]]" = queue.Queue()
         self.pending = False
+        # Tkinter text index where the in-progress streamed answer starts,
+        # or None when no answer is currently streaming in. Lets
+        # _poll_results update the same line in place as chunks arrive
+        # instead of appending a new line per chunk.
+        self._streaming_answer_start: str | None = None
 
         # Voice input (English-only, see voice_input.py). `self.recorder` is
         # non-None exactly while a recording is in progress -- the mic
@@ -126,11 +132,20 @@ class ChatEngineerApp:
         self.voice_queue: "queue.Queue[str]" = queue.Queue()
 
         root.title("TORCS AI 赛车工程师")
-        root.geometry("760x600")
+        root.geometry("760x650")
+        root.minsize(600, 500)
 
         self._build_status_panel()
-        self._build_chat_area()
+        # Pack the input bar (pinned to the bottom, fixed height) BEFORE
+        # the expanding chat log. Tk's pack layout gives priority to
+        # whichever side a widget is packed against -- packing this one
+        # against "bottom" first guarantees it always keeps its slice of
+        # the window, instead of the expand=True chat log claiming all the
+        # space first and squeezing the input bar down to nothing (this is
+        # what was happening: not a rendering bug, just not enough height
+        # requested up front on this machine's font metrics).
         self._build_input_bar()
+        self._build_chat_area()
 
         self.root.after(0, self._refresh_status)
         self.root.after(100, self._poll_results)
@@ -174,7 +189,7 @@ class ChatEngineerApp:
 
     def _build_input_bar(self) -> None:
         frame = tk.Frame(self.root)
-        frame.pack(fill="x", padx=8, pady=(0, 8))
+        frame.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
         self.entry = tk.Entry(frame, font=("Microsoft YaHei UI", 11))
         self.entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.entry.bind("<Return>", lambda _event: self._on_send())
@@ -226,25 +241,51 @@ class ChatEngineerApp:
         never the Tkinter widgets directly. Also best-effort broadcasts the
         reply to the shared overlay display layer (see overlay_broadcast.py
         / docs/display-layer-contract.md) -- that call never raises and
-        never blocks long, even if midware/overlay-app are not running."""
+        never blocks long, even if midware/overlay-app are not running.
+
+        Streams the reply from Granite chunk by chunk (see
+        granite_client.ask_engineer_stream) and pushes the running text into
+        the queue as (accumulated_text, is_final) so _poll_results can show
+        a live typewriter update instead of one long silent wait. Total
+        generation time is unchanged -- this only changes when the driver
+        sees the words appear."""
         overlay_broadcast.broadcast_engineer_start()
+        accumulated = ""
         try:
-            answer = granite_client.ask_engineer(self.connection, messages)
+            for chunk in granite_client.ask_engineer_stream(self.connection, messages):
+                accumulated += chunk
+                self.result_queue.put((accumulated, False))
         except Exception as exc:
             answer = f"[Granite 请求失败：{exc}]"
             overlay_broadcast.broadcast_engineer_error(str(exc))
-        else:
-            overlay_broadcast.broadcast_engineer_reply(answer)
-        self.result_queue.put(answer)
+            self.result_queue.put((answer, True))
+            return
+        overlay_broadcast.broadcast_engineer_reply(accumulated)
+        self.result_queue.put((accumulated, True))
 
     def _poll_results(self) -> None:
         try:
             while True:
-                answer = self.result_queue.get_nowait()
-                self._append_chat("assistant", f"AI工程师：{answer}")
-                self.ctx_mgr.add_assistant(answer)
-                self.pending = False
-                self.send_button.configure(state="normal", text="发送")
+                text, is_final = self.result_queue.get_nowait()
+                if self._streaming_answer_start is None:
+                    self.chat_box.configure(state="normal")
+                    self.chat_box.insert("end", "AI工程师：", "assistant")
+                    self._streaming_answer_start = self.chat_box.index("end-1c")
+                    self.chat_box.configure(state="disabled")
+                self.chat_box.configure(state="normal")
+                self.chat_box.delete(self._streaming_answer_start, "end")
+                self.chat_box.insert(self._streaming_answer_start, text, "assistant")
+                self.chat_box.configure(state="disabled")
+                self.chat_box.see("end")
+                if is_final:
+                    self.chat_box.configure(state="normal")
+                    self.chat_box.insert("end", '\n\n')
+                    self.chat_box.configure(state="disabled")
+                    self.chat_box.see("end")
+                    self._streaming_answer_start = None
+                    self.ctx_mgr.add_assistant(text)
+                    self.pending = False
+                    self.send_button.configure(state="normal", text="发送")
         except queue.Empty:
             pass
         self.root.after(100, self._poll_results)
@@ -290,7 +331,28 @@ class ChatEngineerApp:
         self.root.after(150, self._poll_voice_results)
 
 
+def _enable_windows_dpi_awareness() -> None:
+    """Fixes a classic Tkinter-on-Windows bug: on a scaled (high-DPI)
+    display, widgets can render squished or blank (e.g. the input bar
+    collapsing into a solid color block) until the window is manually
+    resized. Telling Windows this process is DPI-aware before the Tk root
+    is created avoids that. Windows-only and best-effort -- a no-op on
+    WSL/Linux, and silently does nothing if the API isn't available (older
+    Windows versions)."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
 def main() -> None:
+    _enable_windows_dpi_awareness()
+
     connection = granite_client.connect()
     granite_client.print_banner(connection)
 

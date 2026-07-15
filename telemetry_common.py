@@ -804,6 +804,56 @@ def chat_completion_text(
     return content
 
 
+def chat_completion_stream(
+    connection: ModelConnection,
+    *,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+):
+    """Like chat_completion_text, but yields the reply incrementally as
+    Granite generates it, instead of waiting for the full response. Lets a
+    caller show a typewriter-style live update instead of one long silent
+    wait -- the total generation time is unchanged, but the first words show
+    up almost immediately.
+
+    Only the "http" transport (the openai client) supports real streaming.
+    The bridge/powershell fallback transports (used when WSL cannot reach
+    LM Studio directly) have no streaming support, so they yield the whole
+    reply as a single chunk via chat_completion_text -- callers can treat
+    the return value the same way regardless of transport.
+
+    Additive only: does not change chat_completion_text, so every existing
+    caller (ai_bot.py, telemetry_analyzer.py, race_commentator.py, ...) is
+    unaffected.
+    """
+    if connection.transport == "http":
+        if connection.client is None:
+            raise RuntimeError("HTTP transport selected but no OpenAI client is available.")
+        stream = connection.client.chat.completions.create(
+            model=connection.model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+        return
+
+    yield chat_completion_text(
+        connection,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+
+
 def extract_json_object(text: str) -> dict[str, Any] | None:
     if not text:
         return None

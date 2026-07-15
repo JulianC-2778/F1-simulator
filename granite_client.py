@@ -16,6 +16,7 @@ from telemetry_common import (
     DEFAULT_MODEL_BASE_URL,
     DEFAULT_MODEL_NAME,
     ModelConnection,
+    chat_completion_stream,
     chat_completion_text,
     connect_openai_compatible_model,
     print_connection_banner,
@@ -35,6 +36,19 @@ def connect() -> ModelConnection:
 
 def ask_engineer(connection: ModelConnection, messages: list[dict[str, str]]) -> str:
     return chat_completion_text(
+        connection,
+        messages=messages,
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+
+def ask_engineer_stream(connection: ModelConnection, messages: list[dict[str, str]]):
+    """Streaming twin of ask_engineer -- yields the reply as it is generated
+    so the caller can show a live typewriter update instead of a long silent
+    wait. See chat_completion_stream in telemetry_common.py."""
+    return chat_completion_stream(
         connection,
         messages=messages,
         temperature=TEMPERATURE,
