@@ -48,6 +48,61 @@ def safe_min(values: list[float], default: float = 0.0) -> float:
     return min(values) if values else default
 
 
+def empty_track_context(error: str = "") -> dict[str, Any]:
+    return {
+        "available": False,
+        "source": "track_model",
+        "name": "",
+        "summary": "",
+        "dist_from_start": 0.0,
+        "limit_kmh": 0.0,
+        "speed_over_limit": 0.0,
+        "line_tpos": 0.0,
+        "line_hint": "center",
+        "next_corner": None,
+        "error": error,
+    }
+
+
+def track_briefing(track_context: dict[str, Any] | None) -> dict[str, Any]:
+    track_context = track_context or empty_track_context()
+    if not track_context.get("available"):
+        return {
+            "status": "sensor_only",
+            "brief": "Track map unavailable; guidance is using live sensors only.",
+            "items": [
+                {"label": "Map mode", "value": "sensor-only"},
+                {"label": "Fallback", "value": "live telemetry"},
+            ],
+            "error": clean_text(track_context.get("error")),
+        }
+
+    next_corner = track_context.get("next_corner")
+    if isinstance(next_corner, dict):
+        corner_value = f"{clean_text(next_corner.get('dir') or 'corner')} in {safe_float(next_corner.get('dist_m')):.0f} m"
+    else:
+        corner_value = "none nearby"
+
+    speed_over = safe_float(track_context.get("speed_over_limit"))
+    speed_delta = f"+{speed_over:.0f} km/h" if speed_over > 0.0 else f"{speed_over:.0f} km/h"
+    return {
+        "status": "map_assist",
+        "brief": (
+            f"Map assist active on {clean_text(track_context.get('name') or 'current track')}: "
+            f"limit {safe_float(track_context.get('limit_kmh')):.0f} km/h, {corner_value}, "
+            f"line target {clean_text(track_context.get('line_hint') or 'center')}."
+        ),
+        "items": [
+            {"label": "Map mode", "value": "loaded"},
+            {"label": "Limit", "value": f"{safe_float(track_context.get('limit_kmh')):.0f} km/h"},
+            {"label": "Speed delta", "value": speed_delta},
+            {"label": "Next", "value": corner_value},
+            {"label": "Line", "value": clean_text(track_context.get("line_hint") or "center")},
+        ],
+        "error": "",
+    }
+
+
 def feedback(
     *,
     state_id: str,
@@ -126,8 +181,40 @@ def build_priority_issues(
     summary: dict[str, Any],
     track_profile: dict[str, Any],
     opponent_profile: dict[str, Any],
+    track_context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
+    track_context = track_context or empty_track_context()
+
+    next_corner = track_context.get("next_corner") if track_context.get("available") else None
+    if isinstance(next_corner, dict):
+        corner_dist = safe_float(next_corner.get("dist_m"), 9999.0)
+        map_limit = safe_float(track_context.get("limit_kmh"))
+        speed_over = safe_float(track_context.get("speed_over_limit"))
+        if corner_dist <= 280.0 and speed_over > 12.0:
+            direction = clean_text(next_corner.get("dir") or "corner")
+            issues.append(
+                issue(
+                    label="Mapped braking target",
+                    area="braking",
+                    severity="high" if speed_over > 28.0 else "medium",
+                    evidence=f"{corner_dist:.0f} m to {direction} corner, map limit {map_limit:.0f} km/h, speed +{speed_over:.0f}",
+                    correction="Use the map marker as an earlier brake reference before the sensor view tightens.",
+                )
+            )
+
+    if track_context.get("available") and abs(safe_float(track_context.get("line_tpos"))) > 0.15:
+        line_hint = clean_text(track_context.get("line_hint") or "outside")
+        line_tpos = safe_float(track_context.get("line_tpos"))
+        issues.append(
+            issue(
+                label="Pre-corner line setup",
+                area="cornering",
+                severity="low",
+                evidence=f"Map line target {line_tpos:+.2f} ({line_hint})",
+                correction="Blend toward the suggested side early, then let live sensor spacing decide the final apex.",
+            )
+        )
 
     if opponent_profile["front_gap"] < 8.0 and latest["speed_x"] > 60.0:
         issues.append(
@@ -237,11 +324,12 @@ def build_radio_cue(rule_feedback: dict[str, Any]) -> str:
     return f"{focus.title()}: {correction}"
 
 
-def build_rule_feedback(frames: list[dict[str, Any]]) -> dict[str, Any]:
+def build_rule_feedback(frames: list[dict[str, Any]], track_context: dict[str, Any] | None = None) -> dict[str, Any]:
     latest = frames[-1]
     summary = summarize_frames(frames)
     track_profile = compact_track_profile(latest["track"])
     opponent_profile = compact_opponent_profile(latest["opponents"])
+    track_context = track_context or empty_track_context()
 
     pit_advice = "No pit stop needed yet."
     if latest["fuel"] < 6.0 or latest["damage"] > 40.0:
@@ -325,6 +413,82 @@ def build_rule_feedback(frames: list[dict[str, Any]]) -> dict[str, Any]:
             target_metrics={"fuel_min_l": 6.0, "damage_max": 40.0, "extra_damage_max": 0.0},
             metrics={"fuel": latest["fuel"], "damage": latest["damage"], "damage_delta": summary.get("damage_delta", 0.0)},
         )
+
+    next_corner = track_context.get("next_corner") if track_context.get("available") else None
+    if isinstance(next_corner, dict):
+        corner_dist = safe_float(next_corner.get("dist_m"), 9999.0)
+        map_limit = safe_float(track_context.get("limit_kmh"))
+        speed_over = safe_float(track_context.get("speed_over_limit"))
+        line_tpos = safe_float(track_context.get("line_tpos"))
+        if corner_dist <= 320.0 and speed_over > 14.0 and latest["brake"] < 0.40:
+            direction = clean_text(next_corner.get("dir") or "corner")
+            return feedback(
+                state_id="mapped_braking_setup",
+                headline="Brake To The Map",
+                focus_area="braking",
+                priority="high" if speed_over > 28.0 else "medium",
+                analysis=(
+                    f"The track map shows a {direction} corner in {corner_dist:.0f} m with a {map_limit:.0f} km/h target, "
+                    f"while current speed is {latest['speed_x']:.0f} km/h."
+                ),
+                action="Start the braking phase from the map marker, then release progressively as the live track sensors confirm the corner.",
+                pit_advice=pit_advice,
+                confidence=0.84,
+                why="The preloaded map can see beyond the short sensor window, so it is useful for avoiding late braking before blind or fast-approach corners.",
+                immediate_steps=[
+                    f"Reduce speed toward {map_limit:.0f} km/h before the corner entry.",
+                    "Use one firm initial brake input, then bleed pressure before turn-in.",
+                    f"Prepare the car toward the {track_context.get('line_hint') or 'outside'} before the entry.",
+                ],
+                next_lap_focus="Compare whether the same map marker produces a cleaner entry and earlier exit throttle.",
+                risk="Arriving above the map target can force understeer, a missed apex, or a track-limit correction.",
+                target_metrics={
+                    "map_limit_kmh": round(map_limit, 1),
+                    "speed_over_limit_max": 8.0,
+                    "corner_distance_m": round(corner_dist, 1),
+                },
+                metrics={
+                    "speed_x": latest["speed_x"],
+                    "map_limit_kmh": map_limit,
+                    "speed_over_limit": speed_over,
+                    "next_corner_distance": corner_dist,
+                    "line_tpos": line_tpos,
+                },
+            )
+
+        if corner_dist <= 260.0 and abs(line_tpos) > 0.15 and abs(latest["track_pos"] - line_tpos) > 0.35:
+            return feedback(
+                state_id="mapped_entry_line",
+                headline="Set The Entry Line",
+                focus_area="cornering",
+                priority="medium",
+                analysis=(
+                    f"The map suggests a {track_context.get('line_hint') or 'side'} setup before the next corner, "
+                    f"but current track position is {latest['track_pos']:+.2f} versus target {line_tpos:+.2f}."
+                ),
+                action="Blend toward the map line early, then let live traffic and track sensors decide the final apex.",
+                pit_advice=pit_advice,
+                confidence=0.74,
+                why="A stable outside entry gives more room to rotate the car and reduces mid-corner steering corrections.",
+                immediate_steps=[
+                    f"Move gradually toward track position {line_tpos:+.2f}.",
+                    "Avoid a late lateral snap just before braking.",
+                    "Hold the setup line until the corner is inside the live sensor window.",
+                ],
+                next_lap_focus="Check whether the earlier line setup reduces steering variation through the same corner.",
+                risk="A late line change can scrub speed or create a track-limit risk on turn-in.",
+                target_metrics={
+                    "line_target_tpos": round(line_tpos, 2),
+                    "track_pos_error_max": 0.25,
+                    "steering_stddev_max": 0.30,
+                },
+                metrics={
+                    "track_pos": latest["track_pos"],
+                    "line_tpos": line_tpos,
+                    "track_pos_error": abs(latest["track_pos"] - line_tpos),
+                    "next_corner_distance": corner_dist,
+                },
+            )
 
     if track_profile["center_opening"] < 25.0 and latest["brake"] < 0.08 and latest["speed_x"] > 90.0:
         return feedback(
@@ -442,13 +606,18 @@ def series_points(frames: list[dict[str, Any]], key: str) -> list[dict[str, floa
     ]
 
 
-def overlay_key(rule_feedback: dict[str, Any]) -> str:
+def overlay_key(rule_feedback: dict[str, Any], track_context: dict[str, Any] | None = None) -> str:
+    track_context = track_context or empty_track_context()
+    next_corner = track_context.get("next_corner") if track_context.get("available") else None
     parts = [
         clean_text(rule_feedback.get("state_id") or "stable_rhythm"),
         clean_text(rule_feedback.get("focus_area")),
         clean_text(rule_feedback.get("priority")),
         clean_text(rule_feedback.get("action")),
         clean_text(rule_feedback.get("pit_advice")),
+        clean_text(track_context.get("name")) if track_context.get("available") else "sensor_only",
+        str(round(safe_float(track_context.get("limit_kmh")), 0)) if track_context.get("available") else "",
+        str(round(safe_float(next_corner.get("dist_m")), 0)) if isinstance(next_corner, dict) else "",
     ]
     return "|".join(parts)
 
@@ -460,7 +629,9 @@ def overlay_payload(
     opponent_profile: dict[str, Any],
     rule_feedback: dict[str, Any],
     priority_issues: list[dict[str, str]] | None = None,
+    track_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    track_context = track_context or empty_track_context()
     return {
         "state_id": rule_feedback.get("state_id", "stable_rhythm"),
         "focus_area": rule_feedback.get("focus_area", "cornering"),
@@ -504,15 +675,16 @@ def overlay_payload(
             "left_gap": round(opponent_profile.get("left_gap", 200.0), 3),
             "rear_gap": round(opponent_profile.get("rear_gap", 200.0), 3),
         },
+        "track_model": track_context,
     }
 
 
 def overlay_prompt(payload: dict[str, Any]) -> str:
     return f"""Add a short model supplement for this fixed TORCS coaching card.
 Return one valid JSON object only. English only.
-Do not change the fixed radio_cue, action, priority_issues, pit_advice, or targets.
+Do not change the fixed radio_cue, action, priority_issues, pit_advice, targets, or track_model values.
 Keep it fast: analysis <= 32 words, coach_note <= 18 words, each tip <= 14 words.
-Use only telemetry values present in the payload.
+Use only telemetry values present in the payload. If track_model is available, mention it only when it changes braking or line choice.
 
 Schema:
 {{
@@ -560,6 +732,7 @@ def empty_dashboard(
         "latest_state": None,
         "window_summary": None,
         "track_profile": None,
+        "track_model": empty_track_context(),
         "opponent_profile": None,
         "guidance": None,
         "signals": [],
@@ -578,6 +751,7 @@ def build_dashboard_payload(
     *,
     window_seconds: float = 6.0,
     history_seconds: float = 16.0,
+    track_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not raw_frames:
         return empty_dashboard(window_seconds, history_seconds)
@@ -592,8 +766,9 @@ def build_dashboard_payload(
     summary = summarize_frames(live_frames)
     track_profile = compact_track_profile(latest["track"])
     opponent_profile = compact_opponent_profile(latest["opponents"])
-    rule_feedback = build_rule_feedback(live_frames)
-    priority_issues = build_priority_issues(latest, summary, track_profile, opponent_profile)
+    track_context = track_context or empty_track_context()
+    rule_feedback = build_rule_feedback(live_frames, track_context)
+    priority_issues = build_priority_issues(latest, summary, track_profile, opponent_profile, track_context)
     radio_cue = build_radio_cue(rule_feedback)
     overlay_request = overlay_payload(
         latest,
@@ -602,6 +777,7 @@ def build_dashboard_payload(
         opponent_profile,
         rule_feedback,
         priority_issues,
+        track_context,
     )
 
     track_pos = latest["track_pos"]
@@ -631,6 +807,26 @@ def build_dashboard_payload(
             "tone": "danger" if latest["damage"] > 40.0 else "warn" if latest["damage"] > 25.0 else "good",
         },
     ]
+    if track_context.get("available"):
+        map_limit = safe_float(track_context.get("limit_kmh"))
+        speed_over = safe_float(track_context.get("speed_over_limit"))
+        signals.append(
+            {
+                "label": "Map Limit",
+                "value": map_limit,
+                "display": f"{map_limit:.0f} km/h",
+                "tone": "danger" if speed_over > 28.0 else "warn" if speed_over > 8.0 else "good",
+            }
+        )
+    else:
+        signals.append(
+            {
+                "label": "Track Map",
+                "value": 0,
+                "display": "sensor-only",
+                "tone": "warn" if clean_text(track_context.get("error")) else "good",
+            }
+        )
 
     return {
         "status": {
@@ -645,6 +841,7 @@ def build_dashboard_payload(
         "latest_state": latest_state_payload(latest),
         "window_summary": compact_live_summary(summary),
         "track_profile": track_profile,
+        "track_model": track_context,
         "opponent_profile": opponent_profile,
         "guidance": {
             "analysis_type": "live_window",
@@ -666,6 +863,7 @@ def build_dashboard_payload(
             "metrics": rule_feedback.get("metrics", {}),
             "priority_issues": priority_issues,
             "radio_cue": radio_cue,
+            "track_briefing": track_briefing(track_context),
             "async_overlay": pending_overlay(),
         },
         "signals": signals,
@@ -677,5 +875,5 @@ def build_dashboard_payload(
             "rpm": series_points(history_frames, "rpm"),
         },
         "_overlay_request": overlay_request,
-        "_overlay_cache_key": overlay_key(rule_feedback),
+        "_overlay_cache_key": overlay_key(rule_feedback, track_context),
     }

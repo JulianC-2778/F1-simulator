@@ -881,6 +881,11 @@
                 <div id="targetMetrics" class="target-list"></div>
               </div>
               <div class="coach-detail wide">
+                <div class="small-label">Track model</div>
+                <p id="trackBriefing">Track map status will appear with telemetry.</p>
+                <div id="trackModelChips" class="target-list"></div>
+              </div>
+              <div class="coach-detail wide">
                 <div class="small-label">Priority stack</div>
                 <div id="priorityIssues" class="issue-stack"></div>
               </div>
@@ -1022,6 +1027,8 @@
       immediateSteps: document.getElementById("immediateSteps"),
       nextLapFocus: document.getElementById("nextLapFocus"),
       targetMetrics: document.getElementById("targetMetrics"),
+      trackBriefing: document.getElementById("trackBriefing"),
+      trackModelChips: document.getElementById("trackModelChips"),
       priorityIssues: document.getElementById("priorityIssues"),
       overlayStatus: document.getElementById("overlayStatus"),
       overlayAnalysis: document.getElementById("overlayAnalysis"),
@@ -1120,6 +1127,23 @@
       });
     }
 
+    function renderTrackBriefing(briefing) {
+      const fallback = {
+        brief: "Track map status will appear with telemetry.",
+        items: [{ label: "Map mode", value: "waiting" }],
+      };
+      const data = briefing || fallback;
+      els.trackBriefing.textContent = data.brief || fallback.brief;
+      els.trackModelChips.innerHTML = "";
+      const items = Array.isArray(data.items) && data.items.length ? data.items.slice(0, 5) : fallback.items;
+      items.forEach(item => {
+        const chip = document.createElement("span");
+        chip.className = "target-chip";
+        chip.textContent = `${item.label || "Map"}: ${item.value || "--"}`;
+        els.trackModelChips.appendChild(chip);
+      });
+    }
+
     function renderPriorityIssues(issues) {
       els.priorityIssues.innerHTML = "";
       const items = Array.isArray(issues) && issues.length
@@ -1200,6 +1224,7 @@
         renderSteps([]);
         els.nextLapFocus.textContent = "Keep the baseline until live telemetry arrives.";
         renderTargets({});
+        renderTrackBriefing(null);
         renderPriorityIssues([]);
         renderOverlay(null);
         els.pitAdvice.textContent = "Pit advice will appear here when relevant.";
@@ -1236,6 +1261,7 @@
       renderSteps(guidance.immediate_steps);
       els.nextLapFocus.textContent = guidance.next_lap_focus || "Repeat the current reference and watch the next telemetry window.";
       renderTargets(guidance.target_metrics);
+      renderTrackBriefing(guidance.track_briefing);
       renderPriorityIssues(guidance.priority_issues);
       renderOverlay(guidance.async_overlay);
       els.pitAdvice.textContent = guidance.pit_advice || "No pit guidance.";
@@ -1265,7 +1291,7 @@
       });
     }
 
-    function renderSpatialMetrics(trackProfile, opponentProfile) {
+    function renderSpatialMetrics(trackProfile, opponentProfile, trackModel) {
       const metrics = [
         ["Left opening", trackProfile?.left_opening ?? 0, 120, `${formatNumber(trackProfile?.left_opening, 1)} m`],
         ["Centre opening", trackProfile?.center_opening ?? 0, 120, `${formatNumber(trackProfile?.center_opening, 1)} m`],
@@ -1274,6 +1300,17 @@
         ["Left gap", opponentProfile?.left_gap ?? 0, 200, `${formatNumber(opponentProfile?.left_gap, 1)} m`],
         ["Rear gap", opponentProfile?.rear_gap ?? 0, 200, `${formatNumber(opponentProfile?.rear_gap, 1)} m`],
       ];
+      if (trackModel?.available) {
+        const nextCorner = trackModel.next_corner || {};
+        const cornerText = nextCorner.dist_m == null
+          ? "none nearby"
+          : `${nextCorner.dir || "corner"} in ${formatNumber(nextCorner.dist_m, 0)} m`;
+        metrics.push(
+          ["Map limit", trackModel.limit_kmh ?? 0, 330, `${formatNumber(trackModel.limit_kmh, 0)} km/h`],
+          ["Next corner", nextCorner.dist_m ?? 0, 800, cornerText],
+          ["Line target", Math.abs(trackModel.line_tpos ?? 0), 1, trackModel.line_hint || "center"],
+        );
+      }
 
       els.spatialMetrics.innerHTML = "";
       metrics.forEach(([label, value, max, display]) => {
@@ -1447,7 +1484,7 @@
         }
 
         els.chartMeta.textContent = `${formatNumber(payload.status.history_seconds, 0)}-second local history • ${payload.status.frame_count} frames`;
-        renderSpatialMetrics(payload.track_profile, payload.opponent_profile);
+        renderSpatialMetrics(payload.track_profile, payload.opponent_profile, payload.track_model);
         renderSummary(payload.window_summary);
         maybeRecordGuidance(payload.guidance);
         state.chartHistory = payload.history || {};
