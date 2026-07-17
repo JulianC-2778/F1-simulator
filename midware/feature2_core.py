@@ -719,6 +719,10 @@ def empty_dashboard(
     *,
     error: str = "",
     upstream_ok: bool = True,
+    message: str = "Waiting for a new telemetry session.",
+    session_state: str = "waiting",
+    session_id: int | None = None,
+    data_age_seconds: float | None = None,
 ) -> dict[str, Any]:
     return {
         "status": {
@@ -728,6 +732,10 @@ def empty_dashboard(
             "frame_count": 0,
             "upstream_ok": upstream_ok,
             "error": error,
+            "message": message,
+            "session_state": session_state,
+            "session_id": session_id,
+            "data_age_seconds": data_age_seconds,
         },
         "latest_state": None,
         "window_summary": None,
@@ -837,6 +845,10 @@ def build_dashboard_payload(
             "latest_sim_time": round(latest["sim_time"], 3),
             "upstream_ok": True,
             "error": "",
+            "message": "Telemetry live.",
+            "session_state": "live",
+            "session_id": safe_int(latest.get("_session_id"), 0),
+            "data_age_seconds": 0.0,
         },
         "latest_state": latest_state_payload(latest),
         "window_summary": compact_live_summary(summary),

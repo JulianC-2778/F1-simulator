@@ -1011,6 +1011,7 @@
   <script>
     const POLL_MS = 350;
     const state = {
+      sessionId: null,
       lastGuidanceKey: "",
       guidanceHistory: [],
       chartHistory: {},
@@ -1081,6 +1082,13 @@
         guidance?.headline || "",
         guidance?.action || "",
       ].join("|");
+    }
+
+    function resetSessionState(sessionId = null) {
+      state.sessionId = sessionId;
+      state.lastGuidanceKey = "";
+      state.guidanceHistory = [];
+      state.chartHistory = {};
     }
 
     function overlayStatusLabel(status) {
@@ -1209,16 +1217,23 @@
 
     function updateHero(payload) {
       const { guidance, latest_state: latest, status } = payload;
+      const noActiveSession = status?.session_state === "stale";
+      const statusMessage = status?.message || "Start TORCS and the local telemetry feed to see live driving instructions here.";
 
       if (!guidance || !latest || !status?.has_telemetry) {
-        els.liveStatus.textContent = "Waiting for telemetry";
-        els.liveStatus.classList.remove("live", "stale");
-        els.statusNote.textContent = "Polling local telemetry at 350 ms";
+        els.liveStatus.textContent = noActiveSession ? "No active session" : "Waiting for telemetry";
+        els.liveStatus.classList.remove("live");
+        els.liveStatus.classList.toggle("stale", noActiveSession);
+        els.statusNote.textContent = noActiveSession
+          ? `Last frame ${formatNumber(status?.data_age_seconds, 1)} s ago - polling for a new run`
+          : "Polling local telemetry at 350 ms";
         els.priorityPill.className = "priority";
         els.priorityPill.textContent = "Pending";
-        els.guidanceHeadline.textContent = "Waiting for live telemetry";
-        els.guidanceAction.textContent = "Start TORCS and the local telemetry feed to see live driving instructions here.";
-        els.guidanceAnalysis.textContent = "The page is ready for fixed-schema guidance. Once data arrives, it will surface a stable headline, action, focus area, and confidence score without depending on free-form model text.";
+        els.guidanceHeadline.textContent = noActiveSession ? "Previous run cleared" : "Waiting for live telemetry";
+        els.guidanceAction.textContent = statusMessage;
+        els.guidanceAnalysis.textContent = noActiveSession
+          ? "This surface now tracks the current driving session only. Once fresh telemetry arrives, the previous run stays cleared and a new guidance timeline starts from zero."
+          : "The page is ready for fixed-schema guidance. Once data arrives, it will surface a stable headline, action, focus area, and confidence score without depending on free-form model text.";
         els.guidanceWhy.textContent = "Telemetry context will appear with the first live window.";
         els.riskNote.textContent = "No risk signal yet.";
         renderSteps([]);
@@ -1235,7 +1250,7 @@
         els.gearValue.textContent = "--";
         els.fuelValue.textContent = "--";
         els.trackValue.textContent = "--";
-        els.footerNote.textContent = "Local data path ready";
+        els.footerNote.textContent = statusMessage;
         return;
       }
 
@@ -1473,17 +1488,23 @@
         const response = await fetch("/api/feature2/dashboard?window_seconds=6&history_seconds=16", { cache: "no-store" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
+        const sessionId = payload.status?.session_id ?? null;
 
         updateHero(payload);
         renderSignals(payload.signals || []);
 
         if (!payload.status?.has_telemetry) {
+          resetSessionState();
           els.chartMeta.textContent = "Waiting for telemetry";
           renderPlaceholder();
           return;
         }
 
         els.chartMeta.textContent = `${formatNumber(payload.status.history_seconds, 0)}-second local history • ${payload.status.frame_count} frames`;
+        if (sessionId !== state.sessionId) {
+          resetSessionState(sessionId);
+        }
+
         renderSpatialMetrics(payload.track_profile, payload.opponent_profile, payload.track_model);
         renderSummary(payload.window_summary);
         maybeRecordGuidance(payload.guidance);
