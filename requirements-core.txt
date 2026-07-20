@@ -1,0 +1,8 @@
+# Shared Python runtime for Features 1-4, middleware, overlay broadcast and tests.
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+httpx>=0.27.0
+aiofiles>=23.2.1
+openai>=1.35.0
+websocket-client>=1.8.0
+websockets>=12.0

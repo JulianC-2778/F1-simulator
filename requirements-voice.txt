@@ -1,0 +1,2 @@
+# Optional Feature 1 speech-to-text input (install with requirements-core.txt).
+faster-whisper>=1.0.0

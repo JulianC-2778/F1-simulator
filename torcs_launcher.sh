@@ -12,7 +12,8 @@ export DISPLAY=:0
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 
-TORCS_HOME="${TORCS_HOME:-/home/yejian/torcs}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+TORCS_HOME="${TORCS_HOME:-$SCRIPT_DIR}"
 cd "$TORCS_HOME/BUILD" || exit 1
 
 if [ ! -x ./bin/torcs ]; then

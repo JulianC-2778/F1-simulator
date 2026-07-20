@@ -20,8 +20,8 @@
 3. 再次进入 TORCS 构建目录并启动：
 
    ```bash
-   cd /home/yejian/torcs/BUILD
-   /home/yejian/torcs/torcs_launcher.sh
+   cd ~/F1-simulator
+   ./torcs_launcher.sh
    ```
 
 ## 为什么这样记录
@@ -39,35 +39,27 @@
 
 项目内使用的启动脚本是：
 
-- [torcs_launcher.sh](/C:/Users/yejian/Desktop/F1项目/F1-simulator/torcs_launcher.sh)
+- [`torcs_launcher.sh`](../torcs_launcher.sh)
 
 这个脚本已经加入了启动提示，会在窗口未被检测到时提醒执行 `wsl.exe --shutdown`。
 
-### 2. 确认 WSL 里的 `midware` 指向 Windows 仓库
+### 2. 确认仓库目录完整
 
-本项目当前验证过的映射是：
+默认文档假设仓库直接克隆在 WSL 的 Linux 文件系统中：
 
 ```bash
-ls -l /home/yejian/torcs/midware
+cd ~/F1-simulator
+ls midware/commentary.py config.json
 ```
 
-预期应当看到类似：
-
-```text
-/home/yejian/torcs/midware -> /mnt/c/Users/yejian/Desktop/F1项目/F1-simulator/midware
-```
-
-这意味着：
-
-- Windows 仓库中的 `midware` 更新后，WSL 侧不需要再手动复制一份。
-- 如果你怀疑“WSL 里没同步新文件”，先检查这个软链接是否仍然存在。
+如果仓库位于 `/mnt/c` 等 Windows 挂载目录，性能和文件权限行为可能不同；不要把 `midware` 单独软链接到另一份仓库，以免代码版本失配。
 
 ### 3. 确认 TORCS 可执行文件位置
 
 当前验证过的路径：
 
 ```bash
-cd /home/yejian/torcs/BUILD
+cd ~/F1-simulator/BUILD
 ls bin/torcs
 ```
 
@@ -78,7 +70,7 @@ ls bin/torcs
 1. 先确认是否“有声音但无窗口”。
 2. 如果是，直接在 Windows 执行 `wsl.exe --shutdown`。
 3. 重开 WSL 后，用 `torcs_launcher.sh` 启动。
-4. 如果仍异常，再检查 `midware` 软链接和 `BUILD/bin/torcs` 是否正常。
+4. 如果仍异常，再检查仓库完整性和 `BUILD/bin/torcs` 是否正常。
 
 这套顺序已经比“先各种重启单个进程”更省时间，也更适合交接给组内其他同学。
 
@@ -86,10 +78,10 @@ ls bin/torcs
 
 这次还额外踩到了一个不是 WSLg 本身、而是启动方式的问题：
 
-- 我直接在 WSL 里执行了 Windows 挂载路径下的脚本：
+- 直接在 WSL 里执行 Windows 挂载路径下的脚本时，可能遇到行尾问题，例如：
 
   ```bash
-  bash /mnt/c/Users/yejian/Desktop/F1项目/F1-simulator/torcs_launcher.sh
+  bash /mnt/c/path/to/F1-simulator/torcs_launcher.sh
   ```
 
 - 该脚本当时带有 Windows `CRLF` 行尾，WSL 中会报：
@@ -98,7 +90,7 @@ ls bin/torcs
   $'\r': command not found
   ```
 
-- 结果就是脚本看起来“执行了几行”，但实际上没有正确进入 `/home/yejian/torcs/BUILD`，TORCS 也没有按预期启动。
+- 结果是脚本看起来“执行了几行”，但实际上没有正确进入仓库的 `BUILD` 目录，TORCS 也没有按预期启动。
 
 因此现在把这个经验也固化下来：
 
@@ -106,10 +98,11 @@ ls bin/torcs
 2. 在不确定脚本同步状态时，优先执行 WSL 侧的启动器：
 
    ```bash
-   bash /home/yejian/torcs/torcs_launcher.sh
+   cd ~/F1-simulator
+   ./torcs_launcher.sh
    ```
 
-3. 如果要从 Windows 仓库同步启动器到 WSL，先确认脚本没有 `CRLF`，再覆盖到 `/home/yejian/torcs/torcs_launcher.sh`。
+3. 如果仓库来自 Windows 文件系统，先确认脚本没有 `CRLF`；建议直接在 WSL 的 Linux 文件系统中克隆并运行仓库。
 
 ## 本次已经补上的防呆
 

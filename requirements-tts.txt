@@ -1,0 +1,5 @@
+# Optional Kokoro text-to-speech server (install with requirements-core.txt).
+kokoro>=0.9.4
+numpy>=1.26.0
+soundfile>=0.12.1
+huggingface-hub>=0.23.0

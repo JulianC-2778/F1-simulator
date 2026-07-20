@@ -1,0 +1,4 @@
+# Complete installation: core services, voice input and local TTS.
+-r requirements-core.txt
+-r requirements-voice.txt
+-r requirements-tts.txt

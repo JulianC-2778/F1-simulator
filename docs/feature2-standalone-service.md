@@ -38,14 +38,14 @@ to read recent telemetry frames from the main commentary service.
 Commentary service:
 
 ```bash
-cd /home/yejian/torcs/midware
-python commentary.py
+cd ~/F1-simulator
+python midware/commentary.py
 ```
 
 Feature 2 service:
 
 ```bash
-cd /home/yejian/torcs
+cd ~/F1-simulator
 python -m pip install -r midware/requirements-feature2.txt
 python midware/feature2_service.py
 ```

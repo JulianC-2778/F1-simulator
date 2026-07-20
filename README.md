@@ -1,65 +1,124 @@
-# TORCS 1.3.7
+# F1 Simulator — TORCS × IBM Granite
 
+基于 TORCS 1.3.7 的本地 AI 赛车演示系统。项目将 TORCS 遥测与 SCR 控制接口连接到 OpenAI-compatible 的 IBM Granite 模型服务，提供赛车工程师问答、实时遥测看板、赛事解说和 AI 驾驶四个功能方向。模型可以通过 LM Studio 在本机运行；AI 服务、字幕 Overlay 和语音能力均保留在本地。
 
+## 演示截图
 
-本项目仅面向 Ubuntu 部署。
+<!-- TODO: 在最终录制后添加实际演示截图。 -->
 
-## 安装依赖
+## 功能状态
 
-TORCS 编译依赖：
+| Feature | 功能 | 主要入口 | 当前状态 |
+| --- | --- | --- | --- |
+| 1 | AI 赛车工程师问答（文本/语音输入、Overlay 输出） | `chat_engineer.py`、`chat_engineer_gui.py` | 已实现；真实遥测和假数据模式均可运行 |
+| 2 | 实时遥测看板与驾驶建议 | `midware/feature2_service.py`、`telemetry_analyzer.py` | 已实现；独立看板依赖主 midware |
+| 3 | 事件驱动的 AI 实时赛事解说 | `midware/commentary.py` | 已实现；支持 WebSocket、Electron Overlay 和可选 TTS |
+| 4 | Granite 辅助策略的 AI 驾驶机器人 | `ai_bot.py --bot --granite` | 已实现；通过 SCR UDP 接口控制车辆 |
+
+“已实现”表示代码入口和运行链路已经存在，不代表所有机器配置、模型或赛道组合均已完成自动化验收。
+
+## 系统架构
+
+```text
+                              OpenAI-compatible Granite API
+                                        (LM Studio)
+                                             ^
+                                             |
+TORCS human driver -- UDP :3101 --> Python AI services
+       |                              |-- Feature 1: racing engineer
+       |                              |-- Feature 2: dashboard / coach
+       |                              `-- Feature 3: commentary
+       |                                         |
+       |                         REST + WebSocket :8880/:8766
+       |                                         |
+       |                              Electron overlay-app
+       |                                         |
+       |                              optional Kokoro TTS :8881
+       |
+       `-- scr_server <------ UDP :3001 ------> Feature 4: ai_bot.py
+```
+
+端口和主机默认值集中在 `config.json`，Python 代码通过 `config.py` 读取。环境变量优先于配置文件。更详细的模块说明见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)，集成协议见 [docs/integration-contract.md](docs/integration-contract.md)。
+
+## 支持的平台
+
+| 平台 | 支持情况 | 备注 |
+| --- | --- | --- |
+| Ubuntu 22.04/24.04（X11） | 推荐 | TORCS、Python 服务和 Electron 可在同一系统运行 |
+| Windows 10/11 + WSL2/WSLg（Ubuntu） | 支持 | LM Studio 通常运行在 Windows；WSLg 图形、麦克风和音频桥接可能需要额外处理 |
+| 原生 Windows / macOS | 未提供 | 当前没有对应的 TORCS 构建、启动和验收流程 |
+
+Python 3.10+ 和 Node.js 18+ 为建议版本。WSL 中必须使用 Linux 版 `node`/`npm`，不能使用 `/mnt/c/...` 下的 Windows 可执行文件。
+
+## 从全新 Ubuntu / WSL 环境安装
+
+仓库没有“安装全部项目”的单一 shell 脚本。`setup_linux.sh` 是 TORCS 上游的运行配置安装辅助脚本，需要目标目录参数；它不是本 AI 项目的一键安装器。下面是完整、可复现的安装流程。
+
+先获取代码（如果你正在阅读本地仓库，可跳过）：
+
+```bash
+cd ~
+git clone https://github.com/JulianC-2778/F1-simulator.git
+cd F1-simulator
+```
+
+### 1. 安装系统依赖
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  libglib2.0-dev \
-  libgl1-mesa-dev \
-  libglu1-mesa-dev \
-  freeglut3-dev \
-  libplib-dev \
-  libopenal-dev \
-  libalut-dev \
-  libxi-dev \
-  libxmu-dev \
-  libxrender-dev \
-  libxrandr-dev \
-  libpng-dev \
-  libvorbis-dev
+  build-essential automake autoconf libtool pkg-config \
+  libglib2.0-dev libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev \
+  libplib-dev libopenal-dev libalut-dev libxi-dev libxmu-dev \
+  libxrender-dev libxrandr-dev libpng-dev libvorbis-dev \
+  python3 python3-venv python3-pip python3-tk \
+  nodejs npm curl ffmpeg alsa-utils pulseaudio-utils \
+  xdotool x11-utils \
+  libatk-bridge2.0-0 libgtk-3-0 libnss3 libxss1 libasound2 \
+  libdrm2 libgbm1 speech-dispatcher espeak-ng
 ```
 
-实时解说 `midware` 与 Electron overlay 依赖：
+`xdotool` 和 `xwininfo`（由 `x11-utils` 提供）是 `torcs_launcher.sh` 实际使用的启动辅助工具。无麦克风需求时可不安装 `ffmpeg`、`alsa-utils`、`pulseaudio-utils`；不用 Electron 时可省略对应桌面运行库。
+
+### 2. 创建 Python 环境并安装依赖
 
 ```bash
-sudo apt-get install -y \
-  python3-venv \
-  python3-pip \
-  curl \
-  nodejs \
-  npm \
-  libatk-bridge2.0-0 \
-  libgtk-3-0 \
-  libnss3 \
-  libxss1 \
-  libasound2 \
-  libdrm2 \
-  libgbm1 \
-  speech-dispatcher \
-  espeak-ng
+cd ~/F1-simulator
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+
+# 完整安装：核心 + 语音输入 + Kokoro TTS
+python -m pip install -r requirements.txt
 ```
 
-WSL 中请确认使用 Linux 版 Node/npm：
+如果只演示不含语音的核心功能，可缩短安装时间：
 
 ```bash
-which node
-which npm
+python -m pip install -r requirements-core.txt
 ```
 
-如果路径指向 `/mnt/c/...` 或 `/mnt/d/...`，请改用 WSL 内的 Linux Node/npm，例如通过 `nvm` 安装 LTS 版本；否则 Electron 安装可能因为 Windows UNC 路径失败。
+分层依赖如下：
 
-## 编译与安装
+- `requirements-core.txt`：midware、Granite API、WebSocket 广播和测试依赖。
+- `requirements-voice.txt`：Feature 1 的 faster-whisper 语音输入。
+- `requirements-tts.txt`：Kokoro TTS 服务及模型下载工具。
+- `requirements.txt`：聚合以上三个文件，用于完整安装。
 
-在项目根目录执行：
+### 3. 安装 Electron Overlay
 
 ```bash
+cd ~/F1-simulator/overlay-app
+npm install
+cd ..
+```
+
+WSL 用户应先执行 `which node` 和 `which npm`，确认结果不是 `/mnt/c/...` 或 `/mnt/d/...`。
+
+### 4. 编译 TORCS
+
+```bash
+cd ~/F1-simulator
 export CFLAGS="-fPIC"
 export CPPFLAGS="$CFLAGS"
 export CXXFLAGS="$CFLAGS"
@@ -70,511 +129,192 @@ make install
 make datainstall
 ```
 
-程序会安装到项目目录下的 `BUILD` 文件夹，不会写入系统安装目录。
+编译结果位于仓库内的 `BUILD/`，不会安装到系统目录。TORCS 用户配置仍默认写入 `~/.torcs`。
 
-## 运行
+### 5. 可选：准备 Kokoro 模型
 
 ```bash
-./BUILD/bin/torcs
+source ~/F1-simulator/.venv/bin/activate
+cd ~/F1-simulator
+python -c "from huggingface_hub import hf_hub_download; hf_hub_download('hexgrad/Kokoro-82M', 'kokoro-v1_0.pth', local_dir='.'); hf_hub_download('hexgrad/Kokoro-82M', 'voices/bm_lewis.pt', local_dir='.')"
 ```
 
-TORCS 的用户配置和运行数据默认保存在 `~/.torcs`。
+模型权重不提交到 Git。详细语音配置见 [docs/tts-setup.md](docs/tts-setup.md) 和 [docs/voice-input-setup.md](docs/voice-input-setup.md)。
 
-## 原生 SCR Server
+## Granite 模型选择与配置
 
-项目保留了 SCR patch 提供的 `scr_server` 驾驶员模块，源码位于 `src/drivers/scr_server`。它面向外部自动驾驶客户端：TORCS 负责仿真和传感器计算，客户端通过 UDP 接收车辆状态、计算动作，再把油门、制动、转向等控制量发回 TORCS。
-
-SCR Server 是实时闭环控制接口，本身不会生成 CSV。它和下文的 human 数据采集器彼此独立：
-
-| 接口 | 用途 | 默认端口/输出 |
-| --- | --- | --- |
-| `scr_server` | 外部程序通过传感器状态控制 SCR 车辆 | UDP 3001–3010 |
-| human 数据采集器 | 记录真人玩家状态，也可单向推送每行记录 | CSV；UDP 3101 |
-
-### 启动
-
-构建和安装项目时，`scr_server.so` 及其 10 个车辆配置会一并安装。启动时必须用 `-ver` 指定 SCR 协议版本；推荐使用量程为 200 m 的 `2013`：
+1. 在 LM Studio 中下载并加载一个 IBM Granite instruct/chat 模型。
+2. 在 Developer / Local Server 页面启动 OpenAI-compatible server，通常为 `http://127.0.0.1:1234/v1`。
+3. 建议优先选择机器能够稳定实时运行的 Granite 模型；仓库不锁定具体量化版本。较小模型响应更快，较大模型通常需要更多内存/显存。
+4. 验证连接：
 
 ```bash
+cd ~/F1-simulator
+source .venv/bin/activate
+python lmstudio_smoke_test.py
+```
+
+默认会读取服务的 `/v1/models` 并优先选择 ID 中包含 `granite` 的模型。需要显式指定时：
+
+```bash
+export TORCS_AI_BASE_URL="http://127.0.0.1:1234/v1"
+export TORCS_AI_MODEL="<LM Studio 中显示的模型 ID>"
+```
+
+WSL2 无法访问 Windows 上的 LM Studio 时，在 LM Studio 开启局域网访问，并把 `127.0.0.1` 替换为其显示的可达地址。Feature 1 还支持 `TORCS_ENGINEER_BASE_URL` / `TORCS_ENGINEER_MODEL` 覆盖；项目端口可直接编辑 `config.json` 或使用 `TORCS_MIDWARE_PORT`、`TORCS_FEATURE2_PORT`、`TORCS_TTS_PORT` 等环境变量。
+
+## 最小演示流程（Feature 3 实时解说）
+
+以下流程从仓库根目录开始，使用四个终端。
+
+终端 1：启动 Granite 模型服务后，启动主 midware：
+
+```bash
+cd ~/F1-simulator
+source .venv/bin/activate
+python midware/commentary.py
+```
+
+终端 2：启动字幕 Overlay：
+
+```bash
+cd ~/F1-simulator/overlay-app
+npm start
+```
+
+终端 3：配置遥测并启动 TORCS：
+
+```bash
+cd ~/F1-simulator
+mkdir -p logs
+export TORCS_PLAYER_LOG_DIR="$PWD/logs"
+export TORCS_PLAYER_LOG_HZ=20
+export TORCS_PLAYER_UDP_HOST=127.0.0.1
+export TORCS_PLAYER_UDP_PORT=3101
+./torcs_launcher.sh
+```
+
+若不需要 WSLg 窗口修复，也可直接运行 `./BUILD/bin/torcs`。进入 **Race → Quick Race**，选择 human driver 并开始驾驶。
+
+终端 4（可选）：启动本地 TTS：
+
+```bash
+cd ~/F1-simulator
+source .venv/bin/activate
+python tts_server.py
+```
+
+验收信号：`http://127.0.0.1:8880` 能打开、遥测数值随比赛变化、Overlay 已连接，并在事件触发后显示 Granite 生成的解说。
+
+## 四个 Feature 的启动方法
+
+### Feature 1 — AI 赛车工程师
+
+```bash
+cd ~/F1-simulator
+source .venv/bin/activate
+python chat_engineer.py
+# 或调试用桌面 GUI
+python chat_engineer_gui.py
+```
+
+没有 TORCS 时可使用假数据演示：
+
+```bash
+TORCS_ENGINEER_USE_FAKE_DATA=true python chat_engineer.py
+```
+
+在提问提示符输入 `v` 可录入英文语音。真实遥测会优先从主 midware REST API 获取，主服务不可用时才尝试直接监听 UDP 3101。
+
+### Feature 2 — 遥测看板 / 驾驶建议
+
+先启动 `midware/commentary.py`，再运行：
+
+```bash
+cd ~/F1-simulator
+source .venv/bin/activate
+python midware/feature2_service.py
+```
+
+打开 `http://127.0.0.1:8766/feature2`。保留的早期 CLI 驾驶建议入口为：
+
+```bash
+python telemetry_analyzer.py
+```
+
+### Feature 3 — AI 实时赛事解说
+
+按“最小演示流程”启动 `midware/commentary.py`、`overlay-app` 和 TORCS。事件检测、上下文构建与流式输出说明见 [docs/commentary-loop.md](docs/commentary-loop.md)。
+
+### Feature 4 — AI 驾驶机器人
+
+先以 SCR 2013 协议启动 TORCS：
+
+```bash
+cd ~/F1-simulator
 ./BUILD/bin/torcs -ver 2013
 ```
 
-随后在图形界面进入 **Race → Quick Race**，选择 `scr_server 1` 作为驾驶员并开始比赛。仓库自带的 Quick Race 配置已经默认选择 `scr_server 1`。也可以直接指定该配置：
+在 Quick Race 中选择 `scr_server 1`。另开终端：
 
 ```bash
-./BUILD/bin/torcs \
-  -ver 2013 \
-  -r "$(pwd)/BUILD/share/games/torcs/config/raceman/quickrace.xml"
-```
-
-进入比赛后 TORCS 会等待客户端握手，因此应同时启动外部 SCR 客户端。`scr_server 1` 到 `scr_server 10` 依次监听 UDP 端口 `3001` 到 `3010`，支持最多 10 个独立客户端。
-
-SCR Server 还支持以下启动参数：
-
-- `-t <微秒>`：等待客户端每步回传控制指令的超时时间，默认 `10000`，即 10 ms；超时后沿用上一条控制指令。
-- `-noisy`：给赛道、对手和 focus 距离传感器加入噪声。
-- `-nodamage`：禁用真实损伤，并在状态中返回模拟损伤值。
-- `-nofuel`：禁用燃油消耗。
-- `-nolaptime`：禁用圈速限制。
-- `-ver 2009`：距离传感器量程为 100 m；`-ver 2010` 至 `-ver 2013` 的量程为 200 m。
-
-### UDP 协议
-
-协议使用由括号包围的空格分隔字段，不是 JSON。客户端首先向对应端口发送以 `SCR` 开头的识别消息：
-
-```text
-SCR
-```
-
-也可以在握手时自定义 19 路赛道传感器的角度：
-
-```text
-SCR(init -90 -80 -70 -60 -50 -40 -30 -20 -10 0 10 20 30 40 50 60 70 80 90)
-```
-
-未提供 `init` 时使用上面的默认角度。识别成功后服务端回复：
-
-```text
-***identified***
-```
-
-之后每个仿真步按以下顺序循环：
-
-1. 服务端发送一条车辆状态消息。
-2. 客户端在超时前发送一条控制消息。
-3. TORCS 应用控制量并进入下一仿真步。
-
-状态消息示意：
-
-```text
-(angle 0.01)(curLapTime 3.2)(damage 0)(distFromStart 125.4)...
-```
-
-状态字段包括 `angle`、`curLapTime`、`damage`、`distFromStart`、`distRaced`、`fuel`、`gear`、`lastLapTime`、`opponents[36]`、`racePos`、`rpm`、`speedX/Y/Z`、`track[19]`、`trackPos`、`wheelSpinVel[4]`、`z` 和 `focus[5]`。这些字段的单位和含义与下文主 CSV 中的同名字段一致。此外，SCR Server 还发送：
-
-| 字段 | 单位 | 含义 |
-| --- | --- | --- |
-| `x`, `y` | m | 车辆世界坐标 |
-| `roll`, `pitch`, `yaw` | rad | 车辆在世界坐标系中的横滚角、俯仰角和航向角 |
-| `speedGlobalX`, `speedGlobalY` | m/s | 世界坐标系 X、Y 方向的速度 |
-
-`focus[5]` 的中心方向由客户端控制消息中的 `focus` 指定，五路角度为 `focus-2°` 到 `focus+2°`。focus 每次有效读取后有 1 秒冷却时间，冷却期间返回 `-1`。
-
-客户端控制消息包含以下字段：
-
-```text
-(accel 1)(brake 0)(gear 1)(steer 0)(clutch 0)(focus 0)(meta 0)
-```
-
-| 字段 | 范围 | 含义 |
-| --- | --- | --- |
-| `accel` | `[0, 1]` | 油门 |
-| `brake` | `[0, 1]` | 制动 |
-| `gear` | `-1, 0, 1...` | 倒挡、空挡或前进挡 |
-| `steer` | `[-1, 1]` | 转向 |
-| `clutch` | `[0, 1]` | 离合器 |
-| `focus` | `[-90, 90]` 度 | focus 中心方向；超出范围表示不请求 focus 数据 |
-| `meta` | `0` 或 `1` | `1` 请求重新开始比赛，通常使用 `0` |
-
-## 数据采集
-
-数据采集集成在 `human` 驾驶员模块中，不需要另外启动采集程序。每场比赛开始时，程序会为每个真人玩家创建一组日志；驾驶过程中按仿真时间定期采样，比赛结束或重新开始时关闭日志。
-
-默认采样率为 20 Hz。可以在启动 TORCS 前通过环境变量调整采集行为：
-
-```bash
-# 输出目录必须已经存在；不设置时使用 TORCS 进程的当前工作目录
-mkdir -p "$(pwd)/logs"
-export TORCS_PLAYER_LOG_DIR="$(pwd)/logs"
-
-# 采样率，单位 Hz
-export TORCS_PLAYER_LOG_HZ=20
-
-# 每条主日志记录还会以 UDP 数据报发送到这里
-export TORCS_PLAYER_UDP_HOST=127.0.0.1
-export TORCS_PLAYER_UDP_PORT=3101
-
-./BUILD/bin/torcs
-```
-
-采样受仿真步长限制，因此实际相邻记录的时间应以 `sim_time` 为准。UDP 内容与主 CSV 的数据行相同，但不发送表头；没有接收端也不影响 CSV 写入。
-
-### CSV 文件
-
-每个真人玩家每场比赛生成两个文件，`<player>` 是从 1 开始的玩家编号，`<timestamp>` 是开始采集时的 Unix 时间戳：
-
-- `player-<player>-<timestamp>.csv`：当前玩家的控制量、车辆状态和传感器数据，每个采样时刻一行。
-- `rankings-player-<player>-<timestamp>.csv`：同一采样时刻所有参赛车辆的位置和排名，每辆车一行。多人本地驾驶时，每个玩家各自生成一份排名文件。
-
-未设置 `TORCS_PLAYER_LOG_DIR` 时，文件写入进程当前工作目录。使用本仓库的 `./BUILD/bin/torcs` 启动脚本时，该目录通常是 `BUILD/share/games/torcs`；建议显式设置输出目录，以免依赖启动方式。
-
-### 主 CSV 字段
-
-| 字段 | 单位/范围 | 含义 |
-| --- | --- | --- |
-| `seq` | 从 0 开始 | 当前日志内的采样序号 |
-| `sim_time` | s | 本场比赛的仿真时间 |
-| `player` | 从 1 开始 | 真人玩家编号 |
-| `lap` | 圈 | 当前圈计数，起跑阶段通常为 0 |
-| `x`, `y` | m | 车辆在赛道世界坐标系中的平面位置 |
-| `yaw` | rad | 车辆在世界坐标系中的航向角 |
-| `accel_x`, `accel_y` | m/s² | 车辆纵向、横向加速度 |
-| `steer` | `[-1, 1]` | 转向指令；负值和正值分别代表两个转向方向 |
-| `throttle` | `[0, 1]` | 油门指令 |
-| `brake` | `[0, 1]` | 制动指令 |
-| `clutch` | `[0, 1]` | 离合器指令 |
-| `angle` | rad，`[-π, π]` | 赛道中心线切线方向与车辆航向之间的夹角 |
-| `curLapTime` | s | 当前圈已经用时 |
-| `damage` | 无量纲 | TORCS 累积车辆损伤值，越大表示损伤越严重 |
-| `distFromStart` | m | 沿赛道中心线到起终点的距离；每圈会回绕 |
-| `distRaced` | m | 从本次采集开始累计行驶的有符号赛道距离；跨越起终点时已做回绕修正 |
-| `fuel` | L | 剩余燃油量 |
-| `gear` | 整数 | 挡位；`-1` 为倒挡、`0` 为空挡、正数为前进挡 |
-| `lastLapTime` | s | 上一圈用时；尚未完成一圈时通常为 0 |
-| `racePos` | 从 1 开始 | 当前比赛名次 |
-| `rpm` | rpm | SCR 风格的发动机转速值，代码由 TORCS 内部发动机角速度乘以 10 得到 |
-| `speedX`, `speedY`, `speedZ` | km/h | 车辆自身坐标系中的纵向、横向、垂向速度 |
-| `trackPos` | 通常 `[-1, 1]` | 相对赛道中心的位置：`0` 为中心线，绝对值 `1` 为左右边界；超出该范围表示驶出赛道 |
-| `z` | m | 车身世界高度减去当前位置赛道表面高度 |
-| `opponent_0` … `opponent_35` | m，最大 200 | 环绕车辆一周的 36 路对手距离传感器，每路覆盖 10°；`opponent_18` 朝正前方，索引依次覆盖相对方向 `-180°` 到 `170°`。没有对手时为 200 |
-| `track_0` … `track_18` | m，最大 200 | 19 路赛道边界距离，方向相对车辆轴线从 `-90°` 到 `90°`、间隔 10°；`track_9` 朝正前方。车辆驶出赛道时全部为 `-1`，量程内未碰到边界时为 200 |
-| `wheelSpinVel_0` … `wheelSpinVel_3` | rad/s | 四个车轮的角速度；顺序是右前、左前、右后、左后 |
-| `focus_0` … `focus_4` | m，最大 200 | 车辆前向附近 `-2°`、`-1°`、`0°`、`1°`、`2°` 的赛道边界距离；车辆驶出赛道时为 `-1`，量程内未碰到边界时为 200 |
-
-说明：传感器角度遵循 SCR/TORCS 的坐标和正负方向约定。如果下游任务需要明确区分“左/右”，建议用一帧已知姿态数据验证所用坐标系，不要只根据索引名猜测。
-
-### 排名 CSV 字段
-
-| 字段 | 单位/范围 | 含义 |
-| --- | --- | --- |
-| `sim_time` | s | 采样时的比赛仿真时间；同一时刻的所有车辆具有相同值 |
-| `car_index` | 从 0 开始 | 车辆在当前 `tSituation` 车辆数组中的索引 |
-| `car_name` | 字符串 | 车辆或车手名称，按标准 CSV 规则使用双引号转义 |
-| `race_pos` | 从 1 开始 | 当前比赛名次 |
-| `laps` | 圈 | 当前圈计数 |
-| `dist_from_start` | m | 该车沿赛道中心线到起终点的距离 |
-
-## 实时 AI 解说与桌面字幕 Overlay
-
-当前实时解说链路由 `midware/` 和 `overlay-app/` 组成：
-
-```text
-TORCS human 数据采集器
-  -> UDP 127.0.0.1:3101
-  -> midware/commentary.py
-  -> OpenAI-compatible API / LM Studio
-  -> WebSocket ws://127.0.0.1:8880/ws
-  -> overlay-app Electron 字幕悬浮窗
-```
-
-`midware` 负责接收 TORCS 遥测、检测比赛事件、调用模型、提供 REST 配置 API 和 WebSocket 解说流。`overlay-app` 是独立 Electron 应用，目前包含两个透明、无边框、始终置顶的字幕悬浮窗，共用同一个 WebSocket 连接和同一份设置：屏幕下方的解说字幕窗（`index.html` + `renderer.js`）和屏幕上方的工程师问答字幕窗（`engineer.html` + `engineer-renderer.js`，对应 Feature 1）。两个窗口都可以通过各自面板上的小设置按钮或应用菜单打开同一个设置窗口。消息通过 `source` 字段路由到对应窗口（无 `source` 或 `source: "commentary"` 进解说窗，`source: "engineer"` 进工程师窗），详见 `docs/display-layer-contract.md`。
-
-所有面向用户展示或朗读的 AI 输出都应复用这条链路，不要为单个 AI 功能单独创建字幕窗口、网页工具栏、Tkinter 窗口或终端-only 展示路径。显示层协议见：
-
-```text
-docs/display-layer-contract.md
-```
-
-### 1. 启动模型服务
-
-如果使用 LM Studio：
-
-1. 打开 LM Studio。
-2. 加载模型，例如 `granite-4.1-8b`。
-3. 进入 Developer / Local Server。
-4. 启动本地 server。
-
-如果 LM Studio 运行在 Windows，而 TORCS/midware 运行在 WSL，先在 WSL 中找 Windows 主机 IP：
-
-```bash
-ip route | awk '/default/ {print $3}'
-```
-
-测试模型服务：
-
-```bash
-curl http://$(ip route | awk '/default/ {print $3}'):1234/v1/models
-```
-
-能返回模型列表后，网页配置中的 Base URL 通常填写：
-
-```text
-http://<Windows-host-ip>:1234/v1
-```
-
-API Key 可填任意非空字符串，例如：
-
-```text
-lm-studio
-```
-
-### 2. 启动 midware
-
-第一次运行：
-
-```bash
-cd ~/test/torcs-1.3.7/midware
-python3 -m venv .venv
+cd ~/F1-simulator
 source .venv/bin/activate
-pip install -r requirements.txt
+python ai_bot.py --bot --granite
 ```
 
-以后启动：
+`--bot` 必须提供；不加时只运行内置自测试。完整操作和故障排查见 [docs/torcs-granite-quickstart.md](docs/torcs-granite-quickstart.md)。
+
+## 测试
+
+项目目前以静态检查、内置测试和手动端到端验收为主，尚无完整 pytest/CI 覆盖。
 
 ```bash
-cd ~/test/torcs-1.3.7/midware
+cd ~/F1-simulator
 source .venv/bin/activate
-python commentary.py
+
+# Python 语法检查
+python -m compileall -q *.py midware tools
+
+# Granite 连通性（需要已启动模型服务）
+python lmstudio_smoke_test.py
+
+# AI bot 内置协议/控制测试（不连接 TORCS）
+python ai_bot.py
+
+# 运行时矩阵检查
+python tools/runtime_matrix_check.py
+
+# Electron JavaScript 静态检查
+node --check overlay-app/electron/main.js
+node --check overlay-app/src/renderer.js
+node --check overlay-app/src/engineer-renderer.js
 ```
 
-服务地址：
+端到端测试应至少确认：UDP 3101 遥测变化、Feature 2 页面更新、WebSocket 断线重连、Feature 1 输出路由到工程师窗口、TTS `/health` 返回正常，以及 `ai_bot.py` 与 UDP 3001 完成 SCR 握手。Overlay 的详细人工验收表见 [overlay-app/TESTING.md](overlay-app/TESTING.md)。
 
-```text
-http://localhost:8880
-ws://127.0.0.1:8880/ws
-```
+## Demo 视频与 vlog
 
-打开 `http://localhost:8880`，保存 AI 配置，并把自动解说设置为：
+- Demo 视频：
+- 开发 vlog：
 
-```text
-模式: 事件 + 间隔
-解说间隔: 10
-事件窗口: 6
-事件冷却: 1
-```
+## 已知限制
 
-### 3. 启动 Electron 字幕悬浮窗
+- 首次安装不是完全离线流程：Python/npm 包、Granite 模型、Whisper 模型和 Kokoro 权重均可能需要下载。
+- WSLg 的 OpenGL、PulseAudio 麦克风和音频播放存在环境差异；黑屏恢复见 [docs/wslg-black-screen-recovery.md](docs/wslg-black-screen-recovery.md)。
+- LM Studio 位于 Windows、服务位于 WSL2 时，`localhost` 路由取决于 WSL 网络模式。
+- Feature 2 独立服务依赖主 midware 的遥测历史 API；它不能单独产生真实遥测。
+- 多个独立脚本同时回退为直接监听 UDP 3101 时会发生端口冲突。
+- Kokoro 权重和 voices 不在仓库中，必须单独下载。
+- Feature 4 的 Granite 只负责低频策略选择；实时转向、油门和制动由本地参数化控制器完成。
+- 自动化测试和 CI 覆盖仍不完整，最终演示前需执行人工端到端检查。
 
-第一次运行：
+## 数据采集与底层接口
 
-```bash
-cd ~/test/torcs-1.3.7/overlay-app
-npm install
-```
+- human driver 可按 `TORCS_PLAYER_LOG_*` 环境变量写出 CSV，并将同一遥测行发送至 UDP 3101。
+- `scr_server 1` 至 `scr_server 10` 使用 UDP 3001–3010，为外部客户端提供双向 SCR 控制接口。
+- 更完整的字段、协议与原生 TORCS 信息保留在 [README](README) 和 `doc/` 目录中。
 
-启动：
+## License
 
-```bash
-cd ~/test/torcs-1.3.7/overlay-app
-npm start
-```
-
-连接成功后显示：
-
-```text
-Waiting for commentary...
-```
-
-如果显示：
-
-```text
-Connection lost
-```
-
-说明 `midware/commentary.py` 未运行，或 `ws://127.0.0.1:8880/ws` 无法连接。Overlay 会每 3 秒自动重连。
-
-字幕窗口右上角的设置按钮或应用菜单会打开设置窗口。应用菜单里的 `Show Overlay` 可以恢复/显示 overlay。设置窗口支持：
-
-- Overlay WebSocket URL、重连间隔、ping 间隔。
-- 语音解说开关、音色、语速、音调、音量和试听。
-- 模型 API provider、Base URL、API Key、模型名、temperature、streaming。
-- 解说员 system prompt、上下文 tokens、回复 tokens。
-- 自动解说模式、间隔、事件窗口、冷却、去重和最大词数。
-- CSV 读取、演示数据注入、手动触发解说、清空上下文历史。
-
-如果 Electron 没有枚举到浏览器 voice，overlay 会自动使用系统 `speech-dispatcher` 的 `spd-say` 作为配音 fallback。可先用下面命令确认系统 TTS：
-
-```bash
-spd-say "TORCS voice test"
-```
-
-WSL 中请使用 Linux 版 Node/npm。如果 `which npm` 指向 `/mnt/c/...` 或 `/mnt/d/...`，Electron 安装可能因 Windows UNC 路径失败。
-
-完整 overlay 测试文档见：
-
-```text
-overlay-app/TESTING.md
-```
-
-### 4. 从 TORCS 开始完整运行
-
-开三个终端，按顺序运行。
-
-终端 1：启动 `midware`。
-
-```bash
-cd ~/test/torcs-1.3.7/midware
-source .venv/bin/activate
-python commentary.py
-```
-
-终端 2：启动 overlay。
-
-```bash
-cd ~/test/torcs-1.3.7/overlay-app
-npm start
-```
-
-终端 3：启动 TORCS，并把 human 数据采集器的 UDP 输出指向 `midware`。
-
-```bash
-cd ~/test/torcs-1.3.7
-
-export TORCS_PLAYER_UDP_HOST=127.0.0.1
-export TORCS_PLAYER_UDP_PORT=3101
-export TORCS_PLAYER_LOG_DIR="$(pwd)/logs"
-mkdir -p logs
-
-./BUILD/bin/torcs
-```
-
-进入 TORCS 比赛并开始驾驶后，正常现象是：
-
-- `http://localhost:8880` 页面中遥测数据变化。
-- 自动解说或手动解说触发时，overlay 显示 `Generating captions...`。
-- 模型返回完成后，overlay 显示最终解说文本。
-
-## 常用启动参数
-
-- `-s`：禁用多重纹理，适用于部分旧显卡或图形兼容问题。
-- `-m`：显示 X 鼠标光标。
-- `-r <配置文件>`：使用指定的比赛配置文件启动，适用于测试或 AI 训练。
-- `-d`：在 GDB 下运行并在退出时打印调用栈，建议配合调试构建使用。
-- `-g`：在 Valgrind 下运行，建议配合调试构建使用。
-
-查看游戏内帮助请按 `F1`。
-
-## 许可证说明
-
-项目中的部分车辆素材并非 GPL 自由内容，具体许可信息请查看对应目录内的 `readme.txt`，主要包括：
-
-- `data/cars/models/pw-*`
-- `data/cars/models/kc-*`
-
-## Granite AI Features
-
-This project now includes two Granite-powered middleware scripts (Feature 3's earlier
-standalone prototype, `race_commentator.py`, has been retired -- its functionality is
-fully covered by the mainline `midware/commentary.py` service described earlier in
-this README):
-
-- `chat_engineer.py` / `chat_engineer_gui.py` (+ `car_state_source.py`, `midware/context_manager.py`, `granite_client.py`) for Feature 1: AI racing engineer chatbot (CLI and desktop GUI entrypoints)
-- `telemetry_analyzer.py` for Feature 2: telemetry analysis and driving guidance
-
-Both features follow the same architecture:
-
-```text
-TORCS UDP CSV -> Python middleware -> Granite endpoint -> text output
-```
-
-The middleware keeps TORCS-specific parsing local and sends a structured payload to an external Granite model through an OpenAI-compatible API.
-
-### Shared Setup
-
-Before launching TORCS, enable the built-in human driver telemetry export:
-
-```bash
-mkdir -p "$(pwd)/logs"
-export TORCS_PLAYER_LOG_DIR="$(pwd)/logs"
-export TORCS_PLAYER_LOG_HZ=20
-export TORCS_PLAYER_UDP_HOST=127.0.0.1
-export TORCS_PLAYER_UDP_PORT=3101
-```
-
-Then start your Granite-compatible model server and point the middleware at it:
-
-```bash
-export TORCS_AI_BASE_URL="http://<model-host>:<port>/v1"
-export TORCS_AI_MODEL="your-lm-studio-model-id"
-```
-
-If you are using LM Studio on the same computer, the default endpoint is already:
-
-```bash
-http://127.0.0.1:1234/v1
-```
-
-So on most machines you only need to:
-
-1. Open LM Studio
-2. Load a Granite model
-3. Start the local server from the Developer tab
-
-The middleware will then auto-detect the visible local model list from `GET /v1/models` and prefer a model whose identifier contains `granite`. You can still override the endpoint or exact model ID with environment variables if needed.
-
-Quick smoke test for the local connection:
-
-```bash
-python3 lmstudio_smoke_test.py
-```
-
-You can still override the endpoint per feature with the feature-specific environment variables shown below.
-
-### Feature 1: AI Racing Engineer Chatbot
-
-This is Module 1 from the project brief, split between two teammates per the team's 分工文档:
-
-- "A 同学" owns **赛车数据采集与状态分析功能**: reading TORCS data and turning it into a `car_state` dict with a `problems` list.
-- "B 同学" owns **AI 赛车工程师问答功能**: turning that `car_state` plus a player question into a Granite-generated answer. The files below (`car_state_source.py`, `midware/context_manager.py`, `granite_client.py`, `chat_engineer.py`) are B's deliverable.
-
-Agreed `car_state` contract between A and B:
-
-```json
-{
-  "speed": 210.0,
-  "rpm": 8700.0,
-  "gear": 5,
-  "track_pos": 0.72,
-  "damage": 1200.0,
-  "fuel": 35.0,
-  "lap_time": 102.3,
-  "problems": ["车辆快要偏离赛道", "转速过高，建议升挡"]
-}
-```
-
-Run (CLI version, runs in a terminal):
-
-```bash
-python3 chat_engineer.py
-```
-
-Run (desktop GUI version, recommended for demos -- a floating chat window with a live status panel instead of a terminal):
-
-```bash
-python3 chat_engineer_gui.py
-```
-
-`chat_engineer_gui.py` is a Tkinter window with three parts: a live status panel (speed/rpm/gear/track position/damage/fuel/lap time + detected problems, refreshed every `TORCS_ENGINEER_REFRESH_MS` ms), a scrollable chat log, and an input box (Enter or the 发送 button to send). It reuses `car_state_source.py`, `midware/context_manager.py`, and `granite_client.py` unchanged -- only the input/output layer differs from the CLI version, and Granite calls run on a background thread so the window never freezes while waiting for a reply. Keep the CLI version around as a quick debug entrypoint (no GUI dependencies, easier to read raw errors).
-
-Optional environment variables (shared by both entrypoints, plus one GUI-only var):
-
-```bash
-export TORCS_ENGINEER_BASE_URL="http://<model-host>:<port>/v1"
-export TORCS_ENGINEER_MODEL="granite"
-export TORCS_ENGINEER_USE_FAKE_DATA=true   # force demo car_state data
-export TORCS_ENGINEER_MIDWARE_URL="http://127.0.0.1:8880"  # midware REST, probed first (see below)
-export TORCS_ENGINEER_UDP_PORT=3101        # live telemetry UDP port, used only as a fallback
-export TORCS_ENGINEER_REFRESH_MS=500       # GUI only: status panel refresh interval (ms)
-export TORCS_ENGINEER_OVERLAY_BROADCAST=true               # set to false to disable the overlay broadcast below
-export TORCS_ENGINEER_OVERLAY_WS_URL="ws://127.0.0.1:8880/ws"  # midware WebSocket endpoint
-```
-
-What the chatbot does:
-
-1. Tries to read live `car_state` data by first probing `midware/commentary.py`'s REST API (`GET /api/telemetry` at `TORCS_ENGINEER_MIDWARE_URL`) via `HttpCarStateSource` in `car_state_source.py` -- this avoids binding UDP directly when midware (needed for the overlay window) is already running. Only falls back to binding the TORCS UDP telemetry feed directly (port `3101`, via `LiveCarStateSource`, which now shares its parsing code with `midware/telemetry.py`) if midware isn't reachable, so the chatbot still works standalone.
-2. Falls back to `FakeCarStateSource` (a few hand-written demo scenarios) if no live telemetry shows up within 5 seconds, or if `TORCS_ENGINEER_USE_FAKE_DATA=true` is set.
-3. Prints the current car state and prompts for a player question on the command line.
-4. `midware/context_manager.py`'s `ContextManager` (shared with the main commentary pipeline) formats the car state and question into a system+user prompt for Granite, using the `ENGINEER_PERSONA` system prompt.
-5. `granite_client.py` sends the prompt to the Granite-compatible endpoint and returns the answer.
-6. `ContextManager` keeps a token-budgeted rolling history of past Q&A turns so follow-up questions ("那我下一圈呢？") have context, trimming from the oldest turn once the context budget (`ContextConfig.max_context_tokens`) is exceeded.
-7. Best-effort broadcasts each reply to the shared overlay display layer via `overlay_broadcast.py` (repo root), tagged `"source": "engineer"` so it shows up in the dedicated engineer floating window described above instead of the commentary one. This requires the optional `websocket-client` pip package (`pip3 install websocket-client`, add `--break-system-packages` if your environment is externally managed); if it is not installed, or `midware`/`overlay-app` are not running, this step silently does nothing -- the Tkinter GUI and CLI both keep working exactly as before. The Tkinter GUI itself is kept for local debugging per `docs/display-layer-contract.md` ("no Tkinter popups for user-facing display" applies to user-facing presentation -- this debug window is in addition to, not instead of, the overlay broadcast).
-
-Student reproduction steps:
-
-1. Optionally start TORCS with the human driver telemetry export enabled (see Shared Setup above), or just set `TORCS_ENGINEER_USE_FAKE_DATA=true` to test without TORCS running at all.
-2. Start the Granite-compatible model endpoint (e.g. LM Studio with a Granite model loaded).
-3. Run `python3 chat_engineer.py`.
-4. Ask questions like "我的轮胎状态怎么样？" / "现在该不该进站？" / "为什么我刚才过弯慢？".
-5. Type `exit` to quit.
-
-Swapping in A's real data: once A delivers a module that produces a dict matching the `car_state` contract above, replace `LiveCarStateSource` in `car_state_source.py` or adapt it behind the same interface so `chat_engineer.py` and `chat_engineer_gui.py` do not need to change.
+TORCS 引擎及项目代码沿用仓库内已有许可证。部分 `data/cars/models/pw-*` 和 `data/cars/models/kc-*` 车辆素材具有单独许可，请在再分发前查看相应目录的 `readme.txt`。

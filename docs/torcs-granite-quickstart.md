@@ -48,7 +48,7 @@ export GALLIUM_DRIVER=llvmpipe
 TORCS_HOME=~/F1-simulator bash torcs_launcher.sh
 ```
 
-`torcs_launcher.sh` 已经内置了这两个环境变量，但脚本里 `TORCS_HOME` 默认写死成队友的路径（`/home/yejian/torcs`），**必须**用 `TORCS_HOME=~/F1-simulator` 覆盖，否则会去错目录。
+`torcs_launcher.sh` 已经内置这两个环境变量，并默认以脚本所在的仓库目录作为 `TORCS_HOME`。只有在从其他 TORCS 构建目录启动时才需要显式覆盖该变量。
 
 启动后选一个赛道进 Quick Race，画面会停在类似：
 
