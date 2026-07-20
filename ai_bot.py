@@ -1193,25 +1193,58 @@ You are a race strategist for a TORCS simulation. \
 Given live sensor data, choose one driving strategy and explain in one sentence why.
 
 Respond with JSON only — no markdown, no extra text:
-{"strategy": "<one of ATTACK|NORMAL|DEFEND|SAVE_FUEL|PIT>", "reason": "<one sentence>"}
+{"strategy": "<one of ATTACK|NORMAL|DEFEND|SAVE_FUEL|PIT>", "reason": "<one sentence, under 8 words>"}
 
 Strategy guide:
 - ATTACK:    push hard, high risk, use when fuel ok and no damage and clear track
 - NORMAL:    balanced pace, default choice
 - DEFEND:    cautious, use when damaged or opponent close behind
-- SAVE_FUEL: economical, use when fuel < 20 L and many laps remain
-- PIT:       slow down for pit stop, use when fuel < 5 L or damage critical"""
+- SAVE_FUEL: economical, use when fuel < 20 L
+- PIT:       slow down for pit stop, use when fuel < 5 L or damage critical
+
+current_strategy is what the car is already running — you are being re-polled every
+few seconds, so don't switch away from it just because the data is borderline; only
+switch when the new data clearly supports a different choice.
+
+front_gap_delta_m / rear_gap_delta_m are the change in opponent distance since the
+last poll: negative means that gap is closing (opponent ahead being caught, or one
+behind catching you), positive means it's opening. Use these to react to a car
+closing in *before* it's already on top of you, not just the current distance."""
 
 
-def _build_strategy_prompt(state: dict[str, Any]) -> str:
-    """Summarise the SCR state into a compact JSON payload for the prompt."""
+def _build_strategy_prompt(
+    state: dict[str, Any],
+    *,
+    prev_strategy: str = NORMAL,
+    prev_state: dict[str, Any] | None = None,
+) -> str:
+    """Summarise the SCR state into a compact JSON payload for the prompt.
+
+    ``prev_strategy`` and ``prev_state`` give Granite the two bits of history
+    it has no other way to see: what it's already running (so a borderline
+    reading doesn't get treated as a fresh decision every poll) and which way
+    the nearest opponent gaps are trending (closing vs opening), rather than
+    just their instantaneous distance.
+    """
     track  = state.get("track", [])
     opps   = state.get("opponents", [])
 
     track_summary = compact_track_profile(track)   if track else {}
     opp_summary   = compact_opponent_profile(opps) if opps  else {}
 
+    front_gap_delta = 0.0
+    rear_gap_delta  = 0.0
+    if prev_state is not None:
+        prev_opps = prev_state.get("opponents", [])
+        if prev_opps:
+            prev_opp_summary = compact_opponent_profile(prev_opps)
+            front_gap_delta = round(
+                opp_summary.get("front_gap", 200.0) - prev_opp_summary.get("front_gap", 200.0), 1)
+            rear_gap_delta = round(
+                opp_summary.get("rear_gap", 200.0) - prev_opp_summary.get("rear_gap", 200.0), 1)
+
     payload = {
+        "current_strategy": prev_strategy,
         "speed_kmh":   round(state.get("speed_x",      0.0), 1),
         "fuel_L":      round(state.get("fuel",         50.0), 1),
         "damage":      round(state.get("damage",        0.0), 0),
@@ -1219,6 +1252,8 @@ def _build_strategy_prompt(state: dict[str, Any]) -> str:
         "gear":              state.get("gear",            1),
         "race_pos":          state.get("race_pos",        1),
         "dist_raced_m":round(state.get("dist_raced",   0.0), 0),
+        "front_gap_delta_m": front_gap_delta,
+        "rear_gap_delta_m":  rear_gap_delta,
         "track":       track_summary,
         "opponents":   opp_summary,
     }
@@ -1292,6 +1327,9 @@ class GraniteStrategist:
         self._last_submit:   float = -interval   # trigger immediately on first tick
         self._candidate_strategy: str | None = None
         self._candidate_count:    int = 0
+        self._prev_state: dict[str, Any] | None = None  # state as of the previous
+                                                          # submitted request, for
+                                                          # trend fields in the prompt
 
     # ------------------------------------------------------------------ #
 
@@ -1303,7 +1341,15 @@ class GraniteStrategist:
         """
         now = time.monotonic()
         if now - self._last_submit >= self._interval:
-            self._runner.submit({"state": state}, priority=0)
+            self._runner.submit(
+                {
+                    "state": state,
+                    "prev_state": self._prev_state,
+                    "prev_strategy": self._last_strategy,
+                },
+                priority=0,
+            )
+            self._prev_state = state
             self._last_submit = now
 
         result = self._runner.pop_completed()
@@ -1355,7 +1401,11 @@ class GraniteStrategist:
     def _call_granite(self, task: dict[str, Any]) -> tuple[str, str]:
         """Worker: runs in background thread, calls LLM, returns (strategy, reason)."""
         state  = task["state"]
-        prompt = _build_strategy_prompt(state)
+        prompt = _build_strategy_prompt(
+            state,
+            prev_strategy=task["prev_strategy"],
+            prev_state=task["prev_state"],
+        )
         text   = chat_completion_text(
             self._connection,
             messages=[{"role": "user", "content": prompt}],
@@ -2051,7 +2101,25 @@ def _run_tests() -> None:
     assert "120.0"  in prompt,     "FAIL: prompt missing speed"
     assert "18.0"   in prompt,     "FAIL: prompt missing fuel"
     assert "strategy" in prompt,   "FAIL: prompt missing JSON schema hint"
+    assert '"current_strategy": "NORMAL"' in prompt, "FAIL: default current_strategy missing"
+    assert '"front_gap_delta_m": 0.0' in prompt,     "FAIL: default delta should be 0.0 with no prev_state"
     print("_build_strategy_prompt          ... OK  (prompt contains speed/fuel/strategy)")
+
+    # current_strategy passthrough, so Granite sees what's already active
+    prompt_prev = _build_strategy_prompt(sample_state, prev_strategy=DEFEND)
+    assert '"current_strategy": "DEFEND"' in prompt_prev, "FAIL: prev_strategy not threaded into payload"
+    print("_build_strategy_prompt prev_strategy ... OK  (current_strategy reflects DEFEND)")
+
+    # opponent closing from the front → negative front_gap_delta_m
+    prev_state = {**sample_state, "opponents": [200.0] * 36}
+    closing_opponents = [200.0] * 36
+    for i in range(16, 21):
+        closing_opponents[i] = 40.0   # front sector now much closer than the 200.0 baseline
+    now_state = {**sample_state, "opponents": closing_opponents}
+    prompt_trend = _build_strategy_prompt(now_state, prev_state=prev_state)
+    assert '"front_gap_delta_m": -160.0' in prompt_trend, \
+        f"FAIL: expected closing front gap delta, got: {prompt_trend}"
+    print("_build_strategy_prompt front_gap_delta_m ... OK  (closing opponent → -160.0)")
 
     print("\nAll tests passed.")
 
