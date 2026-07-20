@@ -64,6 +64,7 @@ coverage/
 *.profdata
 
 # Editor and OS metadata
+.claude/
 .cache/
 .vscode/
 .idea/
