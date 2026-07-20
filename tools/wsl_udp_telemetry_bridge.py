@@ -11,7 +11,7 @@ def main() -> int:
         description="Forward TORCS telemetry from WSL localhost to the Windows middleware listener."
     )
     parser.add_argument("--listen-host", default="127.0.0.1")
-    parser.add_argument("--listen-port", type=int, default=3101)
+    parser.add_argument("--listen-port", type=int, default=3111)
     parser.add_argument("--target-host", required=True)
     parser.add_argument("--target-port", type=int, default=3101)
     parser.add_argument("--log-every", type=int, default=250)

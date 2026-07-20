@@ -2,15 +2,29 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import itertools
 import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8880"
+def _load_project_config():
+    config_path = Path(__file__).resolve().parent.parent / "config.py"
+    spec = importlib.util.spec_from_file_location("f1_simulator_config", config_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load project config: {config_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+config = _load_project_config()
+
+DEFAULT_BASE_URL = config.MIDWARE_BASE_URL
 FEATURES = ("commentary", "engineer", "coach", "bot")
 
 
@@ -97,6 +111,63 @@ def check_combinations(base_url: str) -> bool:
     return ok
 
 
+def _status_by_name(base_url: str) -> dict[str, dict[str, Any]]:
+    success, payload = request_json(base_url, "/api/features/status")
+    if not success or not isinstance(payload, dict):
+        return {}
+    return {
+        str(item.get("name")): item
+        for item in payload.get("features", [])
+        if isinstance(item, dict)
+    }
+
+
+def check_real_feature_gates(base_url: str) -> bool:
+    """Verify disabled settings affect handlers, not only returned metadata."""
+    initial = _status_by_name(base_url)
+    original_enabled = [name for name in FEATURES if initial.get(name, {}).get("enabled", True)]
+    probes = {
+        "commentary": ("/api/commentary/manual", "POST", {"prompt": "runtime gate probe"}),
+        "engineer": ("/api/engineer/ask", "POST", {"question": "runtime gate probe"}),
+        "coach": ("/api/coach/dashboard", "GET", None),
+        "bot": ("/api/bot/strategy", "POST", {"sensor_state": {}}),
+    }
+    ok = True
+    try:
+        for feature in FEATURES:
+            enabled = [name for name in FEATURES if name != feature]
+            changed, error = request_json(
+                base_url,
+                "/api/features/enabled",
+                method="POST",
+                body={"enabled": enabled},
+            )
+            if not changed:
+                print(f"[FAIL] disable {feature}: {error}")
+                ok = False
+                continue
+
+            path, method, body = probes[feature]
+            success, result = request_json(base_url, path, method=method, body=body)
+            rejected = not success and str(result).startswith("HTTP 409:")
+            states = _status_by_name(base_url)
+            state = states.get(feature, {})
+            state_ok = state.get("enabled") is False and state.get("active") is False
+            passed = rejected and state_ok
+            print(f"[{'OK' if passed else 'FAIL'}] gate={feature} http409={rejected} inactive={state_ok}")
+            if not passed:
+                print(f"       response={result} state={state}")
+                ok = False
+    finally:
+        request_json(
+            base_url,
+            "/api/features/enabled",
+            method="POST",
+            body={"enabled": original_enabled},
+        )
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check unified runtime APIs for feature combinations.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="midware base URL")
@@ -110,7 +181,8 @@ def main() -> int:
     print(f"Runtime matrix check -> {args.base_url}")
     api_ok = check_required_api(args.base_url)
     combo_ok = True if args.skip_combinations else check_combinations(args.base_url)
-    if api_ok and combo_ok:
+    gate_ok = check_real_feature_gates(args.base_url)
+    if api_ok and combo_ok and gate_ok:
         print("All checks passed.")
         return 0
     print("One or more checks failed.")

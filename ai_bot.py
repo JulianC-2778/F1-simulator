@@ -18,7 +18,11 @@ import math
 import re
 import socket
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
+import atexit
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,9 +31,8 @@ import config
 try:
     from telemetry_common import (
         clamp, parse_float, parse_int,
-        LatestTaskRunner, chat_completion_text, extract_json_object,
+        LatestTaskRunner, extract_json_object,
         compact_track_profile, compact_opponent_profile,
-        connect_openai_compatible_model, print_connection_banner,
     )
     _TELEMETRY_AVAILABLE = True
 except ImportError:
@@ -1283,8 +1286,8 @@ class GraniteStrategist:
         ctrl = compute_control(state, safe_strategy)
     """
 
-    def __init__(self, connection: Any, interval: float = _STRATEGY_INTERVAL) -> None:
-        self._connection = connection
+    def __init__(self, base_url: str = config.MIDWARE_BASE_URL, interval: float = _STRATEGY_INTERVAL) -> None:
+        self._base_url = base_url.rstrip("/")
         self._interval   = interval
         self._runner     = LatestTaskRunner(self._call_granite, "granite-strategist")
         self._last_strategy: str = NORMAL
@@ -1292,6 +1295,8 @@ class GraniteStrategist:
         self._last_submit:   float = -interval   # trigger immediately on first tick
         self._candidate_strategy: str | None = None
         self._candidate_count:    int = 0
+        self.fallback = False
+        self.last_error = ""
 
     # ------------------------------------------------------------------ #
 
@@ -1309,8 +1314,12 @@ class GraniteStrategist:
         result = self._runner.pop_completed()
         if result is not None:
             if result.error:
-                print(f"[Granite] error: {result.error}")
+                self.fallback = True
+                self.last_error = str(result.error)
+                print(f"[ModelBroker] error: {result.error}; holding {self._last_strategy}")
             else:
+                self.fallback = False
+                self.last_error = ""
                 strategy, reason = result.output
                 self._debounce(strategy, reason)
 
@@ -1353,17 +1362,73 @@ class GraniteStrategist:
     # ------------------------------------------------------------------ #
 
     def _call_granite(self, task: dict[str, Any]) -> tuple[str, str]:
-        """Worker: runs in background thread, calls LLM, returns (strategy, reason)."""
+        """Worker: requests middleware Model Broker; never runs in control loop."""
         state  = task["state"]
-        prompt = _build_strategy_prompt(state)
-        text   = chat_completion_text(
-            self._connection,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=_GRANITE_MAX_TOK,
-            timeout=_GRANITE_TIMEOUT,
+        payload = json.dumps(
+            {"bot_id": "default", "current_strategy": self._last_strategy, "sensor_state": state}
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}/api/bot/strategy",
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
         )
-        return _parse_strategy_response(text)
+        with urllib.request.urlopen(request, timeout=_GRANITE_TIMEOUT) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        decision = result.get("decision") or {}
+        return _parse_strategy_response(json.dumps(decision))
+
+
+class BotStatusReporter:
+    """Latest-only, non-blocking heartbeat reporter for the SCR loop."""
+
+    def __init__(self, base_url: str = config.MIDWARE_BASE_URL, interval: float = 1.0) -> None:
+        self._url = f"{base_url.rstrip('/')}/api/bot/status"
+        self._interval = interval
+        self._latest: dict[str, Any] = {"connected": False, "strategy": NORMAL}
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._last_sent = 0.0
+        self._thread = threading.Thread(target=self._run, daemon=True, name="bot-status-reporter")
+        self._thread.start()
+
+    def update(self, *, immediate: bool = False, **fields: Any) -> None:
+        with self._lock:
+            self._latest.update(fields)
+        if immediate:
+            self._wake.set()
+
+    def tick(self, **fields: Any) -> None:
+        self.update(**fields)
+        if time.monotonic() - self._last_sent >= self._interval:
+            self._wake.set()
+
+    def close(self) -> None:
+        self.update(connected=False, immediate=True)
+        time.sleep(0.05)
+        self._stop.set()
+        self._wake.set()
+        self._thread.join(timeout=0.5)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._wake.wait(timeout=self._interval)
+            self._wake.clear()
+            with self._lock:
+                payload = dict(self._latest)
+            try:
+                request = urllib.request.Request(
+                    self._url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=0.4):
+                    pass
+            except Exception:
+                pass
+            self._last_sent = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -1407,28 +1472,28 @@ def run_bot(
     elif track:
         print("[warn] --track given but track_model.py is missing — driving on sensors only.")
 
-    # --- Step 7: optionally connect Granite ---
+    # --- Step 7: optionally request strategy through middleware ---
     strategist: GraniteStrategist | None = None
     if use_granite:
         if not _TELEMETRY_AVAILABLE:
             print("[warn] telemetry_common not available — falling back to fixed strategy.")
         else:
-            try:
-                _conn = connect_openai_compatible_model()
-                print_connection_banner(_conn, "AI Bot — Granite Strategist")
-                strategist = GraniteStrategist(_conn)
-            except Exception as e:
-                print(f"[warn] Could not connect to Granite ({e}) — using fixed strategy.")
+            strategist = GraniteStrategist(config.MIDWARE_BASE_URL)
 
     print(f"Connecting to TORCS at {host}:{port}  strategy={strategy}  granite={strategist is not None}…")
 
+    reporter = BotStatusReporter(config.MIDWARE_BASE_URL)
+    atexit.register(reporter.close)
     with ScrClient(host, port) as client:
         client.connect()
+        reporter.update(connected=True, strategy=strategy, immediate=True)
         _reset_driver_state()   # fresh race — clear recovery / target-speed state
         print("Identified! Entering drive loop. Press Ctrl-C to stop.\n")
 
         step             = 0
         current_strategy = strategy               # updated by Granite each tick
+        reported_strategy = current_strategy
+        reported_fallback = False
         last_lap         = 0.0                    # lastLapTime seen so far
         lap_frames       = 0                      # frames driven this lap
         lap_bound        = 0                      # … of which the map governed
@@ -1493,7 +1558,27 @@ def run_bot(
                 else:
                     current_strategy = safety_filter(strategy, state)
 
-                client.send_control(compute_control(state, current_strategy))
+                control = compute_control(state, current_strategy)
+                client.send_control(control)
+                fallback_active = bool(strategist and strategist.fallback)
+                if current_strategy != reported_strategy or fallback_active != reported_fallback:
+                    reporter.update(
+                        strategy=current_strategy,
+                        fallback=fallback_active,
+                        error=strategist.last_error if strategist else "",
+                        immediate=True,
+                    )
+                    reported_strategy = current_strategy
+                    reported_fallback = fallback_active
+                reporter.tick(
+                    connected=True,
+                    strategy=current_strategy,
+                    speed_kmh=state.get("speed_x", 0.0),
+                    gear=state.get("gear", 0),
+                    last_control={"wire": control},
+                    fallback=fallback_active,
+                    error=strategist.last_error if strategist else "",
+                )
                 step += 1
 
                 # --- per-lap A/B gauge: lap time + how often the map ruled ---
@@ -1535,6 +1620,8 @@ def run_bot(
         except KeyboardInterrupt:
             print(f"\nStopped after {step} steps.")
 
+    reporter.close()
+    atexit.unregister(reporter.close)
     if client.is_shutdown:
         print("Server sent ***shutdown***.")
 

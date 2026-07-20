@@ -10,10 +10,10 @@
 
 | Feature | 功能 | 主要入口 | 当前状态 |
 | --- | --- | --- | --- |
-| 1 | AI 赛车工程师问答（文本/语音输入、Overlay 输出） | `chat_engineer.py`、`chat_engineer_gui.py` | 已实现；真实遥测和假数据模式均可运行 |
-| 2 | 实时遥测看板与驾驶建议 | `midware/feature2_service.py`、`telemetry_analyzer.py` | 已实现；独立看板依赖主 midware |
-| 3 | 事件驱动的 AI 实时赛事解说 | `midware/commentary.py` | 已实现；支持 WebSocket、Electron Overlay 和可选 TTS |
-| 4 | Granite 辅助策略的 AI 驾驶机器人 | `ai_bot.py --bot --granite` | 已实现；通过 SCR UDP 接口控制车辆 |
+| 1 | AI 赛车工程师问答 | `POST /api/engineer/ask` | 由统一后端和 Model Broker 提供 |
+| 2 | 实时遥测看板与驾驶建议 | `GET /api/coach/dashboard` | 使用共享 TelemetryStore |
+| 3 | 事件驱动的 AI 实时赛事解说 | `python3 -m midware.app` | 正式后端入口 |
+| 4 | Granite 辅助策略的 AI 驾驶机器人 | `ai_bot.py --bot --granite` | 策略经 Middleware，控制循环保持本地 |
 
 “已实现”表示代码入口和运行链路已经存在，不代表所有机器配置、模型或赛道组合均已完成自动化验收。
 
@@ -24,7 +24,7 @@
                                         (LM Studio)
                                              ^
                                              |
-TORCS human driver -- UDP :3101 --> Python AI services
+TORCS human driver -- UDP :3101 --> Middleware (sole listener)
        |                              |-- Feature 1: racing engineer
        |                              |-- Feature 2: dashboard / coach
        |                              `-- Feature 3: commentary
@@ -172,7 +172,7 @@ WSL2 无法访问 Windows 上的 LM Studio 时，在 LM Studio 开启局域网�
 ```bash
 cd ~/F1-simulator
 source .venv/bin/activate
-python midware/commentary.py
+python3 -m midware.app
 ```
 
 终端 2：启动字幕 Overlay：
@@ -213,7 +213,7 @@ python tts_server.py
 ```bash
 cd ~/F1-simulator
 source .venv/bin/activate
-python chat_engineer.py
+python chat_engineer.py  # legacy debug API client
 # 或调试用桌面 GUI
 python chat_engineer_gui.py
 ```
@@ -224,11 +224,11 @@ python chat_engineer_gui.py
 TORCS_ENGINEER_USE_FAKE_DATA=true python chat_engineer.py
 ```
 
-在提问提示符输入 `v` 可录入英文语音。真实遥测会优先从主 midware REST API 获取，主服务不可用时才尝试直接监听 UDP 3101。
+在提问提示符输入 `v` 可录入英文语音。该工具只调用 Middleware API，不监听 UDP，也不直连 Granite。
 
 ### Feature 2 — 遥测看板 / 驾驶建议
 
-先启动 `midware/commentary.py`，再运行：
+先启动 `python3 -m midware.app`。以下独立服务仅为一个版本周期的兼容代理：
 
 ```bash
 cd ~/F1-simulator
@@ -244,7 +244,7 @@ python telemetry_analyzer.py
 
 ### Feature 3 — AI 实时赛事解说
 
-按“最小演示流程”启动 `midware/commentary.py`、`overlay-app` 和 TORCS。事件检测、上下文构建与流式输出说明见 [docs/commentary-loop.md](docs/commentary-loop.md)。
+按“最小演示流程”启动 `python3 -m midware.app`、`overlay-app` 和 TORCS。事件检测、上下文构建与流式输出说明见 [docs/commentary-loop.md](docs/commentary-loop.md)。
 
 ### Feature 4 — AI 驾驶机器人
 
@@ -267,7 +267,7 @@ python ai_bot.py --bot --granite
 
 ## 测试
 
-项目目前以静态检查、内置测试和手动端到端验收为主，尚无完整 pytest/CI 覆盖。
+项目包含标准库单元测试和内置控制算法回归测试；完整端到端验收仍需真实 TORCS/Granite 环境。
 
 ```bash
 cd ~/F1-simulator
@@ -281,6 +281,12 @@ python lmstudio_smoke_test.py
 
 # AI bot 内置协议/控制测试（不连接 TORCS）
 python ai_bot.py
+
+# 后端单元测试
+python -m unittest discover -s tests/unit -v
+
+# API/WebSocket/UDP/Bot 集成测试
+python -m unittest discover -s tests/integration -v
 
 # 运行时矩阵检查
 python tools/runtime_matrix_check.py
@@ -304,9 +310,9 @@ node --check overlay-app/src/engineer-renderer.js
 - WSLg 的 OpenGL、PulseAudio 麦克风和音频播放存在环境差异；黑屏恢复见 [docs/wslg-black-screen-recovery.md](docs/wslg-black-screen-recovery.md)。
 - LM Studio 位于 Windows、服务位于 WSL2 时，`localhost` 路由取决于 WSL 网络模式。
 - Feature 2 独立服务依赖主 midware 的遥测历史 API；它不能单独产生真实遥测。
-- 多个独立脚本同时回退为直接监听 UDP 3101 时会发生端口冲突。
+- 生产模式只有 Middleware 监听 UDP 3101；旧工具不会自动回退绑定该端口。
 - Kokoro 权重和 voices 不在仓库中，必须单独下载。
-- Feature 4 的 Granite 只负责低频策略选择；实时转向、油门和制动由本地参数化控制器完成。
+- Feature 4 的 Granite 只通过 Model Broker 负责低频策略选择；实时转向、油门、制动和安全过滤由本地控制器完成。
 - 自动化测试和 CI 覆盖仍不完整，最终演示前需执行人工端到端检查。
 
 ## 数据采集与底层接口

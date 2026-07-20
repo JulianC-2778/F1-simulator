@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import socket
 s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-s.bind(("0.0.0.0",3101))
+s.bind(("0.0.0.0", 3111))  # debug receiver; production UDP 3101 belongs to Middleware
 print("Listening on udp://0.0.0.0:3101")
 while True:
     data,peer=s.recvfrom(4096)
