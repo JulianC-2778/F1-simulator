@@ -327,7 +327,7 @@ def start_udp_listener(
     store: TelemetryStore,
     *,
     host: str = "0.0.0.0",
-    port: int = 3101,
+    port: int,
     on_error: Any | None = None,
 ) -> threading.Thread:
     def listen() -> None:

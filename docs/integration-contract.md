@@ -7,17 +7,15 @@ work should target the APIs and message shapes below.
 
 ## Runtime Shape
 
-The project is moving toward one shared midware runtime with optional feature
-modules:
+The project uses one shared Middleware runtime with optional feature modules:
 
 - `commentary`: live race commentary.
 - `engineer`: driver question answering.
 - `coach`: telemetry analysis and driving guidance.
 - `bot`: AI driver status and strategy monitoring.
 
-Short term rule: do not force every feature into the same process at once.
-Instead, keep legacy entry points working and expose stable shared APIs from
-`midware/commentary.py`.
+The official entrypoint is `python3 -m midware.app`. `midware/commentary.py`
+is a one-cycle compatibility launcher.
 
 ## Feature Discovery
 
@@ -38,9 +36,8 @@ POST /api/features/enabled
       "name": "commentary",
       "label": "Live Commentary",
       "description": "Real-time event detection and commentary.",
-      "can_start": true,
-      "can_stop": false,
-      "entrypoint": "midware/commentary.py"
+      "available": true,
+      "entrypoint": "python3 -m midware.app"
     }
   ]
 }
@@ -54,8 +51,9 @@ POST /api/features/enabled
     {
       "name": "commentary",
       "enabled": true,
-      "running": true,
+      "available": true,
       "healthy": true,
+      "active": true,
       "last_error": "",
       "last_update": 0,
       "details": {}
@@ -64,8 +62,8 @@ POST /api/features/enabled
 }
 ```
 
-The first implementation is status-only. Start/stop orchestration can be added
-after the web team confirms the UX and process model.
+Feature settings gate real handlers and background work. Disabled feature APIs
+return HTTP 409; the setting does not pretend to manage external processes.
 
 `POST /api/features/enabled` records the desired feature combination without
 force-starting or force-stopping legacy scripts:
@@ -121,7 +119,10 @@ All user-facing feature output should be normalized to this envelope:
 ```json
 {
   "type": "message",
+  "version": 1,
   "source": "engineer",
+  "request_id": "uuid",
+  "sequence": 0,
   "level": "info",
   "title": "",
   "content": "Brake earlier before turn-in.",
@@ -180,6 +181,7 @@ Bot should remain a separate realtime control process, but report status to:
 ```text
 GET  /api/bot/status
 POST /api/bot/status
+POST /api/bot/strategy
 ```
 
 Use `tools/runtime_matrix_check.py` to validate all 2-feature, 3-feature, and
@@ -187,7 +189,7 @@ Use `tools/runtime_matrix_check.py` to validate all 2-feature, 3-feature, and
 
 ## Model Gateway Direction
 
-All feature model calls should eventually route through a single gateway:
+All production feature model calls route through `ModelBroker`:
 
 ```python
 await model.chat(task="commentary", messages=messages)
@@ -195,11 +197,7 @@ await model.chat(task="engineer", messages=messages)
 await model.json(task="coach", messages=messages)
 ```
 
-For now, `midware/shared/model_gateway.py` provides the target interface for new
-or migrated code. Existing model clients should be migrated one feature at a
-time to reduce conflicts.
-
-Model requests should also go through `midware/shared/model_scheduler.py`.
+All production model requests go through `midware/services/model_broker.py`.
 The default policy serializes local model calls and uses these priorities:
 
 - `engineer`: highest user-facing priority.

@@ -96,7 +96,18 @@ class LiveCarStateSource:
     accepts both that and the snake_case style, so no extra conversion is needed here.
     """
 
-    def __init__(self, udp_port: int = config.TELEMETRY_UDP_PORT, retention_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        udp_port: int,
+        retention_seconds: float = 3.0,
+        *,
+        standalone: bool = False,
+    ) -> None:
+        if not standalone:
+            raise ValueError("Direct UDP telemetry requires explicit standalone=True")
+        if udp_port == config.TELEMETRY_UDP_PORT:
+            raise ValueError("Standalone tools must not bind the production telemetry port 3101")
+        print(f"WARNING: standalone debug UDP listener enabled on non-production port {udp_port}")
         self._store = TelemetryStore(window_seconds=retention_seconds)
         start_udp_listener(self._store, port=udp_port)
 

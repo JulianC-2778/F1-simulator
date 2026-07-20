@@ -1,0 +1,1 @@
+WEBSOCKET_PATHS = ("/ws",)

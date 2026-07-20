@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+Deprecated direct Granite compatibility client.
+
+Production Feature 1 requests use POST /api/engineer/ask and ModelBroker.
+
 Feature 1 (AI Racing Engineer Chatbot): Granite / LM Studio connection.
 
 Thin wrapper around the shared model-connection helpers in

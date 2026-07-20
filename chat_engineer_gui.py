@@ -11,14 +11,12 @@ during a demo, instead of alt-tabbing to a terminal.
 Run:
     python3 chat_engineer_gui.py
 
-Same midware-first, UDP-fallback car_state source selection as chat_engineer.py.
+Same Middleware API-only car_state source selection as chat_engineer.py.
 
 Env vars: same as chat_engineer.py --
     TORCS_ENGINEER_BASE_URL          - Granite/LM Studio endpoint
     TORCS_ENGINEER_MODEL             - model id override
     TORCS_ENGINEER_USE_FAKE_DATA     - "true" to force demo data instead of live telemetry
-    TORCS_ENGINEER_UDP_PORT          - live telemetry UDP port, used only as a fallback
-                                          when midware isn't reachable (default 3101)
     TORCS_ENGINEER_MIDWARE_URL       - midware base URL to probe first (default http://127.0.0.1:8880)
 plus one new one:
     TORCS_ENGINEER_REFRESH_MS        - status panel refresh interval in ms (default 500)
@@ -41,23 +39,21 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import config
-import granite_client
 import overlay_broadcast
 import voice_input
 from car_state_source import (
     CarStateSource,
     FakeCarStateSource,
     HttpCarStateSource,
-    LiveCarStateSource,
     wait_for_live_state,
 )
 from midware.context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
+from midware.client import ask_engineer
 from telemetry_common import env_flag
 
 
 USE_FAKE_DATA = env_flag("TORCS_ENGINEER_USE_FAKE_DATA", False)
 MIDWARE_BASE_URL = os.getenv("TORCS_ENGINEER_MIDWARE_URL", config.MIDWARE_BASE_URL)
-UDP_PORT = int(os.getenv("TORCS_ENGINEER_UDP_PORT", config.TELEMETRY_UDP_PORT))
 REFRESH_MS = int(os.getenv("TORCS_ENGINEER_REFRESH_MS", "500"))
 
 # (car_state key, display label, format string)
@@ -78,26 +74,16 @@ def choose_car_state_source() -> CarStateSource:
         print("[ChatEngineerGUI] TORCS_ENGINEER_USE_FAKE_DATA=true -> using demo car_state data.")
         return FakeCarStateSource()
 
-    # Probe midware's REST API first -- avoids the "Address already in use"
-    # port conflict when midware (needed for the overlay window) is already
-    # running. Only falls back to binding UDP directly if midware isn't
-    # reachable, so this script still works standalone.
+    # Production telemetry is owned by middleware; this legacy GUI is API-only.
     midware_source = HttpCarStateSource(base_url=MIDWARE_BASE_URL)
     print(f"[ChatEngineerGUI] Probing midware at {MIDWARE_BASE_URL} for live telemetry (no UDP bind)...")
     if wait_for_live_state(midware_source, timeout=2.0):
         print("[ChatEngineerGUI] Live telemetry detected via midware, using real car_state data.")
         return midware_source
 
-    print(f"[ChatEngineerGUI] midware not reachable at {MIDWARE_BASE_URL} (or no telemetry yet); falling back to UDP.")
-    live = LiveCarStateSource(udp_port=UDP_PORT)
-    print(f"[ChatEngineerGUI] Waiting up to 5s for live telemetry on UDP:{UDP_PORT} ...")
-    if wait_for_live_state(live, timeout=5.0):
-        print("[ChatEngineerGUI] Live telemetry detected, using real car_state data.")
-        return live
-
     print(
-        "[ChatEngineerGUI] No live telemetry yet. Falling back to demo data. "
-        "Start TORCS with the human driver telemetry export enabled (see README), "
+        "[ChatEngineerGUI] Middleware has no live telemetry. Falling back to demo data; "
+        "start the main backend with `python3 midware/commentary.py`, "
         "or set TORCS_ENGINEER_USE_FAKE_DATA=true to silence this message."
     )
     return FakeCarStateSource()
@@ -229,39 +215,29 @@ class ChatEngineerApp:
         self._append_chat("user", f"玩家：{question}")
 
         car_state = dict(self.latest_car_state) if self.latest_car_state else self.car_state_source.get_state()
-        self.ctx_mgr.add_user(self.ctx_mgr.format_engineer_prompt(car_state, question))
-        messages = self.ctx_mgr.build_messages()
-
         self.pending = True
         self.send_button.configure(state="disabled", text="等待回答...")
-        threading.Thread(target=self._ask_worker, args=(messages,), daemon=True).start()
+        threading.Thread(target=self._ask_worker, args=(question, car_state), daemon=True).start()
 
-    def _ask_worker(self, messages: list[dict[str, str]]) -> None:
+    def _ask_worker(self, question: str, car_state: dict[str, Any]) -> None:
         """Runs on a background thread. Only touches the thread-safe queue,
         never the Tkinter widgets directly. Also best-effort broadcasts the
         reply to the shared overlay display layer (see overlay_broadcast.py
         / docs/display-layer-contract.md) -- that call never raises and
         never blocks long, even if midware/overlay-app are not running.
 
-        Streams the reply from Granite chunk by chunk (see
-        granite_client.ask_engineer_stream) and pushes the running text into
-        the queue as (accumulated_text, is_final) so _poll_results can show
-        a live typewriter update instead of one long silent wait. Total
-        generation time is unchanged -- this only changes when the driver
-        sees the words appear."""
+        Calls the official Engineer API without touching Tkinter widgets from
+        the worker thread."""
         overlay_broadcast.broadcast_engineer_start()
-        accumulated = ""
         try:
-            for chunk in granite_client.ask_engineer_stream(self.connection, messages):
-                accumulated += chunk
-                self.result_queue.put((accumulated, False))
+            answer = ask_engineer(question, car_state, base_url=MIDWARE_BASE_URL)
         except Exception as exc:
-            answer = f"[Granite 请求失败：{exc}]"
+            answer = f"[Middleware 请求失败：{exc}]"
             overlay_broadcast.broadcast_engineer_error(str(exc))
             self.result_queue.put((answer, True))
             return
-        overlay_broadcast.broadcast_engineer_reply(accumulated)
-        self.result_queue.put((accumulated, True))
+        overlay_broadcast.broadcast_engineer_reply(answer)
+        self.result_queue.put((answer, True))
 
     def _poll_results(self) -> None:
         try:
@@ -353,16 +329,13 @@ def _enable_windows_dpi_awareness() -> None:
 def main() -> None:
     _enable_windows_dpi_awareness()
 
-    connection = granite_client.connect()
-    granite_client.print_banner(connection)
-
     car_state_source = choose_car_state_source()
 
     root = tk.Tk()
-    app = ChatEngineerApp(root, connection, car_state_source)
+    app = ChatEngineerApp(root, None, car_state_source)
     app._append_chat(
         "system",
-        "已连接 Granite。输入问题后按回车或点击发送，例如：我的轮胎状态怎么样？/ 现在该不该进站？",
+        "Legacy debug client：问答统一经 Middleware API。请输入问题，例如：我的轮胎状态怎么样？",
     )
     root.mainloop()
 
