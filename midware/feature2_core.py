@@ -103,6 +103,277 @@ def track_briefing(track_context: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+DRIVER_STYLE_PRESETS: dict[str, dict[str, Any]] = {
+    "balanced": {
+        "label": "Balanced rhythm",
+        "speed_margin_kmh": 0.0,
+        "brake_margin_m": 0.0,
+        "traits": ["repeatable references", "neutral risk appetite"],
+        "risk_bias": "Minor mistakes usually come from changing too many inputs at once.",
+        "setup": "Keep the baseline and improve one corner at a time.",
+    },
+    "late_braker": {
+        "label": "Late braker",
+        "speed_margin_kmh": 8.0,
+        "brake_margin_m": 35.0,
+        "traits": ["compresses braking zones", "needs earlier map markers"],
+        "risk_bias": "Entry overspeed and understeer are the first risks to manage.",
+        "setup": "Move the first brake reference earlier than instinct, then release pressure before turn-in.",
+    },
+    "edge_pusher": {
+        "label": "Edge pusher",
+        "speed_margin_kmh": 5.0,
+        "brake_margin_m": 18.0,
+        "traits": ["uses full road", "higher track-limit exposure"],
+        "risk_bias": "Track-limit corrections can cost more time than a calmer entry.",
+        "setup": "Leave half a car-width margin on entry and use the exit road only once the car is settled.",
+    },
+    "throttle_hesitant": {
+        "label": "Throttle hesitant",
+        "speed_margin_kmh": -2.0,
+        "brake_margin_m": 0.0,
+        "traits": ["protects exits", "leaves acceleration margin"],
+        "risk_bias": "Lost time compounds on straights after medium-speed corners.",
+        "setup": "Plan an earlier progressive throttle ramp as soon as steering begins to unwind.",
+    },
+    "reactive_steering": {
+        "label": "Reactive steering",
+        "speed_margin_kmh": 6.0,
+        "brake_margin_m": 22.0,
+        "traits": ["mid-corner corrections", "unstable entry line"],
+        "risk_bias": "A second steering input near the edge can create understeer or a snap correction.",
+        "setup": "Prioritise a settled outside entry and one steering arc through the apex.",
+    },
+    "aggressive": {
+        "label": "Aggressive attack",
+        "speed_margin_kmh": 4.0,
+        "brake_margin_m": 15.0,
+        "traits": ["accepts smaller margins", "fast commitment"],
+        "risk_bias": "Aggressive entries need earlier escape margins in traffic or low grip.",
+        "setup": "Keep the attack, but pre-commit to the safest exit before the braking zone.",
+    },
+    "conservative": {
+        "label": "Conservative build-up",
+        "speed_margin_kmh": -4.0,
+        "brake_margin_m": -8.0,
+        "traits": ["protects the car", "builds pace gradually"],
+        "risk_bias": "The main time loss is usually delayed throttle rather than corner entry.",
+        "setup": "Use the stable entry to open the wheel earlier and start power sooner.",
+    },
+}
+
+
+ROAD_CONDITION_PRESETS: dict[str, dict[str, Any]] = {
+    "dry": {
+        "label": "Dry",
+        "speed_margin_kmh": 0.0,
+        "brake_margin_m": 0.0,
+        "note": "Baseline grip is available; optimise references and repeatability.",
+    },
+    "low_grip": {
+        "label": "Low grip",
+        "speed_margin_kmh": 10.0,
+        "brake_margin_m": 35.0,
+        "note": "Reduce entry speed and avoid sharp throttle or steering changes.",
+    },
+    "wet": {
+        "label": "Wet",
+        "speed_margin_kmh": 18.0,
+        "brake_margin_m": 55.0,
+        "note": "Brake earlier, turn in softer, and delay full throttle until the car is straight.",
+    },
+    "traffic": {
+        "label": "Traffic",
+        "speed_margin_kmh": 5.0,
+        "brake_margin_m": 25.0,
+        "note": "Leave space for alternate lines and avoid late defensive moves before turn-in.",
+    },
+    "worn_tyres": {
+        "label": "Worn tyres",
+        "speed_margin_kmh": 12.0,
+        "brake_margin_m": 40.0,
+        "note": "Protect exits and avoid loading the front tyre with late steering corrections.",
+    },
+}
+
+
+def driver_style_profile(frames: list[dict[str, Any]] | None = None, explicit_style: str | None = None) -> dict[str, Any]:
+    style_id = clean_text(explicit_style).lower().replace("-", "_").replace(" ", "_")
+    inferred = False
+    summary: dict[str, Any] = {}
+
+    if not style_id or style_id == "auto":
+        inferred = True
+        style_id = "balanced"
+        if frames:
+            summary = summarize_frames(frames)
+            if summary.get("off_track_moments", 0) > 0 or summary.get("track_pos_stddev", 0.0) > 0.42:
+                style_id = "edge_pusher"
+            elif summary.get("steering_stddev", 0.0) > 0.35:
+                style_id = "reactive_steering"
+            elif summary.get("avg_throttle", 0.0) < 0.35 and summary.get("avg_speed", 0.0) > 70.0:
+                style_id = "throttle_hesitant"
+            elif summary.get("avg_brake", 0.0) < 0.10 and summary.get("avg_speed", 0.0) > 95.0:
+                style_id = "late_braker"
+
+    preset = DRIVER_STYLE_PRESETS.get(style_id, DRIVER_STYLE_PRESETS["balanced"])
+    return {
+        "id": style_id if style_id in DRIVER_STYLE_PRESETS else "balanced",
+        "label": preset["label"],
+        "source": "inferred" if inferred else "selected",
+        "confidence": 0.72 if inferred and frames else 0.95 if not inferred else 0.50,
+        "speed_margin_kmh": preset["speed_margin_kmh"],
+        "brake_margin_m": preset["brake_margin_m"],
+        "traits": list(preset["traits"]),
+        "risk_bias": preset["risk_bias"],
+        "setup": preset["setup"],
+        "evidence": {
+            "avg_throttle": round(summary.get("avg_throttle", 0.0), 3),
+            "avg_brake": round(summary.get("avg_brake", 0.0), 3),
+            "steering_stddev": round(summary.get("steering_stddev", 0.0), 3),
+            "track_pos_stddev": round(summary.get("track_pos_stddev", 0.0), 3),
+            "off_track_moments": int(summary.get("off_track_moments", 0)),
+        },
+    }
+
+
+def road_condition_profile(value: str | None = None) -> dict[str, Any]:
+    condition_id = clean_text(value).lower().replace("-", "_").replace(" ", "_") or "dry"
+    preset = ROAD_CONDITION_PRESETS.get(condition_id, ROAD_CONDITION_PRESETS["dry"])
+    return {
+        "id": condition_id if condition_id in ROAD_CONDITION_PRESETS else "dry",
+        "label": preset["label"],
+        "speed_margin_kmh": preset["speed_margin_kmh"],
+        "brake_margin_m": preset["brake_margin_m"],
+        "note": preset["note"],
+    }
+
+
+def build_lookahead_plan(
+    track_context: dict[str, Any] | None,
+    driver_profile: dict[str, Any] | None = None,
+    road_condition: dict[str, Any] | None = None,
+    *,
+    horizon: int = 4,
+) -> list[dict[str, Any]]:
+    track_context = track_context or empty_track_context()
+    driver_profile = driver_profile or driver_style_profile([])
+    road_condition = road_condition or road_condition_profile("dry")
+    if not track_context.get("available"):
+        return []
+
+    corners = track_context.get("upcoming_corners") or []
+    if not isinstance(corners, list):
+        corners = []
+    if not corners and isinstance(track_context.get("next_corner"), dict):
+        corners = [track_context["next_corner"]]
+
+    speed_margin = safe_float(driver_profile.get("speed_margin_kmh")) + safe_float(road_condition.get("speed_margin_kmh"))
+    brake_margin = safe_float(driver_profile.get("brake_margin_m")) + safe_float(road_condition.get("brake_margin_m"))
+    output: list[dict[str, Any]] = []
+    for index, corner in enumerate(corners[: max(1, horizon)]):
+        limit = safe_float(corner.get("limit_kmh"), safe_float(track_context.get("limit_kmh"), 120.0))
+        target_speed = max(45.0, limit - speed_margin)
+        brake_in = max(0.0, safe_float(corner.get("brake_in_m"), safe_float(corner.get("dist_m"))) - brake_margin)
+        direction = clean_text(corner.get("dir") or "corner")
+        line_hint = clean_text(corner.get("line_hint") or track_context.get("line_hint") or "outside")
+        priority = "high" if index == 0 and brake_in < 280.0 else "medium" if index < 2 else "low"
+        output.append(
+            {
+                "id": clean_text(corner.get("id")) or f"corner-{index + 1}",
+                "name": clean_text(corner.get("name")) or f"Upcoming {direction} corner",
+                "dir": direction,
+                "priority": priority,
+                "distance_m": round(safe_float(corner.get("dist_m")), 1),
+                "brake_in_m": round(brake_in, 1),
+                "target_speed_kmh": round(target_speed, 1),
+                "line_hint": line_hint,
+                "risk": clean_text(corner.get("risk")) or clean_text(driver_profile.get("risk_bias")),
+                "action": (
+                    f"Prepare {line_hint}; target {target_speed:.0f} km/h before the {direction} corner "
+                    f"and add the brake margin early."
+                ),
+                "driver_adjustment": clean_text(driver_profile.get("setup")),
+                "road_adjustment": clean_text(road_condition.get("note")),
+            }
+        )
+    return output
+
+
+def build_pre_race_briefing(
+    track_context: dict[str, Any] | None,
+    driver_profile: dict[str, Any] | None = None,
+    road_condition: dict[str, Any] | None = None,
+    lookahead_plan: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    track_context = track_context or empty_track_context()
+    driver_profile = driver_profile or driver_style_profile([])
+    road_condition = road_condition or road_condition_profile("dry")
+    lookahead_plan = lookahead_plan if lookahead_plan is not None else build_lookahead_plan(track_context, driver_profile, road_condition)
+
+    if not track_context.get("available"):
+        return {
+            "status": "sensor_only",
+            "source": "rule_engine",
+            "headline": "Pre-race map unavailable",
+            "summary": "Live telemetry guidance remains available, but pre-race prediction needs a loaded track profile.",
+            "radio_brief": "Track map missing. Build the first lap carefully and let live telemetry establish references.",
+            "driver_profile": driver_profile,
+            "road_condition": road_condition,
+            "strategy_stack": [],
+            "risk_stack": ["Track profile is not loaded."],
+            "lookahead_plan": [],
+            "model_supplement": {"status": "not_requested", "text": "", "error": ""},
+        }
+
+    first = lookahead_plan[0] if lookahead_plan else {}
+    track_name = clean_text(track_context.get("name") or "current track")
+    headline = f"{track_name}: {driver_profile['label']} pre-race plan"
+    first_action = clean_text(first.get("action")) or "Use the opening lap to confirm grip and braking references."
+    strategy_stack = [
+        clean_text(driver_profile.get("setup")),
+        clean_text(road_condition.get("note")),
+        first_action,
+    ]
+    risk_stack = [
+        clean_text(driver_profile.get("risk_bias")),
+        clean_text(first.get("risk")) if first else "No major mapped corner risk in the current lookahead.",
+    ]
+    return {
+        "status": "ready",
+        "source": "rule_engine",
+        "headline": headline,
+        "summary": (
+            f"{clean_text(track_context.get('summary'))} Road condition: {road_condition['label']}. "
+            f"Driver style: {driver_profile['label']}."
+        ),
+        "radio_brief": (
+            f"{driver_profile['label']}: {first_action} "
+            f"{road_condition['note']}"
+        ),
+        "driver_profile": driver_profile,
+        "road_condition": road_condition,
+        "strategy_stack": [item for item in strategy_stack if item][:3],
+        "risk_stack": [item for item in risk_stack if item][:3],
+        "lookahead_plan": lookahead_plan,
+        "model_supplement": {"status": "not_requested", "text": "", "error": ""},
+    }
+
+
+def prebrief_prompt(payload: dict[str, Any]) -> str:
+    return f"""You are a concise TORCS race coach.
+Return one JSON object only with:
+{{
+  "brief": "one radio-style pre-race briefing, <= 55 words",
+  "focus": ["3 short focus points"],
+  "risk": "one main risk, <= 18 words"
+}}
+
+Use the rule forecast exactly; do not invent new track segments.
+Payload:
+{json.dumps(payload, ensure_ascii=True)}"""
+
+
 def feedback(
     *,
     state_id: str,
@@ -723,7 +994,15 @@ def empty_dashboard(
     session_state: str = "waiting",
     session_id: int | None = None,
     data_age_seconds: float | None = None,
+    track_context: dict[str, Any] | None = None,
+    driver_style: str | None = None,
+    road_condition: str | None = None,
 ) -> dict[str, Any]:
+    track_context = track_context or empty_track_context()
+    driver_profile = driver_style_profile([], driver_style)
+    road = road_condition_profile(road_condition or track_context.get("road_condition") or "dry")
+    lookahead_plan = build_lookahead_plan(track_context, driver_profile, road)
+    pre_race_briefing = build_pre_race_briefing(track_context, driver_profile, road, lookahead_plan)
     return {
         "status": {
             "has_telemetry": False,
@@ -740,7 +1019,11 @@ def empty_dashboard(
         "latest_state": None,
         "window_summary": None,
         "track_profile": None,
-        "track_model": empty_track_context(),
+        "track_model": track_context,
+        "driver_profile": driver_profile,
+        "road_condition": road,
+        "lookahead_plan": lookahead_plan,
+        "pre_race_briefing": pre_race_briefing,
         "opponent_profile": None,
         "guidance": None,
         "signals": [],
@@ -760,13 +1043,27 @@ def build_dashboard_payload(
     window_seconds: float = 6.0,
     history_seconds: float = 16.0,
     track_context: dict[str, Any] | None = None,
+    driver_style: str | None = None,
+    road_condition: str | None = None,
 ) -> dict[str, Any]:
     if not raw_frames:
-        return empty_dashboard(window_seconds, history_seconds)
+        return empty_dashboard(
+            window_seconds,
+            history_seconds,
+            track_context=track_context,
+            driver_style=driver_style,
+            road_condition=road_condition,
+        )
 
     common_frames = [to_common_frame(frame) for frame in raw_frames]
     if not common_frames:
-        return empty_dashboard(window_seconds, history_seconds)
+        return empty_dashboard(
+            window_seconds,
+            history_seconds,
+            track_context=track_context,
+            driver_style=driver_style,
+            road_condition=road_condition,
+        )
 
     live_frames = select_recent_frames(common_frames, window_seconds) or common_frames
     history_frames = select_recent_frames(common_frames, history_seconds) or common_frames
@@ -775,6 +1072,10 @@ def build_dashboard_payload(
     track_profile = compact_track_profile(latest["track"])
     opponent_profile = compact_opponent_profile(latest["opponents"])
     track_context = track_context or empty_track_context()
+    driver_profile = driver_style_profile(live_frames, driver_style)
+    road = road_condition_profile(road_condition or track_context.get("road_condition") or "dry")
+    lookahead_plan = build_lookahead_plan(track_context, driver_profile, road)
+    pre_race_briefing = build_pre_race_briefing(track_context, driver_profile, road, lookahead_plan)
     rule_feedback = build_rule_feedback(live_frames, track_context)
     priority_issues = build_priority_issues(latest, summary, track_profile, opponent_profile, track_context)
     radio_cue = build_radio_cue(rule_feedback)
@@ -854,6 +1155,10 @@ def build_dashboard_payload(
         "window_summary": compact_live_summary(summary),
         "track_profile": track_profile,
         "track_model": track_context,
+        "driver_profile": driver_profile,
+        "road_condition": road,
+        "lookahead_plan": lookahead_plan,
+        "pre_race_briefing": pre_race_briefing,
         "opponent_profile": opponent_profile,
         "guidance": {
             "analysis_type": "live_window",
@@ -876,6 +1181,7 @@ def build_dashboard_payload(
             "priority_issues": priority_issues,
             "radio_cue": radio_cue,
             "track_briefing": track_briefing(track_context),
+            "lookahead_plan": lookahead_plan,
             "async_overlay": pending_overlay(),
         },
         "signals": signals,

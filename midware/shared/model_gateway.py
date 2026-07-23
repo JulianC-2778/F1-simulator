@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 import httpx
+
+from telemetry_common import is_wsl, powershell_json_request
 
 
 TokenCallback = Callable[[str], Awaitable[None]]
@@ -52,6 +56,22 @@ class OpenAICompatibleGateway:
         *,
         on_token: TokenCallback | None = None,
     ) -> str:
+        try:
+            return await self._chat_httpx(messages, on_token=on_token)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, httpx.ReadTimeout) as exc:
+            if not self._can_use_windows_local_fallback():
+                raise
+            full_text = await asyncio.to_thread(self._chat_windows_local, messages)
+            if on_token and full_text:
+                await on_token(full_text)
+            return full_text
+
+    async def _chat_httpx(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        on_token: TokenCallback | None = None,
+    ) -> str:
         url = f"{self.base_url}/chat/completions"
         full_text = ""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -83,6 +103,22 @@ class OpenAICompatibleGateway:
                 raise RuntimeError(f"API {response.status_code}: {response.text[:300]}")
             data = response.json()
             return str(data["choices"][0]["message"]["content"])
+
+    def _can_use_windows_local_fallback(self) -> bool:
+        if not is_wsl():
+            return False
+        parsed = urlparse(self.base_url)
+        return parsed.hostname in {"127.0.0.1", "localhost"}
+
+    def _chat_windows_local(self, messages: list[dict[str, Any]]) -> str:
+        data = powershell_json_request(
+            f"{self.base_url}/chat/completions",
+            method="POST",
+            body=self._payload(messages, stream=False),
+            api_key=self.api_key,
+            timeout=max(1, int(self.timeout)),
+        )
+        return str(data["choices"][0]["message"]["content"])
 
 
 def extract_stream_token(line: str) -> str:

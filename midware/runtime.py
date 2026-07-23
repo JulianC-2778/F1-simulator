@@ -48,9 +48,18 @@ from midware.services.bot_status_service import BotStatusService
 from midware.shared.output_bus import ALLOWED_SOURCES, normalize_outbound_message
 from midware.shared.race_snapshot import build_race_snapshot
 from midware.services.feature_gate import FeatureGate
-from midware.feature2_core import build_dashboard_payload
+from midware.feature2_core import (
+    build_dashboard_payload,
+    build_lookahead_plan,
+    build_pre_race_briefing,
+    driver_style_profile,
+    prebrief_prompt,
+    road_condition_profile,
+)
 from race_analyzer import empty_car_state, telemetry_to_car_state
 from midware.services.telemetry_service import TelemetryService
+from midware.shared.track_profiles import coach_track_context, list_track_profiles
+from midware.telemetry import to_common_frame
 
 # ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -692,15 +701,191 @@ async def get_telemetry_history(seconds: float | None = None):
     }
 
 
+def _frame_float(frame: dict[str, Any] | None, *keys: str, default: float = 0.0) -> float:
+    if not frame:
+        return default
+    for key in keys:
+        try:
+            value = frame.get(key)
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coach_track_context(
+    frames: list[dict[str, Any]],
+    *,
+    track_id: str | None = None,
+    road_condition: str | None = None,
+    profile_override: dict[str, Any] | None = None,
+    dist_from_start: float | None = None,
+    speed_kmh: float | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    latest = frames[-1] if frames else None
+    dist = float(dist_from_start) if dist_from_start is not None else _frame_float(latest, "distFromStart", "dist_from_start")
+    speed = float(speed_kmh) if speed_kmh is not None else _frame_float(latest, "speedX", "speed_x")
+    return coach_track_context(
+        track_id=track_id,
+        dist_from_start=dist,
+        speed_kmh=speed,
+        road_condition=road_condition or "dry",
+        profile_override=profile_override,
+    )
+
+
+async def _model_prebrief_supplement(prebrief: dict[str, Any]) -> dict[str, Any]:
+    try:
+        text = await call_model_for_feature(
+            [{"role": "user", "content": prebrief_prompt(prebrief)}],
+            source="coach",
+            task="coach",
+            priority=MODEL_PRIORITIES["coach"],
+            temperature=0.2,
+            max_tokens=220,
+            stream=False,
+            timeout=18,
+        )
+        parsed = _parse_model_json_response(text)
+        return {
+            "status": "ready",
+            "text": str(parsed.get("brief") or text).strip(),
+            "focus": parsed.get("focus") if isinstance(parsed.get("focus"), list) else [],
+            "risk": str(parsed.get("risk") or "").strip(),
+            "error": "",
+        }
+    except Exception as exc:
+        return {"status": "error", "text": "", "focus": [], "risk": "", "error": str(exc)}
+
+
+def _parse_model_json_response(text: str) -> dict[str, Any]:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+    try:
+        return json.loads(candidate)
+    except Exception:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(candidate[start : end + 1])
+            except Exception:
+                return {}
+        return {}
+
+
+def _prebrief_from_inputs(body: dict[str, Any], frames: list[dict[str, Any]]) -> dict[str, Any]:
+    track_id = str(body.get("track_id") or body.get("track") or "").strip() or None
+    road_condition_id = str(body.get("road_condition") or "dry").strip() or "dry"
+    explicit_style = str(body.get("driver_style") or "auto").strip() or "auto"
+    profile_override = body.get("track_profile") if isinstance(body.get("track_profile"), dict) else None
+    dist_from_start = body.get("dist_from_start")
+    speed_kmh = body.get("speed_kmh")
+    profile, track_context = _coach_track_context(
+        frames,
+        track_id=track_id,
+        road_condition=road_condition_id,
+        profile_override=profile_override,
+        dist_from_start=_optional_float(dist_from_start),
+        speed_kmh=_optional_float(speed_kmh),
+    )
+    common_frames = [to_common_frame(frame) for frame in frames]
+    driver_profile = driver_style_profile(common_frames, explicit_style)
+    road = road_condition_profile(road_condition_id)
+    lookahead_plan = build_lookahead_plan(track_context, driver_profile, road)
+    prebrief = build_pre_race_briefing(track_context, driver_profile, road, lookahead_plan)
+    return {
+        "ok": True,
+        "track_profile": {
+            "id": profile.get("id"),
+            "name": profile.get("name"),
+            "length_m": profile.get("length_m"),
+            "summary": profile.get("summary"),
+        },
+        "track_model": track_context,
+        "driver_profile": driver_profile,
+        "road_condition": road,
+        "lookahead_plan": lookahead_plan,
+        "pre_race_briefing": prebrief,
+    }
+
+
+@app.get("/api/coach/track-profiles")
+async def get_coach_track_profiles():
+    return {"profiles": list_track_profiles()}
+
+
+@app.get("/api/coach/prebrief")
+async def get_coach_prebrief(
+    track_id: str | None = None,
+    driver_style: str = "auto",
+    road_condition: str = "dry",
+    dist_from_start: float | None = None,
+    use_model: bool = False,
+):
+    if not runtime_manager.is_enabled("coach"):
+        return JSONResponse({"ok": False, "error": "coach feature is disabled"}, status_code=409)
+    frames = telemetry_store.recent_frames(16.0)
+    payload = _prebrief_from_inputs(
+        {
+            "track_id": track_id,
+            "driver_style": driver_style,
+            "road_condition": road_condition,
+            "dist_from_start": dist_from_start,
+        },
+        frames,
+    )
+    if use_model:
+        payload["pre_race_briefing"]["model_supplement"] = await _model_prebrief_supplement(payload["pre_race_briefing"])
+    return payload
+
+
+@app.post("/api/coach/prebrief")
+async def post_coach_prebrief(body: dict[str, Any]):
+    if not runtime_manager.is_enabled("coach"):
+        return JSONResponse({"ok": False, "error": "coach feature is disabled"}, status_code=409)
+    frames = telemetry_store.recent_frames(float(body.get("history_seconds", 16.0)))
+    payload = _prebrief_from_inputs(body, frames)
+    if bool(body.get("use_model", False)):
+        payload["pre_race_briefing"]["model_supplement"] = await _model_prebrief_supplement(payload["pre_race_briefing"])
+    return payload
+
+
 @app.get("/api/coach/dashboard")
-async def get_coach_dashboard(window_seconds: float = 6.0, history_seconds: float = 16.0):
+async def get_coach_dashboard(
+    window_seconds: float = 6.0,
+    history_seconds: float = 16.0,
+    track_id: str | None = None,
+    driver_style: str = "auto",
+    road_condition: str = "dry",
+):
     if not runtime_manager.is_enabled("coach"):
         return JSONResponse({"ok": False, "error": "coach feature is disabled"}, status_code=409)
     frames = telemetry_store.recent_frames(max(window_seconds, history_seconds))
+    _profile, track_context = _coach_track_context(frames, track_id=track_id, road_condition=road_condition)
     return build_dashboard_payload(
         frames,
         window_seconds=window_seconds,
         history_seconds=history_seconds,
+        track_context=track_context,
+        driver_style=driver_style,
+        road_condition=road_condition,
     )
 
 
@@ -943,6 +1128,8 @@ def _refresh_runtime_status() -> None:
         last_error="" if has_telemetry else "No telemetry frames available yet.",
         details={
             "api": "/api/coach/dashboard",
+            "prebrief_api": "/api/coach/prebrief",
+            "track_profiles_api": "/api/coach/track-profiles",
             "legacy_api": "/api/feature2/dashboard on the standalone service",
         },
     )

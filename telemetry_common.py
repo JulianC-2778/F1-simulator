@@ -19,7 +19,10 @@ from queue import Empty, Queue
 from typing import Any
 from urllib import request
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ModuleNotFoundError:  # Model helpers are optional for pure telemetry analysis.
+    OpenAI = None  # type: ignore[assignment]
 
 
 DEFAULT_MODEL_BASE_URL = os.getenv("TORCS_AI_BASE_URL", "http://127.0.0.1:1234/v1")
@@ -342,6 +345,8 @@ def build_openai_client(
     base_url: str = DEFAULT_MODEL_BASE_URL,
     api_key: str = DEFAULT_API_KEY,
 ) -> OpenAI:
+    if OpenAI is None:
+        raise RuntimeError("The openai package is required for HTTP model calls.")
     return OpenAI(base_url=base_url, api_key=api_key)
 
 

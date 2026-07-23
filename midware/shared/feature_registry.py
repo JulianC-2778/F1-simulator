@@ -19,8 +19,8 @@ FEATURE_SPECS: list[dict[str, Any]] = [
     {
         "name": "coach",
         "label": "Telemetry Coach",
-        "description": "Rule-based and model-assisted telemetry dashboard guidance.",
-        "entrypoint": "GET /api/coach/dashboard",
+        "description": "Rule-based and model-assisted telemetry dashboard, pre-race briefing, and lookahead guidance.",
+        "entrypoint": "GET /api/coach/dashboard, POST /api/coach/prebrief",
     },
     {
         "name": "bot",

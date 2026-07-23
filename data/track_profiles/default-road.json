@@ -1,0 +1,88 @@
+{
+  "id": "default-road",
+  "name": "Default road course",
+  "length_m": 3600.0,
+  "summary": "Generic road-course profile for early braking, line setup, and exit throttle planning.",
+  "segments": [
+    {
+      "id": "s1",
+      "name": "Launch straight",
+      "type": "straight",
+      "start_m": 0.0,
+      "end_m": 420.0,
+      "limit_kmh": 235.0,
+      "line_hint": "center",
+      "line_tpos": 0.0,
+      "risk": "Cold tyres can make the first heavy brake zone easy to overshoot.",
+      "advice": "Build speed cleanly and move to the outside before the first braking marker."
+    },
+    {
+      "id": "t1",
+      "name": "T1 right hairpin",
+      "type": "corner",
+      "dir": "right",
+      "start_m": 420.0,
+      "end_m": 650.0,
+      "limit_kmh": 92.0,
+      "line_hint": "left outside",
+      "line_tpos": -0.55,
+      "brake_marker_m": 350.0,
+      "risk": "Late braking pushes the car wide and delays throttle on exit.",
+      "advice": "Brake in a straight line, rotate early, then wait for the wheel to open before full throttle."
+    },
+    {
+      "id": "t2",
+      "name": "Medium left",
+      "type": "corner",
+      "dir": "left",
+      "start_m": 1080.0,
+      "end_m": 1340.0,
+      "limit_kmh": 128.0,
+      "line_hint": "right outside",
+      "line_tpos": 0.5,
+      "brake_marker_m": 1015.0,
+      "risk": "Reactive steering near the edge can turn this into a track-limit warning.",
+      "advice": "Commit to one arc and carry minimum speed instead of adding a late steering correction."
+    },
+    {
+      "id": "s3",
+      "name": "Back straight",
+      "type": "straight",
+      "start_m": 1340.0,
+      "end_m": 2100.0,
+      "limit_kmh": 260.0,
+      "line_hint": "center",
+      "line_tpos": 0.0,
+      "risk": "Exit hesitation compounds into a large speed deficit before the chicane.",
+      "advice": "Prioritise early throttle and keep the wheel calm through the first half of the straight."
+    },
+    {
+      "id": "t3",
+      "name": "Fast chicane entry",
+      "type": "corner",
+      "dir": "right-left",
+      "start_m": 2100.0,
+      "end_m": 2420.0,
+      "limit_kmh": 150.0,
+      "line_hint": "left setup",
+      "line_tpos": -0.45,
+      "brake_marker_m": 2000.0,
+      "risk": "Too much entry speed forces a second steering input and hurts the left change of direction.",
+      "advice": "Trim speed before turn-in and keep the first kerb touch light."
+    },
+    {
+      "id": "t4",
+      "name": "Late apex left",
+      "type": "corner",
+      "dir": "left",
+      "start_m": 2860.0,
+      "end_m": 3180.0,
+      "limit_kmh": 105.0,
+      "line_hint": "right outside",
+      "line_tpos": 0.55,
+      "brake_marker_m": 2780.0,
+      "risk": "Early throttle before the late apex creates understeer and a wide exit.",
+      "advice": "Hold the outside entry, rotate patiently, and delay full throttle until after the apex."
+    }
+  ]
+}

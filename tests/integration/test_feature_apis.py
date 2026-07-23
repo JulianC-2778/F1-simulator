@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from midware import runtime
 from midware.app import create_app
+from tests.fixtures.telemetry_frames import RAW_TORCS_FRAME
 
 
 ALL_FEATURES = ["commentary", "engineer", "coach", "bot"]
@@ -73,3 +74,53 @@ class FeatureApiIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             asyncio.run(asyncio.sleep(0))
         self.assertTrue(generate.called)
+
+    def test_coach_prebrief_and_dashboard_expose_lookahead(self):
+        profiles = self.client.get("/api/coach/track-profiles")
+        self.assertEqual(profiles.status_code, 200)
+        self.assertGreater(len(profiles.json()["profiles"]), 0)
+
+        prebrief = self.client.post(
+            "/api/coach/prebrief",
+            json={
+                "track_id": "default-road",
+                "driver_style": "late_braker",
+                "road_condition": "low_grip",
+                "use_model": False,
+            },
+        )
+        self.assertEqual(prebrief.status_code, 200)
+        self.assertEqual(prebrief.json()["pre_race_briefing"]["status"], "ready")
+        self.assertGreater(len(prebrief.json()["lookahead_plan"]), 0)
+
+        self.client.post("/api/telemetry/push", json={"telemetry": RAW_TORCS_FRAME})
+        dashboard = self.client.get(
+            "/api/coach/dashboard?track_id=default-road&driver_style=late_braker&road_condition=low_grip"
+        )
+        self.assertEqual(dashboard.status_code, 200)
+        payload = dashboard.json()
+        self.assertTrue(payload["status"]["has_telemetry"])
+        self.assertGreater(len(payload["lookahead_plan"]), 0)
+
+    def test_coach_prebrief_parses_fenced_model_json(self):
+        with patch.object(
+            runtime,
+            "call_model_for_feature",
+            AsyncMock(
+                return_value='```json\n{"brief":"Brake earlier into sector one.","focus":["entry"],"risk":"entry overspeed"}\n```'
+            ),
+        ):
+            response = self.client.post(
+                "/api/coach/prebrief",
+                json={
+                    "track_id": "default-road",
+                    "driver_style": "late_braker",
+                    "road_condition": "low_grip",
+                    "use_model": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        supplement = response.json()["pre_race_briefing"]["model_supplement"]
+        self.assertEqual(supplement["status"], "ready")
+        self.assertEqual(supplement["text"], "Brake earlier into sector one.")
+        self.assertEqual(supplement["focus"], ["entry"])

@@ -562,6 +562,159 @@
       margin-bottom: 6px;
     }
 
+    .forecast-section {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.76fr) minmax(0, 1.24fr);
+      gap: 24px;
+      margin: 0 0 26px;
+    }
+
+    .forecast-panel {
+      padding: 26px;
+    }
+
+    .forecast-controls {
+      display: grid;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .forecast-control {
+      display: grid;
+      gap: 7px;
+    }
+
+    .forecast-control label {
+      color: var(--text-faint);
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .forecast-control select {
+      width: 100%;
+      min-height: 42px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--text);
+      font: inherit;
+    }
+
+    .forecast-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .forecast-actions button {
+      min-height: 40px;
+      padding: 9px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: #111827;
+      color: white;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .forecast-actions button.secondary {
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--text);
+    }
+
+    .forecast-actions button:disabled {
+      opacity: 0.56;
+      cursor: wait;
+    }
+
+    .forecast-brief {
+      padding: 26px;
+    }
+
+    .forecast-copy {
+      display: grid;
+      gap: 12px;
+    }
+
+    .forecast-copy h2 {
+      margin: 4px 0 0;
+      font-size: clamp(1.5rem, 2.2vw, 2rem);
+      line-height: 1.08;
+      letter-spacing: -0.03em;
+    }
+
+    .forecast-radio {
+      margin: 0;
+      font-size: 1.06rem;
+      line-height: 1.5;
+      font-weight: 650;
+    }
+
+    .forecast-columns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .forecast-list {
+      display: grid;
+      gap: 9px;
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .forecast-list li,
+    .lookahead-card {
+      padding: 11px 12px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(17, 24, 39, 0.06);
+      color: var(--text-soft);
+      line-height: 1.42;
+      font-size: 0.9rem;
+    }
+
+    .lookahead-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .lookahead-card {
+      display: grid;
+      gap: 8px;
+      min-height: 148px;
+    }
+
+    .lookahead-card strong {
+      color: var(--text);
+      font-size: 0.98rem;
+      line-height: 1.3;
+    }
+
+    .lookahead-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--text-faint);
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .model-brief {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(17, 24, 39, 0.08);
+    }
+
     .dashboard-grid {
       display: grid;
       grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
@@ -772,6 +925,7 @@
 
     @media (max-width: 1120px) {
       .hero,
+      .forecast-section,
       .dashboard-grid {
         grid-template-columns: 1fr;
       }
@@ -800,7 +954,9 @@
       .signal-strip,
       .coach-detail-grid,
       .guidance-meta,
-      .summary-grid {
+      .summary-grid,
+      .forecast-columns,
+      .lookahead-list {
         grid-template-columns: 1fr;
       }
       .metric-row {
@@ -811,7 +967,9 @@
       .snapshot,
       .chart-panel,
       .stack-card,
-      .timeline-card {
+      .timeline-card,
+      .forecast-panel,
+      .forecast-brief {
         padding: 22px 18px;
       }
     }
@@ -949,6 +1107,90 @@
         </aside>
       </section>
 
+      <section class="forecast-section">
+        <article class="panel forecast-panel fade-up">
+          <div class="section-head">
+            <div>
+              <div class="small-label">Pre-race setup</div>
+              <h2>Forecast inputs</h2>
+            </div>
+          </div>
+          <div class="forecast-controls">
+            <div class="forecast-control">
+              <label for="trackSelect">Track profile</label>
+              <select id="trackSelect">
+                <option value="default-road">Default road course</option>
+              </select>
+            </div>
+            <div class="forecast-control">
+              <label for="driverStyleSelect">Driver style</label>
+              <select id="driverStyleSelect">
+                <option value="auto">Auto from telemetry</option>
+                <option value="balanced">Balanced rhythm</option>
+                <option value="late_braker">Late braker</option>
+                <option value="edge_pusher">Edge pusher</option>
+                <option value="throttle_hesitant">Throttle hesitant</option>
+                <option value="reactive_steering">Reactive steering</option>
+                <option value="aggressive">Aggressive attack</option>
+                <option value="conservative">Conservative build-up</option>
+              </select>
+            </div>
+            <div class="forecast-control">
+              <label for="roadConditionSelect">Road condition</label>
+              <select id="roadConditionSelect">
+                <option value="dry">Dry</option>
+                <option value="low_grip">Low grip</option>
+                <option value="wet">Wet</option>
+                <option value="traffic">Traffic</option>
+                <option value="worn_tyres">Worn tyres</option>
+              </select>
+            </div>
+            <div class="forecast-actions">
+              <button id="refreshForecastBtn" type="button" class="secondary">Refresh</button>
+              <button id="aiForecastBtn" type="button">AI brief</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel forecast-brief fade-up">
+          <div class="forecast-copy">
+            <div>
+              <div class="small-label">Race plan</div>
+              <h2 id="forecastHeadline">Pre-race forecast loading</h2>
+            </div>
+            <p id="forecastRadio" class="forecast-radio">Loading the shared coach profile.</p>
+            <p id="forecastSummary" class="analysis-copy">Track and driver context will appear here.</p>
+          </div>
+
+          <div class="forecast-columns">
+            <div>
+              <div class="small-label">Strategy stack</div>
+              <ul id="strategyStack" class="forecast-list"></ul>
+            </div>
+            <div>
+              <div class="small-label">Risk stack</div>
+              <ul id="forecastRisks" class="forecast-list"></ul>
+            </div>
+          </div>
+
+          <div class="model-brief">
+            <p id="modelBriefStatus" class="overlay-status pending">Rule forecast</p>
+            <p id="modelBriefText" class="analysis-copy">AI briefing has not been requested for this setup.</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel forecast-brief fade-up">
+        <div class="section-head">
+          <div>
+            <div class="small-label">Track forecast timeline</div>
+            <h2>Upcoming corner plan</h2>
+          </div>
+          <div class="chart-meta" id="lookaheadMeta">Shared track profile</div>
+        </div>
+        <div id="lookaheadList" class="lookahead-list"></div>
+      </section>
+
       <section class="dashboard-grid">
         <article class="panel chart-panel fade-up">
           <div class="section-head">
@@ -1011,10 +1253,14 @@
   <script>
     const POLL_MS = 350;
     const state = {
+      apiPrefix: null,
       sessionId: null,
       lastGuidanceKey: "",
       guidanceHistory: [],
       chartHistory: {},
+      trackId: "default-road",
+      driverStyle: "auto",
+      roadCondition: "dry",
     };
 
     const els = {
@@ -1049,6 +1295,20 @@
       guidanceHistory: document.getElementById("guidanceHistory"),
       footerNote: document.getElementById("footerNote"),
       trendChart: document.getElementById("trendChart"),
+      trackSelect: document.getElementById("trackSelect"),
+      driverStyleSelect: document.getElementById("driverStyleSelect"),
+      roadConditionSelect: document.getElementById("roadConditionSelect"),
+      refreshForecastBtn: document.getElementById("refreshForecastBtn"),
+      aiForecastBtn: document.getElementById("aiForecastBtn"),
+      forecastHeadline: document.getElementById("forecastHeadline"),
+      forecastRadio: document.getElementById("forecastRadio"),
+      forecastSummary: document.getElementById("forecastSummary"),
+      strategyStack: document.getElementById("strategyStack"),
+      forecastRisks: document.getElementById("forecastRisks"),
+      modelBriefStatus: document.getElementById("modelBriefStatus"),
+      modelBriefText: document.getElementById("modelBriefText"),
+      lookaheadMeta: document.getElementById("lookaheadMeta"),
+      lookaheadList: document.getElementById("lookaheadList"),
     };
 
     function formatNumber(value, digits = 1) {
@@ -1095,6 +1355,194 @@
       if (status === "ready") return "Ready";
       if (status === "error") return "Unavailable";
       return "Pending";
+    }
+
+    function readCoachControls() {
+      state.trackId = els.trackSelect?.value || "default-road";
+      state.driverStyle = els.driverStyleSelect?.value || "auto";
+      state.roadCondition = els.roadConditionSelect?.value || "dry";
+    }
+
+    function coachQuery() {
+      readCoachControls();
+      const params = new URLSearchParams({
+        window_seconds: "6",
+        history_seconds: "16",
+        track_id: state.trackId,
+        driver_style: state.driverStyle,
+        road_condition: state.roadCondition,
+      });
+      return params.toString();
+    }
+
+    async function apiFetch(path, options = {}) {
+      const prefixes = state.apiPrefix ? [state.apiPrefix] : ["/api/coach", "/api/feature2"];
+      let lastError = null;
+      for (const prefix of prefixes) {
+        try {
+          const response = await fetch(`${prefix}${path}`, { cache: "no-store", ...options });
+          if (response.ok) {
+            state.apiPrefix = prefix;
+            return response;
+          }
+          lastError = new Error(`HTTP ${response.status}`);
+          if (response.status !== 404) throw lastError;
+        } catch (error) {
+          lastError = error;
+          if (state.apiPrefix) throw error;
+        }
+      }
+      throw lastError || new Error("Coach API unavailable");
+    }
+
+    function fillList(el, items, fallback) {
+      el.innerHTML = "";
+      const values = Array.isArray(items) && items.length ? items : [fallback];
+      values.slice(0, 4).forEach(text => {
+        const li = document.createElement("li");
+        li.textContent = text || fallback;
+        el.appendChild(li);
+      });
+    }
+
+    function modelStatusLabel(status) {
+      if (status === "ready") return "AI brief ready";
+      if (status === "error") return "AI brief unavailable";
+      return "Rule forecast";
+    }
+
+    function renderPreRaceBriefing(briefing) {
+      const data = briefing || {};
+      els.forecastHeadline.textContent = data.headline || "Pre-race forecast loading";
+      els.forecastRadio.textContent = data.radio_brief || "Loading the shared coach profile.";
+      els.forecastSummary.textContent = data.summary || "Track and driver context will appear here.";
+      fillList(els.strategyStack, data.strategy_stack, "Keep inputs stable through the opening sector.");
+      fillList(els.forecastRisks, data.risk_stack, "No mapped risk has been selected yet.");
+
+      const supplement = data.model_supplement || {};
+      const status = supplement.status || "not_requested";
+      els.modelBriefStatus.className = `overlay-status ${status === "ready" ? "ready" : status === "error" ? "error" : "pending"}`;
+      els.modelBriefStatus.textContent = modelStatusLabel(status);
+      if (status === "ready") {
+        const focus = Array.isArray(supplement.focus) && supplement.focus.length
+          ? ` Focus: ${supplement.focus.slice(0, 3).join(" / ")}`
+          : "";
+        els.modelBriefText.textContent = `${supplement.text || "AI briefing ready."}${focus}`;
+      } else if (status === "error") {
+        els.modelBriefText.textContent = supplement.error || "The rule forecast remains available.";
+      } else {
+        els.modelBriefText.textContent = "AI briefing has not been requested for this setup.";
+      }
+    }
+
+    function renderLookahead(plan, trackModel, driverProfile, roadCondition) {
+      const items = Array.isArray(plan) ? plan.slice(0, 4) : [];
+      const trackName = trackModel?.name || "track profile";
+      const style = driverProfile?.label || "driver style";
+      const road = roadCondition?.label || "road";
+      els.lookaheadMeta.textContent = `${trackName} - ${style} - ${road}`;
+      els.lookaheadList.innerHTML = "";
+
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "placeholder";
+        empty.textContent = "Load a track profile to show upcoming braking, line, and target-speed calls.";
+        els.lookaheadList.appendChild(empty);
+        return;
+      }
+
+      items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "lookahead-card";
+
+        const title = document.createElement("strong");
+        title.textContent = item.name || "Upcoming corner";
+
+        const meta = document.createElement("div");
+        meta.className = "lookahead-meta";
+        [
+          `${formatNumber(item.distance_m, 0)} m`,
+          `${formatNumber(item.target_speed_kmh, 0)} km/h`,
+          item.priority || "low",
+          item.line_hint || "line",
+        ].forEach(value => {
+          const span = document.createElement("span");
+          span.textContent = value;
+          meta.appendChild(span);
+        });
+
+        const action = document.createElement("p");
+        action.className = "analysis-copy";
+        action.textContent = item.action || "Keep the car balanced and use the mapped reference.";
+
+        const risk = document.createElement("span");
+        risk.className = "small-label";
+        risk.textContent = item.risk || "No recorded risk.";
+
+        card.append(title, meta, action, risk);
+        els.lookaheadList.appendChild(card);
+      });
+    }
+
+    function renderForecast(payload) {
+      renderPreRaceBriefing(payload?.pre_race_briefing);
+      renderLookahead(
+        payload?.lookahead_plan || payload?.pre_race_briefing?.lookahead_plan,
+        payload?.track_model,
+        payload?.driver_profile,
+        payload?.road_condition,
+      );
+    }
+
+    async function loadTrackProfiles() {
+      try {
+        const response = await apiFetch("/track-profiles");
+        const payload = await response.json();
+        const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+        if (!profiles.length) return;
+        els.trackSelect.innerHTML = "";
+        profiles.forEach(profile => {
+          const option = document.createElement("option");
+          option.value = profile.id || "default-road";
+          option.textContent = profile.name || profile.id || "Track profile";
+          els.trackSelect.appendChild(option);
+        });
+        if (profiles.some(profile => profile.id === state.trackId)) {
+          els.trackSelect.value = state.trackId;
+        }
+      } catch (_error) {
+        // Keep the static default option.
+      }
+    }
+
+    async function requestPrebrief(useModel = false) {
+      readCoachControls();
+      if (useModel) {
+        els.aiForecastBtn.disabled = true;
+        els.modelBriefStatus.className = "overlay-status pending";
+        els.modelBriefStatus.textContent = "AI brief pending";
+        els.modelBriefText.textContent = "Model Broker is preparing the pre-race briefing.";
+      }
+      try {
+        const response = await apiFetch("/prebrief", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            track_id: state.trackId,
+            driver_style: state.driverStyle,
+            road_condition: state.roadCondition,
+            use_model: useModel,
+          }),
+        });
+        const payload = await response.json();
+        renderForecast(payload);
+      } catch (error) {
+        els.modelBriefStatus.className = "overlay-status error";
+        els.modelBriefStatus.textContent = "Forecast unavailable";
+        els.modelBriefText.textContent = error.message;
+      } finally {
+        els.aiForecastBtn.disabled = false;
+      }
     }
 
     function renderSteps(steps) {
@@ -1485,11 +1933,12 @@
 
     async function loadDashboard() {
       try {
-        const response = await fetch("/api/feature2/dashboard?window_seconds=6&history_seconds=16", { cache: "no-store" });
+        const response = await apiFetch(`/dashboard?${coachQuery()}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
         const sessionId = payload.status?.session_id ?? null;
 
+        renderForecast(payload);
         updateHero(payload);
         renderSignals(payload.signals || []);
 
@@ -1518,8 +1967,22 @@
       }
     }
 
+    [els.trackSelect, els.driverStyleSelect, els.roadConditionSelect].forEach(control => {
+      control.addEventListener("change", () => {
+        readCoachControls();
+        resetSessionState(state.sessionId);
+        requestPrebrief(false);
+        loadDashboard();
+      });
+    });
+    els.refreshForecastBtn.addEventListener("click", () => requestPrebrief(false));
+    els.aiForecastBtn.addEventListener("click", () => requestPrebrief(true));
+
     renderPlaceholder();
-    loadDashboard();
+    loadTrackProfiles().finally(() => {
+      requestPrebrief(false);
+      loadDashboard();
+    });
     setInterval(loadDashboard, POLL_MS);
     window.addEventListener("resize", () => drawTrendChart(state.chartHistory));
   </script>
