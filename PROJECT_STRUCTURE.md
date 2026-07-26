@@ -119,6 +119,14 @@ src/ export/ data/ BUILD/     # TORCS vendored engine/content
 
 ## 测试
 
+分层测试流程见 [docs/testing-plan.md](docs/testing-plan.md)，L0–L3 可一键执行：
+
+```bash
+bash tools/run_tests.sh --service
+```
+
+手动执行：
+
 ```bash
 python3 -m py_compile config.py telemetry_common.py car_state_source.py \
   granite_client.py chat_engineer.py chat_engineer_gui.py \
