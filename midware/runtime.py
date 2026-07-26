@@ -37,6 +37,7 @@ if str(MIDWARE_DIR) not in sys.path:
     sys.path.insert(0, str(MIDWARE_DIR))
 
 import config
+from telemetry_common import extract_json_object
 from commentary_engine import CommentaryConfig, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
 from midware.shared.feature_registry import feature_specs
@@ -303,7 +304,7 @@ async def call_ai(
         stale_key=stale_key,
     )
     if not do_stream:
-        await broadcast({"type": "token", "text": full_text, "source": "commentary"})
+        await broadcast({"type": "token", "text": full_text, "source": "commentary", "request_id": request_id})
     return full_text
 
 
@@ -392,6 +393,8 @@ async def generate_commentary(
     # 3. 广播 user 消息（用于 UI 显示）
     await broadcast({
         "type": "user_msg",
+        "source": "commentary",
+        "request_id": request_id,
         "content": user_content,
         "stats": ctx_mgr.stats(),
     })
@@ -400,7 +403,7 @@ async def generate_commentary(
     messages = ctx_mgr.build_messages()
 
     # 5. 调用 AI
-    await broadcast({"type": "ai_start", "request_id": request_id})
+    await broadcast({"type": "ai_start", "source": "commentary", "request_id": request_id})
     try:
         if event_payload:
             model_broker.invalidate("commentary_baseline")
@@ -423,7 +426,7 @@ async def generate_commentary(
             request_id=request_id,
         )
     except Exception as e:
-        await broadcast({"type": "error", "message": str(e), "request_id": request_id})
+        await broadcast({"type": "error", "source": "commentary", "message": str(e), "request_id": request_id})
         raise
 
     # 6. 把 AI 回复存入历史
@@ -438,6 +441,7 @@ async def generate_commentary(
     async def _commit():
         await broadcast({
             "type": "ai_done",
+            "source": "commentary",
             "request_id": request_id,
             "content": reply,
             "stats": ctx_mgr.stats(),
@@ -445,6 +449,8 @@ async def generate_commentary(
         if audio:
             await broadcast({
                 "type": "tts_audio",
+                "source": "commentary",
+                "request_id": request_id,
                 "audio": base64.b64encode(audio).decode(),
                 "mime":  tts_config.get("mime") or "audio/wav",
             })
@@ -1073,7 +1079,10 @@ async def request_bot_strategy(body: dict):
 
     prompt = (
         "You are a TORCS race strategist. Return JSON only with strategy and reason. "
-        "strategy must be ATTACK, NORMAL, DEFEND, SAVE_FUEL, or PIT.\n"
+        "strategy must be ATTACK, NORMAL, DEFEND, SAVE_FUEL, or PIT. "
+        # Without an explicit cap Granite writes a full paragraph of reasoning,
+        # which ran past max_tokens and truncated the JSON mid-string.
+        "reason must be a single phrase of at most 8 words.\n"
         + json.dumps(request.model_dump(mode="json"), ensure_ascii=True)
     )
     try:
@@ -1083,10 +1092,20 @@ async def request_bot_strategy(body: dict):
             task="bot_strategy",
             priority=MODEL_PRIORITIES["bot_strategy"],
             temperature=0.1,
-            max_tokens=80,
-            timeout=10,
+            # 80 was not enough headroom: Granite emits a ```json fence plus a
+            # verbose reason, and the object got cut off before its closing
+            # brace, so nothing downstream could parse it.
+            max_tokens=160,
+            # granite-4.1-8b measured at 11.7-12.5s for this prompt on the
+            # local LM Studio server, so the previous 10s ceiling timed out
+            # on every single call (execution_s=10.010 status=error).
+            timeout=30,
         )
-        parsed = json.loads(text)
+        # Granite wraps its answer in a ```json fence, which bare json.loads
+        # chokes on; extract_json_object() falls back to the outermost {...}.
+        parsed = extract_json_object(text)
+        if parsed is None:
+            raise ValueError(f"model returned no parsable JSON object: {text[:200]!r}")
         decision = StrategyDecision(
             strategy=Strategy(str(parsed.get("strategy", "NORMAL")).upper()),
             reason=str(parsed.get("reason", "")),

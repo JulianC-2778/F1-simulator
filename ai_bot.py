@@ -224,6 +224,12 @@ _SCR_BUF           = 1000
 _HANDSHAKE_RETRIES = 5
 _HANDSHAKE_TIMEOUT = 5.0    # seconds per attempt
 _STEP_TIMEOUT      = 0.1    # seconds; per-step recv timeout
+_LOCAL_PORT_BASE   = 3200   # base for the duplicate-instance guard port (see
+                             # TorcsClient.connect).  Must NOT be 3100: that
+                             # yields 3101 for the default SCR port 3001, and
+                             # UDP 3101 is the middleware's telemetry ingest
+                             # port — the bot would silently squat on it and
+                             # midware would fail to start with EADDRINUSE.
 
 
 class ScrClient:
@@ -258,14 +264,15 @@ class ScrClient:
         # with the first one.  Two clients on one slot means interleaved
         # controls — a car that crawls at ~50 km/h at "full throttle", gears
         # that flap for no reason, and races that die to a stray meta/restart.
+        guard_port = _LOCAL_PORT_BASE + (self._addr[1] % 100)
         try:
-            self._sock.bind(("", 3100 + (self._addr[1] % 100)))
+            self._sock.bind(("", guard_port))
         except OSError as e:
             self._sock.close()
             self._sock = None
             raise ConnectionError(
                 f"Another bot instance appears to be connected to this TORCS "
-                f"slot (local port {3100 + (self._addr[1] % 100)} busy). "
+                f"slot (local port {guard_port} busy). "
                 f"Kill the other ai_bot process first: {e}"
             )
         self._sock.settimeout(_HANDSHAKE_TIMEOUT)
@@ -1178,13 +1185,21 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
 # Step 6: Granite strategy caller
 # ---------------------------------------------------------------------------
 
-_STRATEGY_INTERVAL = 5.0    # seconds between Granite requests — measured local
-                             # LM Studio round-trip is ~1.4-2.3s (granite-4.1-8b,
-                             # 985-char prompt, 80 max_tokens); 5s keeps ~2x
-                             # margin over the observed worst case while landing
-                             # in the ~0.1-1Hz strategy-refresh target.
-_GRANITE_TIMEOUT   = 10.0   # seconds to wait for a single LLM response — 4x+
-                             # margin over the 2.3s observed worst case.
+_STRATEGY_INTERVAL = 5.0    # seconds between Granite requests.  Measured
+                             # round-trip through midware -> LM Studio is ~5.2s
+                             # (granite-4.1-8b, reason capped at 8 words), so at
+                             # 5s the model is essentially busy back-to-back and
+                             # there is no idle margin.  That is deliberate: it
+                             # buys the fastest strategy switching (_STRATEGY_CONFIRM
+                             # = 2 confirmations, so ~10-12s to change strategy).
+                             # LatestTaskRunner keeps only the newest pending task,
+                             # so overlapping ticks are dropped, never queued.
+                             # Raise this if the machine has other load or a
+                             # slower model — watch execution_s in midware's log.
+_GRANITE_TIMEOUT   = 30.0   # seconds to wait for one strategy round-trip — must
+                             # exceed midware's own 30s model timeout budget plus
+                             # queue wait, or the bot gives up before the answer
+                             # arrives and every call looks like a failure.
 _STRATEGY_CONFIRM  = 2      # consecutive matching Granite answers required
                              # before switching the active strategy — stops a
                              # borderline reading from flapping the car
