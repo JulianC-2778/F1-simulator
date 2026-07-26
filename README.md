@@ -268,6 +268,15 @@ python ai_bot.py --bot --granite
 ## 测试
 
 项目包含标准库单元测试和内置控制算法回归测试；完整端到端验收仍需真实 TORCS/Granite 环境。
+分层流程、人工验收清单和覆盖缺口见 [docs/testing-plan.md](docs/testing-plan.md)。
+
+一键执行静态检查、离线单测、集成测试和服务冒烟（L0–L3）：
+
+```bash
+bash tools/run_tests.sh --service
+```
+
+也可以逐条手动执行：
 
 ```bash
 cd ~/F1-simulator
