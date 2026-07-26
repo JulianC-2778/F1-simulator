@@ -156,8 +156,14 @@
   }
   .disabled-note.show { display: block; }
 
-  .grid-2 { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(280px,0.9fr); gap: 20px; }
-  .stack { display: grid; gap: 16px; align-content: start; }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: minmax(0,1.3fr) minmax(280px,0.9fr);
+    gap: 20px;
+    align-items: start;
+  }
+  .grid-2 > *, .stack > *, details { min-width: 0; }
+  .stack { display: grid; gap: 16px; align-content: start; min-width: 0; }
 
   .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); margin-bottom: 10px; }
 
@@ -176,13 +182,14 @@
   .field { display: grid; gap: 6px; margin-bottom: 12px; }
   .field label { font-size: 0.76rem; color: var(--text-faint); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
   .field input[type=text], .field input[type=password], .field input[type=number], .field select, .field textarea {
+    width: 100%; max-width: 100%; min-width: 0;
     padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-strong);
     background: rgba(255,255,255,0.85); color: var(--text); font: inherit;
   }
   .field textarea { resize: vertical; min-height: 64px; }
   .field input[type=range] { width: 100%; accent-color: var(--accent); }
-  .row-inline { display: flex; gap: 10px; }
-  .row-inline > * { flex: 1; }
+  .row-inline { display: flex; gap: 10px; min-width: 0; }
+  .row-inline > * { flex: 1 1 0; min-width: 0; }
 
   .composer { display: flex; gap: 8px; align-items: flex-end; margin-top: 12px; }
   .composer textarea { flex: 1; min-height: 46px; max-height: 130px; }
@@ -304,6 +311,15 @@
   @media (max-width: 980px) {
     .grid-2 { grid-template-columns: 1fr; }
     .stat-grid, .lookahead-list, .coach-dual, .signal-strip { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .shell { padding: 14px 10px 36px; }
+    .panel-pad { padding: 18px 14px; }
+    .row-inline { flex-wrap: wrap; }
+    .row-inline > * { flex-basis: 100%; }
+    .composer { flex-wrap: wrap; }
+    .composer textarea { flex-basis: 100%; }
+    .composer > button { flex: 1; }
   }
 </style>
 </head>
