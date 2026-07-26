@@ -45,11 +45,13 @@ from midware.services.model_broker import MODEL_PRIORITIES, ModelBroker
 from midware.schemas.bot import BotStrategyRequest, Strategy, StrategyDecision
 from midware.schemas.bot import BotStatusUpdate
 from midware.services.bot_status_service import BotStatusService
+from midware.services.process_manager import ProcessRegistry
 from midware.shared.output_bus import ALLOWED_SOURCES, normalize_outbound_message
 from midware.shared.race_snapshot import build_race_snapshot
 from midware.services.feature_gate import FeatureGate
 from midware.feature2_core import build_dashboard_payload
 from race_analyzer import empty_car_state, telemetry_to_car_state
+import voice_input
 from midware.services.telemetry_service import TelemetryService
 
 # ---------------------------------------------------------------------------
@@ -100,6 +102,13 @@ ctx_cfg   = ContextConfig()
 ctx_mgr   = ContextManager(ctx_cfg)
 engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
 
+# -- Engineer voice input (server-side mic recording, same mechanism as
+# chat_engineer_gui.py's mic button -- see voice_input.py). Single global
+# recorder because only one dashboard operator is expected to be recording
+# at a time; a second start attempt while one is in progress is rejected
+# rather than silently dropping the first recording.
+_engineer_voice_recorder: "voice_input.Recorder | None" = None
+
 # -- 遥测数据缓存（UDP 线程写入，主线程读） --
 telemetry_service = TelemetryService(port=config.TELEMETRY_UDP_PORT, window_seconds=30.0)
 telemetry_store = telemetry_service.store
@@ -124,6 +133,17 @@ _commentary_priority: int = 0
 runtime_manager = FeatureGate(feature_specs())
 model_broker = ModelBroker(max_queue_size=16, max_concurrency=1)
 bot_status_service = BotStatusService()
+
+# -- Dashboard-controlled subprocesses (currently just the AI bot client).
+# This does not replace launcher_gui.py; it is a separate, HTTP-reachable
+# copy of the same start/stop/tail pattern for the unified web dashboard.
+process_registry = ProcessRegistry()
+process_registry.register(
+    "ai_bot",
+    "AI Driver Bot (ai_bot.py --bot --granite)",
+    [sys.executable, "ai_bot.py", "--bot", "--granite"],
+    ROOT_DIR,
+)
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -493,6 +513,18 @@ async def index():
     return HTMLResponse(f"<h1>找不到 {UI_FILE}，请检查 static/ 目录</h1>")
 
 
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Unified web dashboard: Commentary/Engineer/Coach tabs + AI bot control
+    card, all driven by the shared APIs in docs/integration-contract.md.
+    Additive only -- does not replace `/` (index.html / index2.html) or
+    `/feature2` (feature2_service.py), which keep working unchanged."""
+    html_path = STATIC_DIR / "dashboard.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>找不到 dashboard.html，请检查 midware/static/ 目录</h1>")
+
+
 @app.get("/api/config")
 async def get_config():
     return {
@@ -771,6 +803,53 @@ async def clear_engineer_history():
     return {"ok": True, "stats": engineer_ctx_mgr.stats()}
 
 
+@app.get("/api/engineer/voice/available")
+async def get_engineer_voice_available():
+    """Best-effort check for the dashboard mic button, same probe
+    chat_engineer_gui.py relies on before it lets you record. Runs off the
+    event loop: it shells out to `pactl` with up to a 3s timeout, which
+    would otherwise stall commentary/coach/engineer requests sharing this
+    same asyncio loop."""
+    available = await asyncio.to_thread(voice_input.mic_available)
+    return {"available": available}
+
+
+@app.post("/api/engineer/voice/start")
+async def start_engineer_voice():
+    global _engineer_voice_recorder
+    if not runtime_manager.is_enabled("engineer"):
+        return JSONResponse({"ok": False, "error": "engineer feature is disabled"}, status_code=409)
+    if _engineer_voice_recorder is not None:
+        return JSONResponse({"ok": False, "error": "a recording is already in progress"}, status_code=409)
+    if not await asyncio.to_thread(voice_input.mic_available):
+        return JSONResponse(
+            {"ok": False, "error": "microphone not available (see docs/voice-input-setup.md)"},
+            status_code=503,
+        )
+    recorder = voice_input.Recorder()
+    recorder.start()
+    _engineer_voice_recorder = recorder
+    return {"ok": True, "recording": True}
+
+
+@app.post("/api/engineer/voice/stop")
+async def stop_engineer_voice():
+    """Stop the in-progress recording and transcribe it. Transcription runs
+    in a worker thread (faster-whisper is a blocking CPU call) so it never
+    stalls the event loop that the other three features' model calls and
+    the WebSocket broadcast share."""
+    global _engineer_voice_recorder
+    recorder = _engineer_voice_recorder
+    _engineer_voice_recorder = None
+    if recorder is None:
+        return JSONResponse({"ok": False, "error": "no recording in progress"}, status_code=409)
+    wav_path = await asyncio.to_thread(recorder.stop)
+    if not wav_path:
+        return {"ok": True, "text": ""}
+    text = await asyncio.to_thread(voice_input.transcribe, wav_path)
+    return {"ok": True, "text": text}
+
+
 @app.get("/api/bot/status")
 async def get_bot_status():
     return {"status": bot_status_service.snapshot().model_dump(mode="json")}
@@ -830,6 +909,65 @@ async def request_bot_strategy(body: dict):
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
     return {"ok": True, "decision": decision.model_dump(mode="json")}
+
+
+@app.post("/api/bot/process/start")
+async def start_bot_process():
+    """Start the ai_bot.py client subprocess from the dashboard.
+
+    This only manages the local `ai_bot.py --bot --granite` client process --
+    it does not launch or configure TORCS itself. TORCS must already be
+    running in SCR mode (`./BUILD/bin/torcs -ver 2013`, Quick Race ->
+    scr_server) or the client will simply fail its own handshake, same as
+    running it by hand. Gated behind the `bot` feature switch so the
+    behaviour matches every other feature action in this file (409 when
+    disabled) instead of silently spawning a process the UI has marked off.
+    """
+    if not runtime_manager.is_enabled("bot"):
+        return JSONResponse({"ok": False, "error": "bot feature is disabled"}, status_code=409)
+    proc = process_registry.get("ai_bot")
+    if proc is None:
+        return JSONResponse({"ok": False, "error": "unknown process: ai_bot"}, status_code=404)
+    err = proc.start()
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+    await broadcast({
+        "type": "message",
+        "source": "bot",
+        "level": "info",
+        "title": "Bot Process",
+        "content": "ai_bot.py started",
+        "payload": {"process": proc.status()},
+    })
+    return {"ok": True, "process": proc.status()}
+
+
+@app.post("/api/bot/process/stop")
+async def stop_bot_process():
+    proc = process_registry.get("ai_bot")
+    if proc is None:
+        return JSONResponse({"ok": False, "error": "unknown process: ai_bot"}, status_code=404)
+    # stop() can block up to ~5s waiting for SIGTERM/SIGKILL to land -- push
+    # it off the event loop so it can't stall commentary/engineer/coach
+    # requests sharing this same asyncio loop while the bot shuts down.
+    await asyncio.to_thread(proc.stop)
+    await broadcast({
+        "type": "message",
+        "source": "bot",
+        "level": "info",
+        "title": "Bot Process",
+        "content": "ai_bot.py stopped",
+        "payload": {"process": proc.status()},
+    })
+    return {"ok": True, "process": proc.status()}
+
+
+@app.get("/api/bot/process/status")
+async def get_bot_process_status():
+    proc = process_registry.get("ai_bot")
+    if proc is None:
+        return JSONResponse({"ok": False, "error": "unknown process: ai_bot"}, status_code=404)
+    return {"ok": True, "process": proc.status()}
 
 
 @app.post("/api/telemetry/push")
