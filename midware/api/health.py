@@ -1,1 +1,1 @@
-HEALTH_PREFIXES = ("/", "/api/health", "/api/stats")
+HEALTH_PREFIXES = ("/", "/dashboard", "/api/health", "/api/stats")

@@ -303,7 +303,7 @@ async def call_ai(
         stale_key=stale_key,
     )
     if not do_stream:
-        await broadcast({"type": "token", "text": full_text, "source": "commentary"})
+        await broadcast({"type": "token", "text": full_text, "source": "commentary", "request_id": request_id})
     return full_text
 
 
@@ -392,6 +392,8 @@ async def generate_commentary(
     # 3. 广播 user 消息（用于 UI 显示）
     await broadcast({
         "type": "user_msg",
+        "source": "commentary",
+        "request_id": request_id,
         "content": user_content,
         "stats": ctx_mgr.stats(),
     })
@@ -400,7 +402,7 @@ async def generate_commentary(
     messages = ctx_mgr.build_messages()
 
     # 5. 调用 AI
-    await broadcast({"type": "ai_start", "request_id": request_id})
+    await broadcast({"type": "ai_start", "source": "commentary", "request_id": request_id})
     try:
         if event_payload:
             model_broker.invalidate("commentary_baseline")
@@ -423,7 +425,7 @@ async def generate_commentary(
             request_id=request_id,
         )
     except Exception as e:
-        await broadcast({"type": "error", "message": str(e), "request_id": request_id})
+        await broadcast({"type": "error", "source": "commentary", "message": str(e), "request_id": request_id})
         raise
 
     # 6. 把 AI 回复存入历史
@@ -438,6 +440,7 @@ async def generate_commentary(
     async def _commit():
         await broadcast({
             "type": "ai_done",
+            "source": "commentary",
             "request_id": request_id,
             "content": reply,
             "stats": ctx_mgr.stats(),
@@ -445,6 +448,8 @@ async def generate_commentary(
         if audio:
             await broadcast({
                 "type": "tts_audio",
+                "source": "commentary",
+                "request_id": request_id,
                 "audio": base64.b64encode(audio).decode(),
                 "mime":  tts_config.get("mime") or "audio/wav",
             })

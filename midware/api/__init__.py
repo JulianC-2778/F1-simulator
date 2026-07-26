@@ -42,7 +42,7 @@ def build_grouped_routers(routes: Iterable[object]) -> dict[str, APIRouter]:
 def _group_for_path(path: str) -> str | None:
     if path == "/ws":
         return "websocket"
-    if path == "/" or path in {"/api/health", "/api/stats"}:
+    if path in ROUTE_GROUPS["health"]:
         return "health"
     for name in ("commentary", "engineer", "coach", "bot", "config", "telemetry"):
         if any(path.startswith(prefix) for prefix in ROUTE_GROUPS[name]):
