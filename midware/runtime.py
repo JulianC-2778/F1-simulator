@@ -74,7 +74,7 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
-UI_FILE = "index.html"  # 可被启动参数覆盖
+UI_FILE = "dashboard.html"  # 可被启动参数覆盖
 
 # -- AI API config (editable from UI) --
 api_config: dict[str, Any] = {
