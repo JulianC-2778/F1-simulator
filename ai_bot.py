@@ -539,8 +539,12 @@ class _DriveParams:
 #                          max_spd  accel  brake_g  steer_g  cntr_g  spd_factor
 # NORMAL runs full throttle too — the strategies differ in top speed, corner
 # speed (spd_factor) and brake gain, not in dribbling the pedal on straights.
+# ATTACK pushed further (was 300/1.20/290): higher top speed and corner speed
+# (speed_factor), with brake_gain raised to match so the harder corner entry
+# is still recoverable — untested at these numbers, watch for corners taken
+# too hot (running wide / contact) before pushing further.
 _PARAMS: dict[str, _DriveParams] = {
-    ATTACK:    _DriveParams(300,    1.00,   1.20,    0.90,    0.20,  290),
+    ATTACK:    _DriveParams(330,    1.00,   1.35,    0.90,    0.20,  330),
     NORMAL:    _DriveParams(250,    1.00,   1.00,    0.85,    0.20,  230),
     DEFEND:    _DriveParams(180,    0.80,   0.90,    0.80,    0.25,  150),
     SAVE_FUEL: _DriveParams(150,    0.65,   0.80,    0.80,    0.20,   80),
@@ -655,6 +659,62 @@ _line_lp   = 0.0           # module state: slewed line setpoint
 # Genuinely going off-track (|track_pos| > 1) is handled by the recovery branch.
 _EDGE_FREE = 0.85          # |track_pos| below this → no centring at all (apex is free)
 _EDGE_GAIN = 1.2           # gentle tuck-in once past the free band
+
+# Side-traffic avoidance: nudge away from a car alongside instead of holding the
+# racing line through it.  track_pos never leaves the normal driving band during
+# a start-grid scrap (the car isn't off line or on a kerb), so nothing else in
+# this function reacts to it — pursuit/barrier only see the road, not other
+# cars — and the pack rubs damage into the door for as long as the opponent
+# stays alongside.  Rear cone excluded (a car that has passed is no longer a
+# side risk); TORCS opponent sensor indices follow the same angle = -180+10*i,
+# positive = RIGHT convention as the track sensor (see _SENSOR_ANGLES_RAD).
+#
+# LEFT/RIGHT split exactly at dead-ahead (index 18, 0°) — an EARLIER version
+# excluded indices 16-19 from both windows on the theory that dead-ahead was
+# "pursuit/sight's job".  It is not: those only see the road, never other
+# cars, so a car sitting exactly in that gap read left_gap == right_gap ==
+# 200 (invisible) — no side looked closer, so neither the avoidance nudge
+# below nor the front-follow boxed-in check ever fired, and the car drove
+# straight through it for 600 ticks, taking damage 0 → 7000+ (verified live:
+# opponent dead centre at 4.5-9 m, obnd stayed 0 the whole time).  There must
+# be no gap between the two windows — every angle from just-behind-left to
+# just-behind-right has to land in at least one of them.
+_AVOID_DIST  = 10.0                 # m: side gap closer than this triggers a nudge
+_AVOID_GAIN  = 0.15                 # steer authority at zero gap (~centre-term scale)
+_AVOID_LEFT  = range(9, 18)         # ~-90° to -10°: opponent ahead-left/alongside/just behind
+_AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongside/just behind
+                                     # (index 18, dead ahead, arbitrarily assigned here — the
+                                     # point is the split, not which side owns the boundary)
+
+# Front-opponent following/overtake: the "track" beams only see the road, so a
+# slower car sitting dead ahead is otherwise invisible to this function — it
+# just floors the throttle into their bumper.  Two effects, both gated on
+# _FRONT_CONE distance (roughly ±30° ahead):
+#   1. line bias (proactive): well before contact risk, nudge the hold-line
+#      setpoint toward whichever side has more room, the same slewed
+#      mechanism the map's out-in-out entry line already uses — so the car
+#      eases out to pass instead of parking in the draft.
+#   2. follow cap (reactive, LAST resort): only when genuinely boxed in — a
+#      tight gap ahead AND no room to either side — cap target speed with the
+#      same sqrt curve corners use.  First cut of this braked for ANY close
+#      front gap regardless of whether a side was open, which fired constantly
+#      in ordinary racing (any car a length ahead in a pack) and cost far more
+#      laptime than the rear-end risk it prevented — measured a lap full of
+#      podium finishes turn into a last-place finish.  Gating on "no escape"
+#      makes the brake genuinely rare: it only fires when easing aside (1)
+#      can't help, which is the only situation additional speed loss buys
+#      anything.
+_FRONT_CONE           = range(15, 22)   # ~-30° to +30°: opponent roughly in-lane ahead
+_OVERTAKE_TRIGGER_M   = 55.0             # m: start easing the line out this far back
+                                          # (was 40 — pushed out so the move starts earlier
+                                          # and commits before the follow cap's 10 m window)
+_OVERTAKE_BIAS        = 0.50             # tpos units: how far off-centre to ease (was 0.35 —
+                                          # more decisive commitment to the gap, untested)
+_OVERTAKE_ROOM_MARGIN = 5.0              # m: one side must be clearly more open to commit
+_FRONT_BRAKE_M        = 10.0             # m: only consider braking for a gap this tight
+_FRONT_ESCAPE_M       = 20.0             # m: either side clearer than this = not boxed in
+_FRONT_FLOOR_KMH      = 25.0             # km/h: cap floor at zero gap
+_FRONT_FACTOR         = 40.0             # sqrt curve steepness inside the brake window
 
 # Corner-speed sharpness: target speed depends on BOTH how far the road is clear
 # AND how sharp the corner is.  Sharpness = angle of the most-open direction off
@@ -933,6 +993,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     track      = state.get("track",         [])
     wheel_vels = state.get("wheel_spin_vel", [])
     dist_from_start = state.get("dist_from_start", -1.0)   # -1 = not in packet
+    _dbg["dist"] = dist_from_start
 
     global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp
 
@@ -1002,6 +1063,10 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     edge    = max(0.0, abs(tpos) - _EDGE_FREE)
     barrier = -math.copysign(edge * _EDGE_GAIN, tpos)
     aim     = math.copysign(max(0.0, abs(pursuit) - _PP_FREE), pursuit)
+    opps      = state.get("opponents", [])
+    left_gap  = min((opps[i] for i in _AVOID_LEFT  if i < len(opps)), default=200.0)
+    right_gap = min((opps[i] for i in _AVOID_RIGHT if i < len(opps)), default=200.0)
+    front_gap = min((opps[i] for i in _FRONT_CONE  if i < len(opps)), default=200.0)
     # A+ racing line: hold-line setpoint.  0 (centre) on open road, but on
     # the approach to a mapped corner the map moves it to the OUTSIDE edge
     # (out-in-out entry).  Same fade as before: the term only acts while the
@@ -1010,13 +1075,30 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     line_raw = 0.0
     if _track_model is not None and dist_from_start >= 0.0:
         line_raw = _track_model.line_tpos(dist_from_start)
+    # Overtake bias: a slower car dead ahead only counts as "found" once we
+    # are close enough that neither side reads open by coincidence; pick
+    # whichever side is clearly roomier and ease that way.  Only overrides an
+    # already-quiet map line (|line_raw| < 0.05) — a mapped corner's own
+    # entry bias carries more information about the road than this guess and
+    # must not be fought mid-corner.
+    if line_raw == 0.0 and front_gap < _OVERTAKE_TRIGGER_M:
+        if left_gap > right_gap + _OVERTAKE_ROOM_MARGIN:
+            line_raw = _OVERTAKE_BIAS    # more room on the left → tpos positive
+        elif right_gap > left_gap + _OVERTAKE_ROOM_MARGIN:
+            line_raw = -_OVERTAKE_BIAS   # more room on the right → tpos negative
     # Slew toward the raw setpoint — side flips between alternating corners
     # become a ~1 s drift instead of a dart (the twisty-section weave fix).
     _line_lp += clamp(line_raw - _line_lp, -_LINE_SLEW, _LINE_SLEW)
     hold_gain = _LINE_GAIN if abs(_line_lp) > 0.05 else _HOLD_CENTRE
     fade    = max(0.0, 1.0 - abs(pursuit) / _PP_FREE)
     centre  = clamp((_line_lp - tpos) * hold_gain, -0.25, 0.25) * fade
-    steer   = aim * _PP_GAIN + centre + barrier - speed_y * _STEER_DAMP
+    avoid = 0.0
+    if left_gap < _AVOID_DIST:
+        avoid -= _AVOID_GAIN * (1.0 - left_gap / _AVOID_DIST)
+    if right_gap < _AVOID_DIST:
+        avoid += _AVOID_GAIN * (1.0 - right_gap / _AVOID_DIST)
+    avoid  *= fade   # back off once a real corner needs the wheel
+    steer   = aim * _PP_GAIN + centre + barrier + avoid - speed_y * _STEER_DAMP
     steer  /= (1.0 + max(speed, 0.0) * _STEER_SPEED_K)
     # The alignment damper is deliberately OUTSIDE the speed attenuation: the
     # lateral loop loses damping as speed rises (ζ ~ 1/√v) — that is exactly
@@ -1043,12 +1125,31 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     if sight >= _STRAIGHT_CLEAR and open_angle < _STRAIGHT_ANGLE:
         # Clear AND straight ahead — run to the strategy's top speed.
         target_speed = params.max_speed
+        _dbg["why"]  = "clear"
     else:
         sharp        = max(0.0, open_angle - _SHARP_FREE)
         floor        = params.max_speed * _CORNER_FLOOR
         dist_limit   = math.sqrt(floor * floor + max(sight, 1.0) * params.speed_factor)
         target_speed = min(params.max_speed,
                            dist_limit / (1.0 + _CORNER_SHARPNESS * sharp))
+        _dbg["why"]  = "corner-sight"
+
+    # --- front-opponent follow cap: brake ONLY when genuinely boxed in ---
+    # A tight gap ahead is not by itself a reason to brake — if either side is
+    # clear, easing aside (the overtake-line bias above) is strictly better
+    # than shedding speed, so this only binds when there is nowhere to go.
+    _dbg["ogap"]      = front_gap
+    _dbg["lgap"]      = left_gap
+    _dbg["rgap"]      = right_gap
+    _dbg["opp_bound"] = 0.0
+    boxed_in = left_gap < _FRONT_ESCAPE_M and right_gap < _FRONT_ESCAPE_M
+    if front_gap < _FRONT_BRAKE_M and boxed_in:
+        follow_cap = math.sqrt(_FRONT_FLOOR_KMH * _FRONT_FLOOR_KMH
+                               + max(front_gap, 0.0) * _FRONT_FACTOR)
+        if follow_cap < target_speed:
+            target_speed = follow_cap
+            _dbg["opp_bound"] = 1.0
+            _dbg["why"] = "opp-boxed"
 
     # --- pre-race map lookahead: brake for corners the sensors can't see ---
     # min() with the reactive target, never a replacement: the map knows the
@@ -1065,6 +1166,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
             _dbg["map_bound"] = 1.0
             target_speed = map_limit
             map_curve    = map_limit < params.max_speed - 1.0
+            _dbg["why"]  = "map-corner"
         # --- TRUST mode: all five gates (see constants above) → the map may
         # RAISE the target: cancels false straight-line lifts, brakes later.
         elif (_track_model.real_lap is not None                    # gate 1
@@ -1082,6 +1184,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
                     target_speed  = trusted
                     _dbg["trust"] = 1.0
                     map_curve     = trusted < params.max_speed - 1.0
+                    _dbg["why"]   = "map-trust"
 
     # Smooth the target: drops are instant (braking must never lag), rises are
     # rate-limited so a flickering straight/corner classification can't strobe
@@ -1089,6 +1192,8 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     if _target_lp is None or target_speed < _target_lp:
         _target_lp = target_speed
     else:
+        if _target_lp + _TARGET_RISE < target_speed:
+            _dbg["why"] = "rise-limited"   # raw target is higher; still climbing to it
         _target_lp = min(target_speed, _target_lp + _TARGET_RISE)
     target_speed = _target_lp
     _dbg.update(sight=sight, open_angle=open_angle, target=target_speed, mode="race")
@@ -1191,7 +1296,8 @@ _STRATEGY_INTERVAL = 5.0    # seconds between Granite requests.  Measured
                              # 5s the model is essentially busy back-to-back and
                              # there is no idle margin.  That is deliberate: it
                              # buys the fastest strategy switching (_STRATEGY_CONFIRM
-                             # = 2 confirmations, so ~10-12s to change strategy).
+                             # = 1, so a strategy change lands on the next answer,
+                             # ~5s after the state that triggered it).
                              # LatestTaskRunner keeps only the newest pending task,
                              # so overlapping ticks are dropped, never queued.
                              # Raise this if the machine has other load or a
@@ -1200,10 +1306,15 @@ _GRANITE_TIMEOUT   = 30.0   # seconds to wait for one strategy round-trip — mu
                              # exceed midware's own 30s model timeout budget plus
                              # queue wait, or the bot gives up before the answer
                              # arrives and every call looks like a failure.
-_STRATEGY_CONFIRM  = 2      # consecutive matching Granite answers required
-                             # before switching the active strategy — stops a
-                             # borderline reading from flapping the car
-                             # between e.g. ATTACK/NORMAL every ~5s poll.
+_STRATEGY_CONFIRM  = 1      # consecutive matching Granite answers required
+                             # before switching the active strategy.  Was 2 (a
+                             # debounce against a borderline reading flapping
+                             # the car every ~5s poll) — dropped to 1 so a
+                             # decision is visible/actionable on the very next
+                             # answer instead of needing two in a row; a
+                             # genuinely borderline state can now flap between
+                             # strategies each poll, which is the accepted
+                             # trade for responsiveness.
 _GRANITE_MAX_TOK   = 80    # keep responses short and fast
 
 _SYSTEM_PROMPT = """\
@@ -1341,16 +1452,17 @@ class GraniteStrategist:
         return self._last_strategy, self._last_reason
 
     def _debounce(self, strategy: str, reason: str) -> None:
-        """Only switch the active strategy once Granite proposes the SAME new
-        strategy on ``_STRATEGY_CONFIRM`` consecutive calls in a row.
+        """Switch the active strategy once Granite proposes a new one on
+        ``_STRATEGY_CONFIRM`` consecutive calls in a row.
 
-        Without this, a state right at a threshold (e.g. speed/gap borderline
-        between ATTACK and NORMAL) can flip the raw Granite answer back and
-        forth on successive polls, and — since each poll is now only 5s apart
-        — that flapped the car's strategy every few seconds. Note this only
-        smooths *Granite's* pick; safety_filter() still runs on every frame
-        on top of whatever this returns, so a real emergency (low fuel,
-        critical damage) is never delayed by the confirmation wait.
+        _STRATEGY_CONFIRM is currently 1, so in practice this switches on the
+        very first differing answer — no smoothing, no delay.  The mechanism
+        is kept generic (not hardcoded to "switch immediately") so a
+        borderline state that turns out to flap distractingly can have the
+        debounce turned back up without touching this method.  Note this only
+        gates *Granite's* pick; safety_filter() still runs on every frame on
+        top of whatever this returns, so a real emergency (low fuel, critical
+        damage) is never delayed by it either way.
         """
         prev_active = self._last_strategy
         self._last_strategy, self._candidate_strategy, self._candidate_count, switched = (
@@ -1618,13 +1730,19 @@ def run_bot(
                     rpm   = state.get("rpm",     0.0)
                     print(
                         f"  step={step:6d}  {speed:6.1f} km/h  "
+                        f"dist={_dbg.get('dist', -1.0):6.0f}  "
                         f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}  "
                         f"strategy={current_strategy}  "
                         f"tgt={_dbg.get('target', 0.0):5.1f}  "
+                        f"why={_dbg.get('why', '?'):12s}  "
                         f"map={_dbg.get('map', -1.0):5.0f}  "
                         f"tru={int(_dbg.get('trust', 0.0))}  "
                         f"sight={_dbg.get('sight', 0.0):5.1f}  "
                         f"open={_dbg.get('open_angle', 0.0):+.2f}  "
+                        f"ogap={_dbg.get('ogap', 200.0):5.1f}  "
+                        f"lgap={_dbg.get('lgap', 200.0):5.1f}  "
+                        f"rgap={_dbg.get('rgap', 200.0):5.1f}  "
+                        f"obnd={int(_dbg.get('opp_bound', 0.0))}  "
                         f"rpm={rpm:5.0f}  dmg={dmg:5.0f}  "
                         f"acc={_dbg.get('cmd_accel', 0.0):.2f}  "
                         f"brk={_dbg.get('cmd_brake', 0.0):.2f}  "
@@ -2047,6 +2165,110 @@ def _run_tests() -> None:
     else:
         print("compute_control map lookahead (P1) ... SKIPPED (track_model.py not found)")
 
+    # ---- side-traffic avoidance ---------------------------------------------
+    # Straight road, dead ahead clear, opponent tight alongside on the right
+    # (index 22, well inside _AVOID_RIGHT) → must steer LEFT (positive) to
+    # open a gap, same convention as the map entry-line bias test above.
+    _reset_driver_state()
+    opps_right = [200.0] * 36
+    opps_right[22] = 3.0
+    out_avoid_r = compute_control({**cs, "speed_x": 80.0, "opponents": opps_right}, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_avoid_r)
+    assert m and float(m.group(1)) > 0.0, \
+        f"FAIL: car tight on the right must steer left to clear it: {out_avoid_r}"
+
+    # Mirror: opponent tight alongside on the left → steer RIGHT (negative).
+    _reset_driver_state()
+    opps_left = [200.0] * 36
+    opps_left[13] = 3.0
+    out_avoid_l = compute_control({**cs, "speed_x": 80.0, "opponents": opps_left}, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_avoid_l)
+    assert m and float(m.group(1)) < 0.0, \
+        f"FAIL: car tight on the left must steer right to clear it: {out_avoid_l}"
+
+    # Regression: dead-ahead (index 18, 0°) used to fall in the gap between
+    # the two windows and read as clear on both sides — invisible.  It must
+    # now register on whichever side owns the boundary (see the constants'
+    # comment) and trigger the same nudge as any other close-front car.
+    _reset_driver_state()
+    opps_ahead2 = [200.0] * 36
+    opps_ahead2[18] = 3.0
+    out_dead_ahead = compute_control({**cs, "speed_x": 80.0, "opponents": opps_ahead2}, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_dead_ahead)
+    assert m and abs(float(m.group(1))) > 0.02, \
+        f"FAIL: dead-ahead opponent must not fall into a blind gap: {out_dead_ahead}"
+    _reset_driver_state()
+    print("compute_control side-traffic avoidance ... OK")
+
+    # ---- front-opponent following/overtake -----------------------------------
+    # Slower car dead ahead (25 m — inside the overtake trigger, outside the
+    # tight brake window) with the right blocked and the left clear must ease
+    # the car toward the open (left, tpos +) side.  Needs repeated ticks: the
+    # line setpoint is slewed exactly like the map's own entry-line bias.
+    _reset_driver_state()
+    opps_pass_l = [200.0] * 36
+    opps_pass_l[18] = 25.0
+    opps_pass_l[22] = 15.0     # right side congested (not tight enough for _AVOID_DIST)
+    cs_pass_l = {**cs, "speed_x": 80.0, "opponents": opps_pass_l}
+    out_pass_l = ""
+    for _ in range(40):
+        out_pass_l = compute_control(cs_pass_l, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_pass_l)
+    assert m and float(m.group(1)) > 0.05, \
+        f"FAIL: open side is the left, car must ease left to pass: {out_pass_l}"
+
+    # Mirror: left blocked, right open → ease right (tpos −, negative steer).
+    _reset_driver_state()
+    opps_pass_r = [200.0] * 36
+    opps_pass_r[18] = 25.0
+    opps_pass_r[13] = 15.0     # left side congested
+    cs_pass_r = {**cs, "speed_x": 80.0, "opponents": opps_pass_r}
+    out_pass_r = ""
+    for _ in range(40):
+        out_pass_r = compute_control(cs_pass_r, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_pass_r)
+    assert m and float(m.group(1)) < -0.05, \
+        f"FAIL: open side is the right, car must ease right to pass: {out_pass_r}"
+    print("compute_control front-opponent overtake line bias ... OK")
+
+    # Follow cap: opponent almost touching (5 m ahead) AND boxed in on both
+    # sides (nowhere to ease to) must brake hard — genuinely nowhere else to
+    # shed the closing gap but speed.
+    _reset_driver_state()
+    opps_boxed = [200.0] * 36
+    opps_boxed[18] = 5.0    # tight gap dead ahead
+    opps_boxed[13] = 8.0    # left also blocked
+    opps_boxed[22] = 8.0    # right also blocked
+    out_follow = compute_control({**cs, "speed_x": 200.0, "opponents": opps_boxed}, NORMAL)
+    assert _dbg["opp_bound"] == 1.0, f"FAIL: boxed-in 5 m gap must bind the follow cap: {_dbg}"
+    m = re.search(r"\(brake ([-0-9.]+)\)", out_follow)
+    assert m and float(m.group(1)) > 0.5, \
+        f"FAIL: must brake hard when boxed in with a car 5 m ahead: {out_follow}"
+
+    # Same tight 5 m gap, but the right side is clear → must NOT brake.  This
+    # is the regression that shipped first: braking here cost whole seconds a
+    # lap in ordinary traffic and dropped the car from the podium to last,
+    # because a side was almost always open and the cap fired anyway.
+    _reset_driver_state()
+    opps_open_side = [200.0] * 36
+    opps_open_side[18] = 5.0
+    out_escape = compute_control({**cs, "speed_x": 200.0, "opponents": opps_open_side}, NORMAL)
+    assert _dbg["opp_bound"] == 0.0, \
+        f"FAIL: an open side must be used instead of braking: {_dbg}"
+    m = re.search(r"\(brake ([-0-9.]+)\)", out_escape)
+    assert m and float(m.group(1)) < 0.1, \
+        f"FAIL: must not brake when a side is clearly open: {out_escape}"
+
+    # Outside the tight brake window the cap must not bind regardless of
+    # sides — normal racing at a car-length or two shouldn't trip the brakes.
+    _reset_driver_state()
+    opps_far = [200.0] * 36
+    opps_far[18] = 25.0
+    compute_control({**cs, "speed_x": 200.0, "opponents": opps_far}, NORMAL)
+    assert _dbg["opp_bound"] == 0.0, f"FAIL: 25 m gap should not trigger the brake cap: {_dbg}"
+    _reset_driver_state()
+    print("compute_control front-opponent follow cap (boxed-in only) ... OK")
+
     # ---- safety_filter ------------------------------------------------------
     base = {"fuel": 50.0, "damage": 0.0}
 
@@ -2115,30 +2337,26 @@ def _run_tests() -> None:
     assert r == "",         f"FAIL reason should be empty: {r!r}"
     print(f"_parse_strategy_response no-reason ... OK  ({s})")
 
-    # ---- Step 7: _next_debounced_strategy (strategy switch debouncing) -----
-    # single differing proposal → held as a candidate, active unchanged
+    # ---- Step 7: _next_debounced_strategy (strategy switch, CONFIRM=1) -----
+    # With _STRATEGY_CONFIRM == 1 a single differing proposal switches
+    # immediately — no debounce wait, so a decision is actionable on the very
+    # next Granite answer instead of needing two matching ones in a row.
     active, cand, cnt, switched = _next_debounced_strategy(NORMAL, None, 0, ATTACK)
-    assert active == NORMAL and not switched, "FAIL: single flip should not switch"
-    assert cand == ATTACK and cnt == 1,        f"FAIL candidate tracking: {cand}/{cnt}"
-    print("_next_debounced_strategy single flip     ... OK  (held NORMAL, candidate ATTACK 1/2)")
+    assert active == ATTACK and switched,      f"FAIL: single flip must switch immediately: {active}"
+    assert cand is None and cnt == 0,          f"FAIL: candidate should reset after switch: {cand}/{cnt}"
+    print("_next_debounced_strategy single flip      ... OK  (switched immediately to ATTACK)")
 
-    # same proposal again → confirms and switches
-    active, cand, cnt, switched = _next_debounced_strategy(NORMAL, cand, cnt, ATTACK)
-    assert active == ATTACK and switched,      f"FAIL: 2nd confirm should switch: {active}"
-    assert cand is None and cnt == 0,          "FAIL: candidate should reset after switch"
-    print("_next_debounced_strategy confirmed flip  ... OK  (switched to ATTACK)")
+    # a second, different proposal switches again just as fast — no stale
+    # state from the previous switch lingers.
+    active, cand, cnt, switched = _next_debounced_strategy(active, cand, cnt, DEFEND)
+    assert active == DEFEND and switched,      f"FAIL: back-to-back flip must also switch immediately: {active}"
+    print("_next_debounced_strategy back-to-back flip ... OK  (switched immediately to DEFEND)")
 
     # proposal matching the ALREADY-active strategy → no-op, clears any candidate
     active, cand, cnt, switched = _next_debounced_strategy(NORMAL, DEFEND, 1, NORMAL)
     assert active == NORMAL and not switched,  "FAIL: re-confirm of active should be a no-op"
     assert cand is None and cnt == 0,          "FAIL: stale candidate should be cleared"
-    print("_next_debounced_strategy re-confirm      ... OK  (no-op, candidate cleared)")
-
-    # candidate changes mid-flight → count resets to 1 for the new candidate
-    active, cand, cnt, switched = _next_debounced_strategy(NORMAL, ATTACK, 1, DEFEND)
-    assert active == NORMAL and not switched,  "FAIL: switched candidate should not switch yet"
-    assert cand == DEFEND and cnt == 1,        f"FAIL: candidate should reset to new value: {cand}/{cnt}"
-    print("_next_debounced_strategy candidate swap  ... OK  (restarted count for DEFEND)")
+    print("_next_debounced_strategy re-confirm       ... OK  (no-op, candidate cleared)")
 
     # ---- Step 6: _build_strategy_prompt ------------------------------------
     sample_state = {

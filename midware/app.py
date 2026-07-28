@@ -43,7 +43,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="TORCS AI middleware")
     parser.add_argument("--ui", choices=["text", "voice"], default="text")
     args = parser.parse_args()
-    runtime.UI_FILE = "index2.html" if args.ui == "voice" else "index.html"
+    runtime.UI_FILE = "index2.html" if args.ui == "voice" else "dashboard.html"
     uvicorn.run(app, host="0.0.0.0", port=config.MIDWARE_PORT, reload=False)
 
 
