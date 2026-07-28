@@ -955,7 +955,10 @@ async def ask_engineer(body: dict):
             temperature=0.4,
             max_tokens=180,
             stream=False,
-            timeout=45,
+            # 45s was too tight for this local model with the full
+            # telemetry-context prompt, especially while TORCS is also
+            # competing for GPU/CPU -- bumped to give it more headroom.
+            timeout=90,
             request_id=request_id,
         )
     except Exception as exc:

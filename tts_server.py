@@ -31,6 +31,7 @@ import numpy as np
 import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -90,6 +91,16 @@ def load_model():
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Kokoro TTS Server")
+
+# The dashboard (served from the midware process on a different port) calls
+# this endpoint directly from the browser for the Engineer tab's TTS, so it
+# needs CORS -- server-to-server calls from midware itself aren't affected.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["POST", "GET"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

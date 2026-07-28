@@ -557,6 +557,23 @@
       </div>
       <div class="stack">
         <div class="panel panel-pad">
+          <details>
+            <summary class="section-title" style="cursor:pointer">Model connection</summary>
+            <div class="field" style="margin-top:12px"><label>Base URL</label><input type="text" id="enBaseUrl" placeholder="http://127.0.0.1:1234/v1"></div>
+            <div class="field"><label>API key</label><input type="password" id="enApiKey" placeholder="lm-studio"></div>
+            <div class="field"><label>Model</label><input type="text" id="enModel" placeholder="granite-4.1-8b"></div>
+            <div class="field">
+              <label>Temperature: <span id="enTemperatureValue">0.80</span></label>
+              <input type="range" id="enTemperature" min="0" max="2" step="0.05" value="0.8">
+            </div>
+            <div class="field" style="display:flex;grid-template-columns:auto 1fr;align-items:center;">
+              <input type="checkbox" id="enStream" checked>
+              <label for="enStream" style="margin:0;text-transform:none;letter-spacing:0;">Streaming output</label>
+            </div>
+            <button id="enSaveModelBtn" class="secondary" style="width:100%">Save connection</button>
+          </details>
+        </div>
+        <div class="panel panel-pad">
           <div class="section-title">Conversation</div>
           <button class="secondary" id="engClearBtn" style="width:100%">Clear history</button>
           <div id="engStats" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">-- / -- tokens</div>
@@ -564,6 +581,52 @@
         <div class="panel panel-pad">
           <div class="section-title">Voice input</div>
           <div id="engVoiceNote" style="color:var(--text-faint);font-size:0.8rem;">Checking microphone…</div>
+        </div>
+        <div class="panel panel-pad">
+          <details>
+            <summary class="section-title" style="cursor:pointer">Voice / TTS</summary>
+            <input type="checkbox" id="enTtsEnabled" hidden>
+            <div class="field" style="margin-top:12px;">
+              <label>Voice model</label>
+              <select id="enTtsProvider">
+                <option value="browser">Browser speech</option>
+                <option value="kokoro">Kokoro TTS</option>
+                <option value="custom_http">Custom HTTP</option>
+                <option value="off">Off</option>
+              </select>
+            </div>
+            <div class="tts-panel" id="enBrowserTtsPanel">
+              <div class="field"><label>Browser voice</label><select id="enBrowserVoice"><option value="">System default</option></select></div>
+              <div class="row-inline">
+                <div class="field"><label>Speed</label><input type="number" id="enBrowserRate" min="0.5" max="2" step="0.1" value="1.1"></div>
+                <div class="field"><label>Pitch</label><input type="number" id="enBrowserPitch" min="0.5" max="2" step="0.1" value="1"></div>
+                <div class="field"><label>Volume</label><input type="number" id="enBrowserVolume" min="0" max="1" step="0.05" value="1"></div>
+              </div>
+              <button id="enTestVoiceBtn" class="secondary" style="width:100%">Test browser voice</button>
+            </div>
+            <div class="tts-panel" id="enKokoroTtsPanel" hidden>
+              <div class="field"><label>Server URL</label><input type="text" id="enTtsUrl" placeholder="http://localhost:8881/tts"></div>
+              <div class="field"><label>Voice</label><select id="enTtsVoice"><option value="af_heart">af_heart — American female</option><option value="bm_lewis">bm_lewis — British male broadcaster</option><option value="bm_george">bm_george — British male</option><option value="af_bella">af_bella — American female bright</option><option value="am_adam">am_adam — American male</option><option value="am_michael">am_michael — American male deep</option></select></div>
+              <div class="row-inline">
+                <div class="field"><label>Speed</label><input type="number" id="enTtsSpeed" min="0.5" max="2" step="0.1" value="1.2"></div>
+                <div class="field"><label>Volume</label><input type="number" id="enTtsVolume" min="0" max="4" step="0.05" value="1"></div>
+              </div>
+            </div>
+            <div class="tts-panel" id="enCustomTtsPanel" hidden>
+              <div class="field"><label>Server URL</label><input type="text" id="enCustomTtsUrl"></div>
+              <div class="field"><label>API key</label><input type="password" id="enTtsApiKey"></div>
+              <div class="row-inline"><div class="field"><label>Model</label><input type="text" id="enTtsModel"></div><div class="field"><label>Voice</label><input type="text" id="enCustomTtsVoice"></div></div>
+              <div class="row-inline"><div class="field"><label>Speed</label><input type="number" id="enCustomTtsSpeed" min="0.5" max="2" step="0.1"></div><div class="field"><label>Volume</label><input type="number" id="enCustomTtsVolume" min="0" max="4" step="0.05"></div></div>
+              <div class="row-inline">
+                <div class="field"><label>Response format</label><select id="enTtsResponseFormat"><option value="audio_bytes">Audio bytes</option><option value="json_base64">JSON base64</option></select></div>
+                <div class="field"><label>Audio field</label><input type="text" id="enTtsAudioField" value="audio"></div>
+              </div>
+              <div class="field"><label>MIME type</label><input type="text" id="enTtsMime" value="audio/wav"></div>
+              <div class="field"><label>JSON body template</label><textarea id="enTtsTemplate" rows="5" placeholder='{"text":"{text}","voice":"{voice}"}'></textarea></div>
+            </div>
+            <button id="enSaveTtsBtn" class="secondary" style="width:100%;margin-top:4px;">Save TTS config</button>
+            <div class="playback-strip" id="enPlaybackStatus" style="margin-top:8px;">Voice idle.</div>
+          </details>
         </div>
       </div>
     </div>
@@ -992,8 +1055,10 @@ function cmSetNote(text, ok) {
   el._timer = setTimeout(() => { el.textContent = ""; el.className = "inline-note"; }, 3500);
 }
 function cmSetPlaybackStatus(text, state = "") {
-  $("cmPlaybackStatus").textContent = text;
-  $("cmPlaybackStatus").className = "playback-strip" + (state ? ` ${state}` : "");
+  ["cmPlaybackStatus", "enPlaybackStatus"].forEach(id => {
+    $(id).textContent = text;
+    $(id).className = "playback-strip" + (state ? ` ${state}` : "");
+  });
 }
 function cmMessageIsCurrent(msg) {
   return !msg.request_id || !State.cmCurrentRequestId || msg.request_id === State.cmCurrentRequestId;
@@ -1067,27 +1132,34 @@ $("cmApplyBtn").addEventListener("click", async () => {
   flashButton($("cmApplyBtn"), ok);
 });
 
-$("cmSaveModelBtn").addEventListener("click", async () => {
-  let ok = false;
-  try {
-    const r = await fetch("/api/config/api", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        base_url: $("cmBaseUrl").value,
-        api_key: $("cmApiKey").value,
-        model: $("cmModel").value,
-        temperature: parseFloat($("cmTemperature").value),
-        stream: $("cmStream").checked,
-      }),
-    });
-    ok = r.ok;
-  } catch (e) { ok = false; }
-  flashButton($("cmSaveModelBtn"), ok);
-});
-
-$("cmTemperature").addEventListener("input", () => {
-  $("cmTemperatureValue").textContent = Number($("cmTemperature").value).toFixed(2);
-});
+/* Model connection panel is duplicated on the Commentary ("cm") and
+   Engineer ("en") tabs -- both write the same global api_config, so both
+   copies are wired generically off an id prefix instead of forking the
+   handler per tab. */
+function bindModelConnectionPanel(prefix) {
+  $(prefix + "SaveModelBtn").addEventListener("click", async () => {
+    let ok = false;
+    try {
+      const r = await fetch("/api/config/api", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base_url: $(prefix + "BaseUrl").value,
+          api_key: $(prefix + "ApiKey").value,
+          model: $(prefix + "Model").value,
+          temperature: parseFloat($(prefix + "Temperature").value),
+          stream: $(prefix + "Stream").checked,
+        }),
+      });
+      ok = r.ok;
+    } catch (e) { ok = false; }
+    flashButton($(prefix + "SaveModelBtn"), ok);
+    if (ok) cmLoadConfig();
+  });
+  $(prefix + "Temperature").addEventListener("input", () => {
+    $(prefix + "TemperatureValue").textContent = Number($(prefix + "Temperature").value).toFixed(2);
+  });
+}
+["cm", "en"].forEach(bindModelConnectionPanel);
 
 $("cmClearBtn").addEventListener("click", async () => {
   let ok = false;
@@ -1151,11 +1223,13 @@ async function cmLoadConfig() {
   try {
     const r = await fetch("/api/config", { cache: "no-store" });
     const cfg = await r.json();
-    $("cmBaseUrl").value = cfg.api?.base_url || "";
-    $("cmModel").value = cfg.api?.model || "";
-    $("cmTemperature").value = cfg.api?.temperature ?? 0.8;
-    $("cmTemperatureValue").textContent = Number(cfg.api?.temperature ?? 0.8).toFixed(2);
-    $("cmStream").checked = cfg.api?.stream !== false;
+    ["cm", "en"].forEach(p => {
+      $(p + "BaseUrl").value = cfg.api?.base_url || "";
+      $(p + "Model").value = cfg.api?.model || "";
+      $(p + "Temperature").value = cfg.api?.temperature ?? 0.8;
+      $(p + "TemperatureValue").textContent = Number(cfg.api?.temperature ?? 0.8).toFixed(2);
+      $(p + "Stream").checked = cfg.api?.stream !== false;
+    });
     const ctx = cfg.context || {};
     $("cmContextTokens").value = ctx.max_context_tokens ?? 4096;
     $("cmResponseTokens").value = ctx.max_response_tokens ?? 512;
@@ -1171,81 +1245,92 @@ async function cmLoadConfig() {
       $("cmWindow").value = cfg.commentary.window_seconds ?? 6;
       $("cmCooldown").value = cfg.commentary.event_cooldown ?? 1;
     }
-    cmLoadTtsConfig(cfg.tts || {});
+    ["cm", "en"].forEach(p => cmLoadTtsConfig(cfg.tts || {}, p));
   } catch (e) { console.warn("cmLoadConfig failed", e); }
+}
+
+function cmPopulateVoiceSelect(selectId) {
+  const select = $(selectId);
+  const selected = select.value;
+  select.innerHTML = '<option value="">System default</option>';
+  const groups = [
+    ["English", State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => x.voice.lang.startsWith("en"))],
+    ["Chinese", State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => x.voice.lang.startsWith("zh"))],
+    ["Other", State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => !/^(en|zh)/.test(x.voice.lang))],
+  ];
+  groups.forEach(([label, entries]) => {
+    if (!entries.length) return;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    entries.forEach(({ voice, index }) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = `${voice.name} (${voice.lang})`;
+      group.appendChild(option);
+    });
+    select.appendChild(group);
+  });
+  if (selected !== "" && State.cmVoices[Number(selected)]) {
+    select.value = selected;
+  } else {
+    const english = State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => x.voice.lang.startsWith("en"));
+    if (english.length) select.value = String((english[1] || english[0]).index);
+  }
 }
 
 function cmInitVoices() {
   if (!("speechSynthesis" in window)) {
-    $("cmBrowserVoice").innerHTML = '<option value="">Browser speech unavailable</option>';
+    ["cmBrowserVoice", "enBrowserVoice"].forEach(id => {
+      $(id).innerHTML = '<option value="">Browser speech unavailable</option>';
+    });
     return;
   }
   const load = () => {
     State.cmVoices = speechSynthesis.getVoices();
-    const selected = $("cmBrowserVoice").value;
-    $("cmBrowserVoice").innerHTML = '<option value="">System default</option>';
-    const groups = [
-      ["English", State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => x.voice.lang.startsWith("en"))],
-      ["Chinese", State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => x.voice.lang.startsWith("zh"))],
-      ["Other", State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => !/^(en|zh)/.test(x.voice.lang))],
-    ];
-    groups.forEach(([label, entries]) => {
-      if (!entries.length) return;
-      const group = document.createElement("optgroup");
-      group.label = label;
-      entries.forEach(({ voice, index }) => {
-        const option = document.createElement("option");
-        option.value = String(index);
-        option.textContent = `${voice.name} (${voice.lang})`;
-        group.appendChild(option);
-      });
-      $("cmBrowserVoice").appendChild(group);
-    });
-    if (selected !== "" && State.cmVoices[Number(selected)]) {
-      $("cmBrowserVoice").value = selected;
-    } else {
-      const english = State.cmVoices.map((voice, index) => ({ voice, index })).filter(x => x.voice.lang.startsWith("en"));
-      if (english.length) $("cmBrowserVoice").value = String((english[1] || english[0]).index);
-    }
+    ["cmBrowserVoice", "enBrowserVoice"].forEach(cmPopulateVoiceSelect);
   };
   speechSynthesis.onvoiceschanged = load;
   load();
 }
 
-function cmTtsProvider() {
-  return $("cmTtsProvider").value || "browser";
+/* Voice/TTS panel is duplicated on the Commentary ("cm") and Engineer
+   ("en") tabs, same reasoning as bindModelConnectionPanel above: one
+   shared backend config (/api/config/tts), two id-prefixed copies of the
+   UI. */
+function cmTtsProvider(prefix = "cm") {
+  return $(prefix + "TtsProvider").value || "browser";
 }
 
-function cmUpdateTtsUi() {
-  const provider = cmTtsProvider();
-  $("cmBrowserTtsPanel").hidden = provider !== "browser";
-  $("cmKokoroTtsPanel").hidden = provider !== "kokoro";
-  $("cmCustomTtsPanel").hidden = provider !== "custom_http";
-  $("cmTtsEnabled").checked = provider === "kokoro" || provider === "custom_http";
+function cmUpdateTtsUi(prefix = "cm") {
+  const provider = cmTtsProvider(prefix);
+  $(prefix + "BrowserTtsPanel").hidden = provider !== "browser";
+  $(prefix + "KokoroTtsPanel").hidden = provider !== "kokoro";
+  $(prefix + "CustomTtsPanel").hidden = provider !== "custom_http";
+  $(prefix + "TtsEnabled").checked = provider === "kokoro" || provider === "custom_http";
   localStorage.setItem("torcs-tts-model", provider);
 }
 
-function cmLoadTtsConfig(tts) {
+function cmLoadTtsConfig(tts, prefix = "cm") {
   const saved = localStorage.getItem("torcs-tts-model") || localStorage.getItem("torcs-dashboard-tts-provider");
   const backendProvider = tts.provider || "kokoro";
-  $("cmTtsProvider").value = tts.enabled ? backendProvider : (saved === "off" ? "off" : "browser");
-  $("cmTtsEnabled").checked = !!tts.enabled;
-  $("cmTtsUrl").value = backendProvider === "kokoro" && tts.url ? tts.url : "http://localhost:8881/tts";
-  $("cmTtsVoice").value = backendProvider === "kokoro" && tts.voice ? tts.voice : "af_heart";
-  $("cmTtsSpeed").value = backendProvider === "kokoro" && tts.speed != null ? tts.speed : 1.2;
-  $("cmTtsVolume").value = backendProvider === "kokoro" && tts.volume != null ? tts.volume : 1;
+  $(prefix + "TtsProvider").value = tts.enabled ? backendProvider : (saved === "off" ? "off" : "browser");
+  $(prefix + "TtsEnabled").checked = !!tts.enabled;
+  $(prefix + "TtsUrl").value = backendProvider === "kokoro" && tts.url ? tts.url : "http://localhost:8881/tts";
+  $(prefix + "TtsVoice").value = backendProvider === "kokoro" && tts.voice ? tts.voice : "af_heart";
+  $(prefix + "TtsSpeed").value = backendProvider === "kokoro" && tts.speed != null ? tts.speed : 1.2;
+  $(prefix + "TtsVolume").value = backendProvider === "kokoro" && tts.volume != null ? tts.volume : 1;
   const custom = backendProvider === "custom_http";
-  $("cmCustomTtsUrl").value = custom ? (tts.url || "") : "";
-  $("cmTtsApiKey").value = custom && tts.api_key && tts.api_key !== "***" ? tts.api_key : "";
-  $("cmTtsModel").value = custom ? (tts.model || "") : "";
-  $("cmCustomTtsVoice").value = custom ? (tts.voice || "") : "";
-  $("cmCustomTtsSpeed").value = custom && tts.speed != null ? tts.speed : "";
-  $("cmCustomTtsVolume").value = custom && tts.volume != null ? tts.volume : "";
-  $("cmTtsResponseFormat").value = custom ? (tts.response_format || "audio_bytes") : "audio_bytes";
-  $("cmTtsAudioField").value = custom ? (tts.response_audio_field || "audio") : "audio";
-  $("cmTtsMime").value = custom ? (tts.mime || "audio/wav") : "audio/wav";
-  $("cmTtsTemplate").value = custom ? (tts.request_template || "") : "";
-  cmUpdateTtsUi();
+  $(prefix + "CustomTtsUrl").value = custom ? (tts.url || "") : "";
+  $(prefix + "TtsApiKey").value = custom && tts.api_key && tts.api_key !== "***" ? tts.api_key : "";
+  $(prefix + "TtsModel").value = custom ? (tts.model || "") : "";
+  $(prefix + "CustomTtsVoice").value = custom ? (tts.voice || "") : "";
+  $(prefix + "CustomTtsSpeed").value = custom && tts.speed != null ? tts.speed : "";
+  $(prefix + "CustomTtsVolume").value = custom && tts.volume != null ? tts.volume : "";
+  $(prefix + "TtsResponseFormat").value = custom ? (tts.response_format || "audio_bytes") : "audio_bytes";
+  $(prefix + "TtsAudioField").value = custom ? (tts.response_audio_field || "audio") : "audio";
+  $(prefix + "TtsMime").value = custom ? (tts.mime || "audio/wav") : "audio/wav";
+  $(prefix + "TtsTemplate").value = custom ? (tts.request_template || "") : "";
+  cmUpdateTtsUi(prefix);
 }
 
 function cmStopAudio() {
@@ -1285,17 +1370,18 @@ function cmSpeakNextSentence() {
     State.cmSentenceTimer = setTimeout(cmSpeakNextSentence, cmEstimateReadMs(text));
     return;
   }
+  const prefix = State.cmSpeakPrefix || "cm";
   const utterance = new SpeechSynthesisUtterance(text);
-  const voiceIndex = parseInt($("cmBrowserVoice").value);
+  const voiceIndex = parseInt($(prefix + "BrowserVoice").value);
   if (Number.isInteger(voiceIndex) && State.cmVoices[voiceIndex]) {
     utterance.voice = State.cmVoices[voiceIndex];
     utterance.lang = utterance.voice.lang;
   } else {
     utterance.lang = "en-US";
   }
-  utterance.rate = parseFloat($("cmBrowserRate").value) || 1;
-  utterance.pitch = parseFloat($("cmBrowserPitch").value) || 1;
-  utterance.volume = Math.max(0, Math.min(1, parseFloat($("cmBrowserVolume").value) || 0));
+  utterance.rate = parseFloat($(prefix + "BrowserRate").value) || 1;
+  utterance.pitch = parseFloat($(prefix + "BrowserPitch").value) || 1;
+  utterance.volume = Math.max(0, Math.min(1, parseFloat($(prefix + "BrowserVolume").value) || 0));
   utterance.onend = cmSpeakNextSentence;
   utterance.onerror = event => {
     if (event.error === "canceled" || event.error === "interrupted") return;
@@ -1304,16 +1390,20 @@ function cmSpeakNextSentence() {
   speechSynthesis.speak(utterance);
 }
 
-function cmSpeakBrowser(text) {
+function cmSpeakBrowser(text, prefix = "cm") {
   cmStopAudio();
+  State.cmSpeakPrefix = prefix;
   State.cmSentenceQueue = cmSplitSentences(text);
   cmSpeakNextSentence();
 }
 
 function cmHandleSpeech(text) {
-  const provider = cmTtsProvider();
+  // Live commentary auto-narration always uses the Commentary tab's voice
+  // settings -- Engineer answers are not auto-spoken (see the ai_done
+  // dispatch above), so "en" only comes from that tab's own Test button.
+  const provider = cmTtsProvider("cm");
   if (provider === "browser") {
-    cmSpeakBrowser(text);
+    cmSpeakBrowser(text, "cm");
   } else if (provider === "kokoro" || provider === "custom_http") {
     State.cmPlaybackText = text;
     cmSetPlaybackStatus(text, "loading");
@@ -1351,22 +1441,26 @@ function cmPlayTtsAudio(base64, mime = "audio/wav") {
   }
 }
 
-$("cmTtsProvider").addEventListener("change", async () => {
-  cmStopAudio();
-  cmUpdateTtsUi();
-  cmSetPlaybackStatus("Updating voice provider…", "loading");
-  await cmSaveTtsConfig(true);
-});
-$("cmTestVoiceBtn").addEventListener("click", () => {
-  cmStopAudio();
-  cmSpeakBrowser("Testing voice. Everything is working correctly.");
-});
-async function cmSaveTtsConfig(showFlash = true) {
-  const provider = cmTtsProvider();
+function bindTtsPanel(prefix) {
+  $(prefix + "TtsProvider").addEventListener("change", async () => {
+    cmStopAudio();
+    cmUpdateTtsUi(prefix);
+    cmSetPlaybackStatus("Updating voice provider…", "loading");
+    await cmSaveTtsConfig(prefix, true);
+  });
+  $(prefix + "TestVoiceBtn").addEventListener("click", () => {
+    cmStopAudio();
+    cmSpeakBrowser("Testing voice. Everything is working correctly.", prefix);
+  });
+  $(prefix + "SaveTtsBtn").addEventListener("click", () => cmSaveTtsConfig(prefix, true));
+}
+
+async function cmSaveTtsConfig(prefix = "cm", showFlash = true) {
+  const provider = cmTtsProvider(prefix);
   const custom = provider === "custom_http";
   const enabled = provider === "kokoro" || custom;
-  const customSpeed = parseFloat($("cmCustomTtsSpeed").value);
-  const customVolume = parseFloat($("cmCustomTtsVolume").value);
+  const customSpeed = parseFloat($(prefix + "CustomTtsSpeed").value);
+  const customVolume = parseFloat($(prefix + "CustomTtsVolume").value);
   let ok = false;
   try {
     const r = await fetch("/api/config/tts", {
@@ -1374,27 +1468,36 @@ async function cmSaveTtsConfig(showFlash = true) {
       body: JSON.stringify({
         enabled,
         provider,
-        url: custom ? $("cmCustomTtsUrl").value.trim() : $("cmTtsUrl").value.trim(),
-        api_key: custom ? $("cmTtsApiKey").value : "",
-        model: custom ? $("cmTtsModel").value.trim() : "",
-        voice: custom ? $("cmCustomTtsVoice").value.trim() : $("cmTtsVoice").value,
-        speed: custom ? (Number.isFinite(customSpeed) ? customSpeed : null) : parseFloat($("cmTtsSpeed").value),
-        volume: custom ? (Number.isFinite(customVolume) ? customVolume : null) : parseFloat($("cmTtsVolume").value),
-        response_format: custom ? $("cmTtsResponseFormat").value : "audio_bytes",
-        response_audio_field: custom ? $("cmTtsAudioField").value.trim() : "audio",
-        mime: custom ? $("cmTtsMime").value.trim() : "audio/wav",
-        request_template: custom ? $("cmTtsTemplate").value : "",
+        url: custom ? $(prefix + "CustomTtsUrl").value.trim() : $(prefix + "TtsUrl").value.trim(),
+        api_key: custom ? $(prefix + "TtsApiKey").value : "",
+        model: custom ? $(prefix + "TtsModel").value.trim() : "",
+        voice: custom ? $(prefix + "CustomTtsVoice").value.trim() : $(prefix + "TtsVoice").value,
+        speed: custom ? (Number.isFinite(customSpeed) ? customSpeed : null) : parseFloat($(prefix + "TtsSpeed").value),
+        volume: custom ? (Number.isFinite(customVolume) ? customVolume : null) : parseFloat($(prefix + "TtsVolume").value),
+        response_format: custom ? $(prefix + "TtsResponseFormat").value : "audio_bytes",
+        response_audio_field: custom ? $(prefix + "TtsAudioField").value.trim() : "audio",
+        mime: custom ? $(prefix + "TtsMime").value.trim() : "audio/wav",
+        request_template: custom ? $(prefix + "TtsTemplate").value : "",
       }),
     });
     ok = r.ok;
   } catch (e) { ok = false; }
-  if (showFlash) flashButton($("cmSaveTtsBtn"), ok);
+  if (showFlash) flashButton($(prefix + "SaveTtsBtn"), ok);
   if (!ok) cmSetPlaybackStatus("Failed to update the TTS configuration.", "error");
   else if (provider === "off") cmSetPlaybackStatus("Voice off.");
   else cmSetPlaybackStatus(`${provider === "browser" ? "Browser speech" : provider === "kokoro" ? "Kokoro TTS" : "Custom TTS"} selected.`);
+  // The other tab's copy of this panel needs to reflect the same change.
+  if (ok) {
+    const other = prefix === "cm" ? "en" : "cm";
+    try {
+      const r2 = await fetch("/api/config", { cache: "no-store" });
+      const cfg = await r2.json();
+      cmLoadTtsConfig(cfg.tts || {}, other);
+    } catch (e) { /* best effort */ }
+  }
   return ok;
 }
-$("cmSaveTtsBtn").addEventListener("click", () => cmSaveTtsConfig(true));
+["cm", "en"].forEach(bindTtsPanel);
 
 $("cmLoadCsvBtn").addEventListener("click", async () => {
   const path = $("cmCsvPath").value.trim();
@@ -1493,12 +1596,62 @@ $("engSendBtn").addEventListener("click", async () => {
     const data = await r.json().catch(() => ({}));
     if (r.ok && data.answer != null) {
       engOnDone(data.answer);
+      // Browser speech and Kokoro are wired here; both are self-contained
+      // (client-side synthesis, or a direct browser->tts_server.py call --
+      // see enSpeakKokoro below). Custom HTTP TTS is not wired since its
+      // request/response shape is user-defined and would need the same
+      // per-field handling as the Commentary tab's cmSaveTtsConfig.
+      const enProvider = cmTtsProvider("en");
+      if (enProvider === "browser") cmSpeakBrowser(data.answer, "en");
+      else if (enProvider === "kokoro") enSpeakKokoro(data.answer);
     } else {
       engOnError(data.error || `HTTP ${r.status}`);
     }
   } catch (e) { engOnError(e.message); }
   $("engSendBtn").disabled = false;
 });
+
+/* Kokoro playback for Engineer answers. Commentary's Kokoro audio arrives
+   via a server-generated "tts_audio" WS broadcast that's filtered to
+   source !== "engineer" -- rather than touch that shared backend dispatch,
+   this calls the Kokoro server directly from the browser (needs CORS on
+   tts_server.py, added separately) and plays the WAV response locally.
+   Custom HTTP TTS is not wired here -- only Kokoro's fixed request/response
+   shape is supported by this direct call. */
+async function enSpeakKokoro(text) {
+  const url = $("enTtsUrl").value.trim();
+  if (!url) return;
+  cmStopAudio();
+  cmSetPlaybackStatus(text, "loading");
+  try {
+    const r = await fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        voice: $("enTtsVoice").value,
+        speed: parseFloat($("enTtsSpeed").value) || 1.2,
+        volume: parseFloat($("enTtsVolume").value) || 1,
+      }),
+    });
+    if (!r.ok) throw new Error(`TTS HTTP ${r.status}`);
+    const buf = await r.arrayBuffer();
+    const blobUrl = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+    const audio = new Audio(blobUrl);
+    audio._objectUrl = blobUrl;
+    audio.onplay = () => cmSetPlaybackStatus(text, "playing");
+    audio.onended = () => {
+      URL.revokeObjectURL(blobUrl);
+      if (State.cmAudio === audio) State.cmAudio = null;
+      cmSetPlaybackStatus(text);
+    };
+    audio.onerror = () => cmSetPlaybackStatus("Engineer TTS audio could not be played.", "error");
+    State.cmAudio = audio;
+    await audio.play();
+  } catch (e) {
+    console.warn("Engineer Kokoro TTS failed", e);
+    cmSetPlaybackStatus(`Engineer TTS failed: ${e.message}`, "error");
+  }
+}
 
 $("engQuestion").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); $("engSendBtn").click(); }
