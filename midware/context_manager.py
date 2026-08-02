@@ -7,7 +7,6 @@ SillyTavern 的核心思路：
   3. 格式化时按选定的 Chat Template（ChatML / Instruct / Raw）拼装
 """
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Literal
@@ -57,6 +56,63 @@ ENGINEER_PERSONA = (
     "nothing to do with the car, the race, or the data provided, deprioritize it -- answer it last and "
     "briefly, or skip it if it doesn't matter. Never pad, ramble, or repeat yourself. Always answer in English."
 )
+
+
+# ---------------------------------------------------------------------------
+# 事件解说：字段展示标签（把 payload 渲染成 '### Field: Value' 而不是 JSON）
+# ---------------------------------------------------------------------------
+
+_EVENT_FIELD_LABELS: dict[str, str] = {
+    "event_type": "Event",
+    "event_reason": "Reason",
+    "event_time": "Time",
+    "race_pos": "Position",
+    "lap": "Lap",
+    "gear": "Gear",
+    "track_pos": "Track offset",
+    "fuel_remaining": "Fuel remaining",
+    "total_damage": "Total damage",
+    "damage_delta": "Damage this event",
+    "speed_delta": "Speed change",
+    "last_lap_time": "Last lap time",
+    "front_gap": "Gap ahead",
+    "rear_gap": "Gap behind",
+    "nearest_gap": "Nearest gap",
+    "direction": "Direction",
+    "new_pos": "New position",
+    "side": "Side",
+    "completed_lap": "Completed lap",
+    "collision_direction": "Collision direction",
+    "collision_partner": "Collision partner",
+    "rankings": "Rankings",
+}
+
+# 内部记账字段，不是"事件数据"，不渲染进 prompt 正文
+_EVENT_FIELD_SKIP = {"task", "style"}
+
+
+def format_event_fields(payload: dict) -> str:
+    """
+    把事件 payload 渲染成 '### Field: Value' 逐行文本，取代原始 json.dumps。
+    避免大括号/引号/缩进这类 JSON 语法符号浪费 token，也避免本地小模型把
+    JSON 语法本身当成要复述的内容。
+    """
+    lines = []
+    for key, value in payload.items():
+        if key in _EVENT_FIELD_SKIP:
+            continue
+        label = _EVENT_FIELD_LABELS.get(key, key.replace("_", " ").title())
+        if key == "rankings" and isinstance(value, list):
+            value = ", ".join(
+                f"P{r.get('race_pos', '?')} {r.get('car_name', '?')}" for r in value
+            ) or "n/a"
+        elif key == "collision_partner":
+            value = (
+                f"{value.get('car_name', '?')} (P{value.get('race_pos', '?')})"
+                if isinstance(value, dict) else "unknown"
+            )
+        lines.append(f"### {label}: {value}")
+    return "\n".join(lines)
 
 
 def format_car_state(car_state: dict) -> str:
@@ -246,13 +302,14 @@ class ContextManager:
     def format_event_prompt(self, payload: dict) -> str:
         """
         把事件检测引擎生成的结构化 payload 转成 user message。
+        字段用 '### Field: Value' 逐行渲染（见 format_event_fields），
+        而不是原始 json.dumps。
         """
-        payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
         return (
             "React to this race event in one short sentence. "
             "Use \"player\" for the player's car and the given name (e.g. car1) for others — never invent driver names. "
             "Short punchy phrases, ALL CAPS only for shock moments, no raw numbers.\n\n"
-            f"{payload_text}"
+            f"{format_event_fields(payload)}"
         )
 
     def format_engineer_prompt(self, car_state: dict, user_question: str) -> str:
