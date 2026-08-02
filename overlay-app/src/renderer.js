@@ -202,6 +202,14 @@ function handleMessage(message) {
       }
       break;
     case 'ai_done': {
+      if (message.duplicate) {
+        // Backend already decided this text was shown recently and
+        // suppressed it -- discard whatever streamed into pendingText
+        // instead of falling back to it below. Leave the existing caption
+        // on screen rather than blanking it.
+        pendingText = '';
+        break;
+      }
       const finalText = typeof message.content === 'string' && message.content.trim()
         ? message.content.trim()
         : pendingText.trim();

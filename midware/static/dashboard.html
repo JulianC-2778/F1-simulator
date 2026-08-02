@@ -923,6 +923,14 @@ function routeWsMessage(msg) {
       break;
     case "ai_done":
       if (source !== "engineer" && cmMessageIsCurrent(msg)) {
+        if (msg.duplicate) {
+          // Backend suppressed this reply as a near-duplicate of recently
+          // shown text -- don't fall back to the streamed pending buffer,
+          // that buffer *is* the duplicate text.
+          State.cmPendingText = "";
+          cmUpdateStats(msg.stats);
+          break;
+        }
         const content = msg.content || State.cmPendingText;
         cmOnDone(content);
         cmUpdateStats(msg.stats);

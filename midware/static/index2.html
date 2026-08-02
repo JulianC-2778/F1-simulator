@@ -715,6 +715,13 @@ function onMsg(msg) {
 
     case 'ai_done': {
       showLoading(false);
+      if (msg.duplicate) {
+        // Backend suppressed this reply because it's a near-duplicate of
+        // recently shown text -- discard the streamed buffer instead of
+        // displaying/speaking it again.
+        pendingText = '';
+        break;
+      }
       const fullText = pendingText.trim();
       const ttsModel = getTtsModel();
       if (ttsModel === 'kokoro' || ttsModel === 'custom_http') {

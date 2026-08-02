@@ -571,6 +571,16 @@ function handleWsMessage(msg) {
       break;
 
     case 'ai_done':
+      if (msg.duplicate) {
+        // Backend suppressed this reply as a near-duplicate of recently
+        // shown text -- drop the bubble that was streaming it instead of
+        // leaving the repeated text visible in the chat log.
+        if (streamingBubble) {
+          streamingBubble.remove();
+          streamingBubble = null;
+        }
+        break;
+      }
       if (streamingBubble) {
         streamingBubble.classList.remove('streaming');
         streamingBubble = null;

@@ -561,7 +561,12 @@ curl -s '127.0.0.1:8880/api/coach/dashboard?window_seconds=6&history_seconds=16'
 - 事件发生后监听器出现 `[ai_start] source=commentary` → `[ai_done] source=commentary`
 - 解说内容与实际赛况对得上（提到的名次/圈数/事件是真的）
 - **无明显重复**：同一事件不会在 `dedupe_seconds` 内被说第二遍
-- 长度受 `max_words` 约束，不会失控
+- 长度大体不失控（但注意：`max_words` 目前只是存在 `CommentaryConfig` 里的一个
+  配置值，并**没有**被写进真正发给模型的 prompt 正文，也没有任何生成后截断逻辑
+  ——也就是说它对输出长度没有代码层面的强制力，纯粹靠 persona 里"one short
+  sentence"这类措辞和模型自身习惯撑着。若观察到明显超长解说，这是已知缺口，
+  不是这次走查该负责修的回归，详见 `docs/commentary_test_matrix.md` 第 4 节和
+  `evaluation/commentary/scripts/word_count.py` 的实测口径）
 - 空闲时有 baseline 解说（按 `baseline_interval`），但不会淹没事件解说
 
 **失败时查什么**
