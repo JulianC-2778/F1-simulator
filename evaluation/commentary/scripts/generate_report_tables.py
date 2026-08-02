@@ -117,7 +117,7 @@ def build_report(args: argparse.Namespace, banner: str) -> str:
 
     parts.append("## 5.X.6 Limitations\n")
     parts.append(
-        "- Work packages B/C/D require a live TORCS + LM Studio/Granite + Overlay stack; "
+        "- Work packages B/C/D require a live TORCS + LM Studio/Granite + browser dashboard stack; "
         "any section above marked NOT RUN needs that real environment, not more code.\n"
         "- `max_words` is a prompt-level hint only, not enforced in code -- see "
         "docs/commentary_test_matrix.md section 4.\n"

@@ -9,7 +9,7 @@
 The commentary system consists of four sequential stages: telemetry collection → event detection → AI generation → client playback. The loop runs continuously while the game is active.
 
 ```
-TORCS Game → UDP → TelemetryStore → CommentaryEngine → LM Studio → WebSocket → Browser/Overlay
+TORCS Game → UDP → TelemetryStore → CommentaryEngine → LM Studio → WebSocket → Browser dashboard
 ```
 
 ---
@@ -24,7 +24,7 @@ Each frame contains fields such as: `speed_x`, `race_pos`, `lap`, `damage`, `tra
 
 ### Stage 2: Event Detection (every 0.5 s)
 
-`_auto_commentary_loop` in `commentary.py` wakes up every 0.5 seconds and passes the most recent 6-second window of frames to `CommentaryEngine.next_decision()`.
+`_auto_commentary_loop` in `midware/runtime.py` wakes up every 0.5 seconds and passes the most recent 6-second window of frames to `CommentaryEngine.next_decision()`.
 
 `detect_event()` checks for the following candidate events, ranked by priority:
 
@@ -46,7 +46,7 @@ Before emitting, `_can_emit_event()` applies two cooldown checks:
 
 ### Stage 3: Prompt Construction and AI Call
 
-Once an event passes the cooldown checks, `generate_commentary()` in `commentary.py` is called as an async task:
+Once an event passes the cooldown checks, `generate_commentary()` in `midware/runtime.py` is called as an async task:
 
 1. `context_manager.format_event_prompt(payload)` — wraps the structured event data (position, lap, damage, track position, opponent gaps) into a natural-language instruction, injecting the commentator persona as the system prompt.
 2. `ctx_mgr.build_messages()` — assembles the full message list: `[system: persona] + [trimmed history] + [current user message]`, respecting the token budget.
@@ -57,7 +57,7 @@ Once an event passes the cooldown checks, `generate_commentary()` in `commentary
 
 ### Stage 4: Client Playback
 
-The browser (`index2.html`) or Electron overlay handles the WebSocket messages:
+The browser dashboard (`midware/static/dashboard.html`, or `index2.html` in `--ui voice` mode) handles the WebSocket messages:
 
 | Message | Action |
 |---|---|
@@ -96,7 +96,7 @@ The main bottleneck is LM Studio inference time. With Granite 4.1 8B, generation
 解说系统由四个顺序阶段组成：遥测采集 → 事件检测 → AI 生成 → 客户端播放。游戏运行期间循环持续运转。
 
 ```
-TORCS游戏 → UDP → TelemetryStore → CommentaryEngine → LM Studio → WebSocket → 浏览器/Overlay
+TORCS游戏 → UDP → TelemetryStore → CommentaryEngine → LM Studio → WebSocket → 浏览器 dashboard
 ```
 
 ---
@@ -111,7 +111,7 @@ TORCS human 驾驶员模块每帧向 `127.0.0.1:3101` 发送一个 UDP 包。`te
 
 ### 第二阶段：事件检测（每 0.5 秒一次）
 
-`commentary.py` 中的 `_auto_commentary_loop` 每 0.5 秒醒来一次，将最近 6 秒的帧数据传入 `CommentaryEngine.next_decision()`。
+`midware/runtime.py` 中的 `_auto_commentary_loop` 每 0.5 秒醒来一次，将最近 6 秒的帧数据传入 `CommentaryEngine.next_decision()`。
 
 `detect_event()` 检查以下候选事件（按优先级排序）：
 
@@ -133,7 +133,7 @@ TORCS human 驾驶员模块每帧向 `127.0.0.1:3101` 发送一个 UDP 包。`te
 
 ### 第三阶段：构建 Prompt 并调用 AI
 
-事件通过冷却检查后，`commentary.py` 中的 `generate_commentary()` 作为异步任务被调用：
+事件通过冷却检查后，`midware/runtime.py` 中的 `generate_commentary()` 作为异步任务被调用：
 
 1. `context_manager.format_event_prompt(payload)` — 将结构化事件数据（名次、圈数、损伤、赛道位置、对手距离等）包装成自然语言指令，并注入解说员人设作为系统 prompt。
 2. `ctx_mgr.build_messages()` — 组装完整消息列表：`[system: 人设] + [裁剪后的历史对话] + [当前 user 消息]`，控制在 token 预算之内。
@@ -144,7 +144,7 @@ TORCS human 驾驶员模块每帧向 `127.0.0.1:3101` 发送一个 UDP 包。`te
 
 ### 第四阶段：客户端接收与播放
 
-浏览器（`index2.html`）或 Electron Overlay 处理 WebSocket 消息：
+浏览器 dashboard（`midware/static/dashboard.html`，`--ui voice` 模式下为 `index2.html`）处理 WebSocket 消息：
 
 | 消息类型 | 客户端动作 |
 |---|---|

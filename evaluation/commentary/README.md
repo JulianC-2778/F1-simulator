@@ -14,7 +14,7 @@ which kind it is should always be obvious from its name/location:
   dataset used to prove the scripts work end-to-end. **Not a real
   experiment result** -- every report generated from it says so.
 - **real experiment data**: whatever you produce running an actual TORCS +
-  Granite + Overlay session per `docs/commentary_experiment_protocol.md`.
+  Granite + browser dashboard session per `docs/commentary_experiment_protocol.md`.
   Store it under `results/` with a filename that says `real_experiment`,
   not `sample`.
 
@@ -83,7 +83,7 @@ COMMENTARY_LATENCY_LOG=1 COMMENTARY_LATENCY_LOG_PATH=/path/to/latency.jsonl pyth
 
 This produces one JSON line per (request_id, stage). `t0_telemetry_received`
 (already present as each frame's `sim_time`) and `t4_caption_displayed` /
-`t5_tts_started` (Overlay/browser-side, not backend-observable) are **not**
+`t5_tts_started` (browser-side, not backend-observable) are **not**
 captured by this logger -- see `docs/commentary_experiment_protocol.md` for
 how a real work-package-C session fills those two in and reshapes the JSONL
 into the `latency` CSV schema `analyse_latency.py` expects.

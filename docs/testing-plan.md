@@ -53,7 +53,6 @@ pip install -r requirements-core.txt      # 测试只需要 core，voice/tts 是
 python -m compileall -q . -x '(\.venv|BUILD|src|export|data)'
 node --check overlay-app/electron/main.js
 node --check overlay-app/electron/preload.js
-node --check overlay-app/src/renderer.js
 node --check overlay-app/src/engineer-renderer.js
 node --check overlay-app/src/settings.js
 ```
@@ -155,7 +154,7 @@ export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 bash torcs_launcher.sh
 # 4. bot
 python ai_bot.py --bot --granite
-# 5. Overlay
+# 5. Overlay（Feature 1 工程师字幕窗口，可选）
 cd overlay-app && npm install && npm start
 ```
 
@@ -169,9 +168,9 @@ cd overlay-app && npm install && npm start
 | 5.4 | 人类遥测入库 | 人工驾驶时 `/api/telemetry` 的 `seq`/`speedX` 持续变化 |
 | 5.5 | Feature 2 页面 | Coach dashboard 随驾驶更新 |
 | 5.6 | Feature 1 路由 | 工程师提问的回答出现在工程师窗口，不串到解说 |
-| 5.7 | 自动解说 | 事件触发后有解说输出，无明显重复（去重生效） |
-| 5.8 | WebSocket 重连 | 杀掉 midware 再拉起，Overlay 自动恢复 |
-| 5.9 | Overlay 行为 | 无边框/透明/置顶/底部居中；设置窗口可开 |
+| 5.7 | 自动解说 | 浏览器 dashboard 上事件触发后有解说输出，无明显重复（去重生效） |
+| 5.8 | WebSocket 重连 | 杀掉 midware 再拉起，dashboard 和 Overlay 都自动恢复 |
+| 5.9 | Overlay 行为 | 无边框/透明/置顶/顶部居中；设置窗口可开 |
 | 5.10 | TTS 播报 | 设置里开启语音后能听到解说 |
 
 Overlay 的详细人工验收表见 [../overlay-app/TESTING.md](../overlay-app/TESTING.md)。

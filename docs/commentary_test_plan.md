@@ -178,7 +178,7 @@ T + epsilon
 
 1. 将模型替换为固定 fake，使其连续返回完全相同文本；
 2. 触发两个在业务上允许进入生成流程的事件；
-3. 从 Overlay/WebSocket 消费者视角监听完成消息；
+3. 从 dashboard/WebSocket 消费者视角监听完成消息；
 4. 断言重复文本只向用户发送一次。
 
 只检查后台缓存或日志不算通过。如果第二条文本先广播后去重，先写失败测试，再做最小修复。
@@ -305,7 +305,7 @@ Overall 必须采用 micro-average：先汇总所有类别的 TP、FP、FN，再
 - `t1_event_detected`：事件被确认；
 - `t2_first_token`：收到 Granite 第一个 token；
 - `t3_ai_done`：完整模型响应完成；
-- `t4_caption_displayed`：Overlay 确认字幕显示；
+- `t4_caption_displayed`：dashboard 确认字幕显示；
 - `t5_tts_started`：TTS 开始，仅在最终产品启用 TTS 时记录。
 
 同一条链路必须带有稳定的 `session_id`、`event_id` 和 `request_id/correlation_id`，避免用时间接近来错误拼接记录。
@@ -358,7 +358,7 @@ tts_latency             = t5 - t0  # 仅启用 TTS 时
 
 - 正常持续 telemetry；
 - 多次连续事件；
-- 一次 WebSocket/Overlay 断开与恢复；
+- 一次 WebSocket/dashboard 断开与恢复；
 - 一次 Granite/LM Studio 中断与恢复；
 - 一次 telemetry/UDP 中断与恢复；
 - 若最终启用 TTS，再注入一次 TTS 失败。
@@ -391,8 +391,8 @@ successful outputs / commentary requests * 100%
 |---|---|---|
 | RT-01 | Granite unavailable | 报告受控错误，Middleware 继续运行 |
 | RT-02 | Granite restored | 无需重启 Middleware，后续请求恢复 |
-| RT-03 | WebSocket/Overlay disconnect | Middleware 不崩溃 |
-| RT-04 | Overlay reconnect | 能接收新的字幕 |
+| RT-03 | WebSocket/dashboard disconnect | Middleware 不崩溃 |
+| RT-04 | dashboard reconnect | 能接收新的字幕 |
 | RT-05 | Telemetry/UDP interruption | 不生成虚假比赛事件 |
 | RT-06 | Telemetry restored | 继续检测新事件 |
 | RT-07 | Invalid telemetry | 安全丢弃、默认处理或明确报错 |

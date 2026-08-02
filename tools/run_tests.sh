@@ -57,7 +57,6 @@ if want L0; then
     if command -v node > /dev/null 2>&1; then
         run_step "L0 Electron main.js" node --check overlay-app/electron/main.js
         run_step "L0 Electron preload.js" node --check overlay-app/electron/preload.js
-        run_step "L0 renderer.js" node --check overlay-app/src/renderer.js
         run_step "L0 engineer-renderer.js" node --check overlay-app/src/engineer-renderer.js
         run_step "L0 settings.js" node --check overlay-app/src/settings.js
     else

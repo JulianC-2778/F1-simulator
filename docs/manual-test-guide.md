@@ -332,7 +332,7 @@ python launcher_gui.py
 | 分组 | 模块 |
 | --- | --- |
 | TORCS 本体（**两种模式互斥**） | `torcs_human`（人类驾驶，带 UDP 3101 遥测环境变量）/ `torcs_scr`（Bot 模式） |
-| Feature 3 | `midware`（共享中枢，其他都依赖它）/ `overlay_commentary` |
+| Feature 3 | `midware`（共享中枢，其他都依赖它；解说显示在浏览器 dashboard，不再需要 Overlay） |
 | Feature 1 | `engineer_gui` / `overlay_engineer` |
 | Feature 2 | `feature2` |
 | Feature 4 | `ai_bot` |
@@ -356,7 +356,7 @@ TORCS_PLAYER_UDP_HOST=127.0.0.1 TORCS_PLAYER_UDP_PORT=3101 \
 # T3 Bot（仅 Bot 模式）
 cd ~/projects/for_summer_project && python ai_bot.py --bot --granite
 
-# T4 Overlay
+# T4 Overlay（Feature 1 工程师字幕窗口，可选；解说在浏览器 dashboard 里看）
 cd ~/summer-project/F1-simulator/overlay-app && npm start
 
 # T5 WebSocket 监听器（0.4 节）
@@ -524,7 +524,7 @@ curl -s '127.0.0.1:8880/api/coach/dashboard?window_seconds=6&history_seconds=16'
   [ai_done]  source=engineer <英文回答>
   ```
   `source` 必须是 `engineer`，**不是** `commentary`
-- 回答出现在工程师窗口里，**解说 Overlay 的字幕不受影响**
+- 回答出现在工程师窗口里，**浏览器 dashboard 上的解说字幕不受影响**
 - `curl -s 127.0.0.1:8880/api/engineer/history` 里 `messages` 条数增加
 - 回答内容和当前车况相关（提到速度/挡位/轮胎等实际遥测），不是泛泛而谈——
   说明 `car_state` 真的注入了 prompt
@@ -580,7 +580,27 @@ curl -s '127.0.0.1:8880/api/coach/dashboard?window_seconds=6&history_seconds=16'
 
 ### 5.8 WebSocket 断线重连
 
-**操作**
+解说（浏览器 dashboard）和工程师字幕（Electron Overlay）是两个独立的 WebSocket
+客户端，分别验证。
+
+**操作 — dashboard（解说）**
+
+```bash
+# dashboard 打开且正常显示解说时
+pkill -f 'midware.app'
+# 等 10 秒，观察 dashboard
+cd ~/summer-project/F1-simulator && source .venv/bin/activate && python -m midware.app
+# 再等 10 秒
+```
+
+**判定标准**
+
+- midware 停掉后，dashboard 的 Commentary 标签页在几秒内显示断线状态
+- dashboard **不崩溃、不弹错误框**，持续自动重试
+- midware 恢复后，dashboard 自动变回 `Waiting for commentary...`，**无需手动刷新页面**
+- 恢复后新解说能正常显示
+
+**操作 — Overlay（工程师，可选）**
 
 ```bash
 # Overlay 正常显示字幕时
@@ -594,15 +614,15 @@ cd ~/summer-project/F1-simulator && source .venv/bin/activate && python -m midwa
 
 - midware 停掉后，Overlay 在 3 秒内显示 `Connection lost`
 - Overlay **不崩溃、不弹错误框**，持续每 3 秒重试
-- midware 恢复后，Overlay 自动变回 `Waiting for commentary...`，**无需手动重启 Overlay**
-- 恢复后新解说能正常显示
+- midware 恢复后，Overlay 自动变回 `Waiting for engineer reply...`，**无需手动重启 Overlay**
 - `curl -s 127.0.0.1:8880/api/health | ... ['overlay']['ws_clients']` 恢复为 ≥ 1
-
-同样的方式测工程师 Overlay（`npm run start:engineer`）。
 
 ---
 
 ### 5.9 Overlay 外观与设置窗口
+
+Overlay 现在只渲染 Feature 1 工程师字幕窗口（Feature 3 解说已改用浏览器 dashboard，
+不在这里测）。
 
 **前置**：Linux 版 node 已装（0.1 节）；`cd overlay-app && npm install` 成功，
 无 `npm error`（`npm warn deprecated ...` 不算失败）。
@@ -612,22 +632,22 @@ cd ~/summer-project/F1-simulator && source .venv/bin/activate && python -m midwa
 | 检查 | 判定标准 |
 | --- | --- |
 | 无后端启动 | `npm start` → 窗口出现并显示 `Connection lost`，每 3 秒重连 |
-| 窗口形态 | 约 900×160 px，靠近主屏底部居中，**无标题栏 / 工具栏 / 关闭按钮**，透明、置顶 |
+| 窗口形态 | 约 900×160 px，靠近主屏顶部居中，**无标题栏 / 工具栏 / 关闭按钮**，透明、置顶 |
 | 设置入口 | 点字幕面板里的小设置按钮，或菜单 `TORCS AI Overlay → Settings` |
-| 设置项完整 | 连接（WS URL / 重连间隔 / ping 间隔）、模型 API、解说人设、语音、自动解说、数据源与操作 六组俱全 |
+| 设置项完整 | 连接（WS URL / 重连间隔 / ping 间隔）、模型 API、语音、Text-to-Speech (Server) 四组俱全（解说人设、自动解说、数据源与操作已随解说窗口一起下线，改到浏览器 dashboard 里配置） |
 | 配置回读 | 点 `Reload`，能从 midware 拉到后端配置 |
 | 持久化 | 改一项 → 保存 → 重启 Overlay → 设置仍在 |
 
 消息到 UI 的映射（对照 [../overlay-app/TESTING.md](../overlay-app/TESTING.md)）：
 
-| 后端消息 | 期望字幕 |
+| 后端消息（`source: "engineer"`） | 期望字幕 |
 | --- | --- |
-| `connected` | `Waiting for commentary...` |
-| `ai_start` | `Generating captions...` |
+| `connected`（无 source，任何窗口都显示） | `Waiting for engineer reply...` |
+| `ai_start` | `Generating engineer reply...` |
 | `token` | 不立即变化（缓冲中） |
-| `ai_done` | 最终英文解说 |
-| `error` | `Commentary error: ...` |
-| `telemetry_update` / `event_detected` | 忽略 |
+| `ai_done` | 最终英文回答 |
+| `error` | `Engineer error: ...` |
+| 其他 `source`（如解说） | 忽略，不出现在这个窗口 |
 
 **后端没就绪时的替代方案**：TESTING.md 第 10 节给了一个 mock WebSocket 服务器，
 能在不跑 TORCS 的情况下把上面这张表全走一遍。测 UI 行为时优先用它，比真实赛况可控得多。
@@ -636,27 +656,40 @@ cd ~/summer-project/F1-simulator && source .venv/bin/activate && python -m midwa
 
 ### 5.10 TTS 语音播报
 
-**前置**：4.4 通过且已 `POST /api/config/tts` 打开。
+解说的服务端 TTS（Kokoro）现在播放在浏览器 dashboard 里；Overlay 的语音开关是
+客户端 `speechSynthesis`/`spd-say`，只用于工程师窗口自己的回答朗读。两者分开验证。
 
-**操作**
+**操作 — dashboard（解说，服务端 TTS）**
 
-1. Overlay 设置窗口 → 勾选 `Enable voice commentary` → 选 voice → 点 `Test Voice` → `Save Voice`
-2. 触发一次解说（5.7 的手动触发即可）
+**前置**：4.4 通过且已在 dashboard 的 Commentary 设置里打开 TTS（对应
+`POST /api/config/tts`）。
+
+1. 触发一次解说（5.7 的手动触发即可）
+2. 观察 dashboard 是否自动播放收到的 `tts_audio`
+
+**判定标准**
+
+- 触发解说后能听到对应音频
+- 同一句解说不会播放两遍（去重生效时应为 `duplicate: true`，不重复合成/播放）
+
+**操作 — Overlay（工程师，客户端语音，可选）**
+
+1. Overlay 设置窗口 → 勾选 `Enable voice playback` → 选 voice → 点 `Test Voice` → `Save Voice`
+2. 向工程师提问一次（5.6 的操作即可）
 
 **判定标准**
 
 - `Test Voice` 能听到测试句
-- 真实解说时：`ai_start` **打断**上一句未念完的语音；`ai_done` 到达后完整念一遍最终文本
-- `Connection lost`、`Waiting for commentary...`、`Commentary error` 这三类状态文字
+- 真实回答时：`ai_start`（`source: "engineer"`）**打断**上一句未念完的语音；`ai_done` 到达后完整念一遍最终文本
+- `Connection lost`、`Waiting for engineer reply...`、`Engineer error` 这三类状态文字
   **不应该被念出来**
-- 同一句解说不会念两遍
 
 **失败时查什么**
 
 - voice 下拉里只有 `System default` → 装原生兜底：
   `sudo apt-get install -y speech-dispatcher espeak-ng`，然后 `spd-say "TORCS voice test"`
   能出声再重启 Overlay
-- 有字幕没声音 → 先单测 4.4 的 `/tts` 接口，区分是 TTS 服务问题还是 Overlay 播放问题
+- dashboard 有字幕没声音 → 先单测 4.4 的 `/tts` 接口，区分是 TTS 服务问题还是浏览器播放问题
 
 ---
 

@@ -12,9 +12,9 @@ observable and wired into midware/runtime.py:
   - t0_telemetry_received: already present on every frame as `sim_time`,
     not re-logged here to avoid adding a write on the UDP hot path
     (30-60 frames/s) for an opt-in feature.
-  - t4_caption_displayed / t5_tts_started: happen in the browser/Overlay,
+  - t4_caption_displayed / t5_tts_started: happen in the browser dashboard,
     not the backend -- see docs/commentary_experiment_protocol.md for how
-    a real work-package-C run captures those two manually/via Overlay logs.
+    a real work-package-C run captures those two manually/via browser logs.
 """
 
 from __future__ import annotations

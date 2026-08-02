@@ -41,8 +41,8 @@ class Message:
 # ---------------------------------------------------------------------------
 # 工程师人设（Feature 1: chat_engineer.py / chat_engineer_gui.py 使用）
 # 复用 ContextConfig.commentator_persona 字段承载，而不是新开一个字段名，
-# 因为该字段名已经是 overlay-app 配置面板（settings.js / index.html）的 API
-# 契约的一部分，改名会牵连前端。
+# 因为该字段名已经是浏览器 dashboard 配置面板（dashboard.html 的
+# `/api/config/context` 调用）的 API 契约的一部分，改名会牵连前端。
 # ---------------------------------------------------------------------------
 
 ENGINEER_PERSONA = (

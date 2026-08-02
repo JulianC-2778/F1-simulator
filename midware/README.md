@@ -1,8 +1,8 @@
 # TORCS 比赛解说中间件
 
-`midware` 是 TORCS 的实时 AI 比赛解说服务。它接收 TORCS human 数据采集器发出的 UDP 遥测，缓存最近一段比赛状态，检测关键比赛事件，然后调用 OpenAI-compatible API（例如 LM Studio）生成解说，并通过 WebSocket 流式推送到网页端和 Electron 桌面字幕悬浮窗。
+`midware` 是 TORCS 的实时 AI 比赛解说服务。它接收 TORCS human 数据采集器发出的 UDP 遥测，缓存最近一段比赛状态，检测关键比赛事件，然后调用 OpenAI-compatible API（例如 LM Studio）生成解说，并通过 WebSocket 流式推送到网页 dashboard。
 
-项目的标准 AI 显示链路是 `midware WebSocket -> overlay-app`。后续新增的 AI 功能如果需要面向用户显示或朗读内容，应复用 `ai_start` / `token` / `ai_done` / `error` 消息协议，不应单独创建新的字幕 UI。完整协议见：
+项目的标准 AI 显示链路是 `midware WebSocket -> 浏览器 dashboard`（默认），只有需要独立悬浮字幕窗的功能才额外接入 `overlay-app`——目前仅 Feature 1（AI 赛车工程师）这样做，Feature 3 的实时解说只显示在 dashboard 里，不再使用 overlay-app。后续新增的 AI 功能如果需要面向用户显示或朗读内容，应复用 `ai_start` / `token` / `ai_done` / `error` 消息协议，不应单独创建新的字幕 UI。完整协议见：
 
 ```text
 ../docs/display-layer-contract.md
@@ -20,10 +20,12 @@ TORCS UDP :3101
      检测事件、设置优先级、冷却和去重，生成结构化 payload
   -> context_manager.py
      管理解说员人设、历史上下文和 token 预算
-  -> commentary.py + static/index.html / static/index2.html
-     FastAPI 服务、REST API、WebSocket 流式输出和网页配置界面
-  -> ../overlay-app
-     Electron 桌面悬浮字幕 HUD，连接 ws://127.0.0.1:8880/ws
+  -> runtime.py（正式入口 `python3 -m midware.app`；commentary.py 是已废弃的兼容包装器）
+     FastAPI 服务、REST API、WebSocket 流式输出
+  -> static/dashboard.html（默认网页 UI，含 Commentary/Engineer/Coach 标签页）
+     解说文本和语音在这里显示/播放，不需要 overlay-app
+  -> ../overlay-app（仅 Feature 1 工程师聊天用）
+     Electron 桌面悬浮字幕 HUD，连接 ws://127.0.0.1:8880/ws，只渲染 source: "engineer" 的消息
 ```
 
 已支持的自动解说事件：
@@ -57,11 +59,12 @@ midware/
 ├── context_manager.py     # 解说员 prompt、历史上下文、token 裁剪
 ├── requirements.txt       # Python 依赖
 └── static/
-    ├── index.html         # 文字解说 Web UI
-    └── index2.html        # 语音解说 Web UI
+    ├── dashboard.html     # 默认 Web UI（Commentary/Engineer/Coach 标签页）
+    ├── index.html         # 旧版文字解说 Web UI
+    └── index2.html        # 旧版语音解说 Web UI
 ```
 
-桌面悬浮字幕窗位于仓库根目录的 `overlay-app/`：
+桌面悬浮字幕窗位于仓库根目录的 `overlay-app/`，现在只渲染 Feature 1（工程师）窗口：
 
 ```text
 overlay-app/
@@ -70,9 +73,9 @@ overlay-app/
 │   ├── main.js            # Electron 主进程，创建透明置顶窗口
 │   └── preload.js         # 最小 IPC 暴露，仅支持隐藏窗口
 ├── src/
-│   ├── index.html         # 字幕面板 DOM
+│   ├── engineer.html      # 工程师字幕面板 DOM
 │   ├── styles.css         # 游戏 HUD 风格
-│   ├── renderer.js        # WebSocket 状态机和语音播放
+│   ├── engineer-renderer.js  # WebSocket 状态机和语音播放（只处理 source: "engineer"）
 │   ├── settings.html      # 独立设置窗口
 │   ├── settings.css
 │   └── settings.js
@@ -252,9 +255,9 @@ ws://127.0.0.1:8880/ws
 
 `overlay-app` 默认连接这个地址。
 
-## 四、启动 Electron 字幕悬浮窗
+## 四、启动 Electron 字幕悬浮窗（仅 Feature 1，可选）
 
-`overlay-app` 是独立 Electron 应用，显示一个透明、无边框、始终置顶的英文状态/字幕 HUD。它不启动 Python 后端；后端仍然由 `midware/commentary.py` 提供。主字幕窗口右上角有一个小设置按钮，也可以通过应用菜单打开独立设置窗口。
+`overlay-app` 是独立 Electron 应用，显示一个透明、无边框、始终置顶的英文状态/字幕 HUD，现在只渲染 Feature 1（AI 赛车工程师）的回答。它不启动 Python 后端；后端由正式入口 `python3 -m midware.app` 提供。**Feature 3 的实时解说不再显示在这里**，跳过本节直接看 `http://localhost:8880` 的网页 dashboard 即可。字幕窗口右上角有一个小设置按钮，也可以通过应用菜单打开独立设置窗口。
 
 第一次运行安装依赖：
 
@@ -274,18 +277,18 @@ npm start
 
 | Overlay 文本 | 含义 |
 | --- | --- |
-| `Connecting to commentary service...` | 正在连接 `midware` WebSocket |
-| `Waiting for commentary...` | 已连接，等待解说 |
-| `Generating captions...` | 后端已开始生成解说 |
+| `Connecting to engineer service...` | 正在连接 `midware` WebSocket |
+| `Waiting for engineer reply...` | 已连接，等待工程师回答 |
+| `Generating engineer reply...` | 后端已开始生成回答 |
 | `Connection lost` | 后端未启动或连接断开，overlay 会每 3 秒重连 |
-| `Commentary error: ...` | 后端返回解说错误 |
+| `Engineer error: ...` | 后端返回错误 |
 
 注意：
 
-- Overlay UI 文案是英文；最终字幕内容来自后端 `ai_done.content`。
-- 要保持最终字幕为英文，请在网页配置、prompt 或模型输出侧要求英文解说。
-- 设置窗口可以配置 overlay 连接、语音解说、模型 API、解说员人设、自动解说、CSV 读取和演示数据注入。
-- 配音默认关闭；开启后 overlay 在收到 `ai_done` 最终解说时朗读，`ai_start` 会停止上一句语音。如果 Electron 没有可用浏览器 voice，会自动回退到系统 `speech-dispatcher` 的 `spd-say`。
+- Overlay UI 文案是英文；最终字幕内容来自后端 `ai_done.content`（且只有 `source: "engineer"` 的消息才会显示在这里）。
+- 要保持最终字幕为英文，请在网页配置、prompt 或模型输出侧要求英文回答。
+- 设置窗口可以配置 overlay 连接、语音、模型 API 和服务端 TTS；解说相关的自动播报、CSV 读取和演示数据注入已经移到网页 dashboard 里配置。
+- 配音默认关闭；开启后 overlay 在收到 `ai_done` 最终回答时朗读，`ai_start` 会停止上一句语音。如果 Electron 没有可用浏览器 voice，会自动回退到系统 `speech-dispatcher` 的 `spd-say`。
 - 可以通过应用菜单隐藏或恢复 overlay，并打开设置窗口。
 - WSL 中请使用 Linux 版 Node/npm。若 `which npm` 指向 `/mnt/c/...` 或 `/mnt/d/...`，Electron 安装可能因为 Windows UNC 路径失败。
 
@@ -322,7 +325,7 @@ curl http://localhost:8880/api/config
 cd ~/test/torcs-1.3.7/overlay-app
 node --check electron/main.js
 node --check electron/preload.js
-node --check src/renderer.js
+node --check src/engineer-renderer.js
 ```
 
 完整 overlay 测试文档：
@@ -333,24 +336,21 @@ overlay-app/TESTING.md
 
 ## 六、最小闭环测试（不启动 TORCS）
 
-这是推荐的第一步，用来确认网页、midware、WebSocket、overlay 和 LM Studio 已经连通。
+这是推荐的第一步，用来确认网页 dashboard、midware、WebSocket 和 LM Studio 已经连通——不需要启动 overlay-app。
 
 1. 打开 `http://localhost:8880`。
 2. 左侧 `AI API 配置` 填好 LM Studio 地址、模型和 API Key。
 3. 点击 `保存 API 配置`。
 4. 左侧 `数据源` 点击 `注入演示数据`。
 5. 确认顶部遥测条显示名次、圈数、速度、油门等信息。
-6. 启动 overlay：`cd ~/test/torcs-1.3.7/overlay-app && npm start`。
-7. 确认 overlay 显示 `Waiting for commentary...`。
-8. 底部输入框留空。
-9. 点击 `解说`。
+6. 底部输入框留空。
+7. 点击 `解说`。
 
 正常现象：
 
 - 右侧出现一条遥测数据消息。
 - 随后出现解说员气泡。
-- 文本会在网页中流式输出比赛解说。
-- Overlay 先显示 `Generating captions...`，完成后显示最终解说内容。
+- 文本会在网页中流式输出比赛解说，dashboard 的 Commentary 标签页显示生成中/完成状态。
 
 如果报错，优先检查：
 
@@ -358,7 +358,7 @@ overlay-app/TESTING.md
 - `Base URL` 是否为可 curl 通的地址。
 - 模型 id 是否和 `/v1/models` 返回的 `id` 完全一致。
 - API Key 是否非空。
-- Overlay 是否连接到 `ws://127.0.0.1:8880/ws`。
+- 网页是否连接到 `ws://127.0.0.1:8880/ws`（dashboard 页面上的连接状态指示）。
 
 ## 七、自动解说测试
 
@@ -381,7 +381,7 @@ overlay-app/TESTING.md
 
 ## 八、连接真实 TORCS 遥测
 
-`midware` 默认监听 UDP `3101`。完整演示建议开三个终端：`midware`、`overlay-app`、`TORCS`。启动 TORCS 前，在 TORCS 终端设置：
+`midware` 默认监听 UDP `3101`。完整演示建议开两个终端：`midware`、`TORCS`（`overlay-app` 只在需要 Feature 1 工程师字幕窗时才额外开一个）。启动 TORCS 前，在 TORCS 终端设置：
 
 ```bash
 cd ~/test/torcs-1.3.7
@@ -416,19 +416,19 @@ TORCS
   -> midware telemetry.py
   -> commentary_engine.py
   -> LM Studio
-  -> Web UI
   -> WebSocket ws://127.0.0.1:8880/ws
-  -> Electron overlay-app
+  -> Web dashboard（解说显示在这里）
 ```
 
 推荐运行顺序：
 
 1. 启动 LM Studio Local Server。
-2. 启动 `midware`：`cd ~/test/torcs-1.3.7/midware && source .venv/bin/activate && python commentary.py`。
+2. 启动 `midware`：`cd ~/test/torcs-1.3.7 && source .venv/bin/activate && python3 -m midware.app`。
 3. 打开 `http://localhost:8880` 保存 AI 配置，并应用自动解说配置。
-4. 启动 overlay：`cd ~/test/torcs-1.3.7/overlay-app && npm start`。
-5. 使用上面的环境变量启动 `./BUILD/bin/torcs`。
-6. 在 TORCS 中进入比赛并驾驶。
+4. 使用上面的环境变量启动 `./BUILD/bin/torcs`。
+5. 在 TORCS 中进入比赛并驾驶。
+
+（如果还想要 Feature 1 的工程师悬浮字幕窗，额外开一个终端：`cd ~/test/torcs-1.3.7/overlay-app && npm start`。）
 
 ## 九、API 测试
 
@@ -548,15 +548,15 @@ export TORCS_PLAYER_UDP_PORT=3101
 
 并确认 `midware` 服务正在运行。
 
-### 4. Overlay 显示 `Connection lost`
+### 4. Dashboard 或 Overlay 显示 `Connection lost`
 
-确认 `midware/commentary.py` 正在运行，并且端口是 `8880`：
+确认 `midware`（`python3 -m midware.app`）正在运行，并且端口是 `8880`：
 
 ```bash
 curl http://localhost:8880/api/config
 ```
 
-如果网页能打开但 overlay 仍断开，确认 `overlay-app/src/renderer.js` 中的地址是：
+Overlay 只用于 Feature 1 工程师字幕窗；如果网页能打开但 overlay 仍断开，确认 `overlay-app/electron/main.js` 里读取的地址（默认取自仓库根目录 `config.json`）是：
 
 ```text
 ws://127.0.0.1:8880/ws

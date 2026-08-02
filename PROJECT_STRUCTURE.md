@@ -79,7 +79,7 @@ tests/
 ├── fixtures/
 └── unit/
 
-overlay-app/                  # Electron 展示层，本轮未修改
+overlay-app/                  # Electron 展示层，仅渲染 Feature 1 工程师字幕悬浮窗（Feature 3 解说已改用浏览器 dashboard）
 src/ export/ data/ BUILD/     # TORCS vendored engine/content
 ```
 
@@ -92,7 +92,7 @@ src/ export/ data/ BUILD/     # TORCS vendored engine/content
 - Bot 的转向、油门、制动和 `safety_filter()` 不等待模型或 Middleware。
 - Feature enabled 状态真实控制 API 和自动 Commentary 循环，禁用返回 HTTP 409。
 - WebSocket 保留旧 renderer 字段，同时增加 V1 `version/request_id/sequence`。
-- `overlay-app/` 继续使用 `/ws` 和已有消息字段，无需同步修改。
+- `overlay-app/`（现仅 Feature 1 工程师字幕窗口）继续使用 `/ws` 和已有消息字段，无需同步修改。
 
 ## Feature 入口
 

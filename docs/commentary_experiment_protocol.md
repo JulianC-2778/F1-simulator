@@ -1,7 +1,7 @@
 # AI Live Commentary — Real Experiment Protocol (work packages B/C/D)
 
 > Everything in this document requires a human operator with a working
-> TORCS + LM Studio/Granite + Overlay stack (L4/L5 per `docs/testing-plan.md`).
+> TORCS + LM Studio/Granite + browser dashboard stack (L4/L5 per `docs/testing-plan.md`).
 > None of it can run in CI or without that environment — see
 > `docs/commentary_test_matrix.md` section 6 for what was and wasn't
 > possible to automate. Nothing in this repository claims these experiments
@@ -145,12 +145,12 @@ capture from the backend:
 - `t0_telemetry_received`: use the triggering frame's own `sim_time` from
   `/api/events/recent`'s logged event (or the ground-truth timestamp if
   you're reusing a work-package-B session) as t0.
-- `t4_caption_displayed` / `t5_tts_started`: Overlay/browser-side. Either
+- `t4_caption_displayed` / `t5_tts_started`: browser-side (dashboard). Either
   add a one-line `console.log(performance.now())` at the top of
-  `overlay-app/src/renderer.js`'s `case 'ai_done':`/`'tts_audio':` handlers
-  for this session only (revert after), or approximate from the screen
-  recording's timestamps against the WebSocket listener's own printed
-  timestamps.
+  `midware/static/dashboard.html`'s `ai_done`/`tts_audio` WebSocket message
+  handlers for this session only (revert after), or approximate from the
+  screen recording's timestamps against the WebSocket listener's own
+  printed timestamps.
 
 ### 2.2 Run 30 triggers and reshape into the latency CSV
 
@@ -187,7 +187,7 @@ For each of 3 runs: start the full stack, drive/let the bot drive
 continuously for 30 minutes, and during that window inject (once each,
 timestamped in your notes):
 
-- one WebSocket/Overlay disconnect+reconnect (`docs/manual-test-guide.md` 5.8's `pkill -f midware.app` / restart, or just close+reopen the Overlay window)
+- one WebSocket/dashboard disconnect+reconnect (`docs/manual-test-guide.md` 5.8's `pkill -f midware.app` / restart, or just close+reopen the dashboard tab)
 - one Granite/LM Studio interruption+recovery (stop/restart LM Studio's server)
 - one telemetry/UDP interruption+recovery (`pkill` the TORCS process briefly, or unplug the UDP send by killing `torcs_launcher.sh`'s env)
 - one TTS failure, only if TTS is enabled for this batch (stop `tts_server.py` briefly)

@@ -8,7 +8,7 @@ All new AI features should use this path:
 AI feature
   -> midware display broadcast
   -> WebSocket ws://127.0.0.1:8880/ws
-  -> overlay-app
+  -> midware dashboard (default) or overlay-app (only if the feature needs a dedicated floating caption window)
 ```
 
 The goal is to keep captions, voice, connection settings, and race-HUD presentation consistent across the project.
@@ -28,21 +28,18 @@ It does not apply to developer-only logs, debug traces, unit-test output, or bac
 
 ## Display Ownership
 
-`overlay-app` owns:
+`midware/static/dashboard.html` is the default, in-browser display surface. It owns:
 
-- Caption display.
-- Voice playback.
-- Floating window behavior.
-- Overlay connection settings.
-- Model/API settings UI that talks to `midware`.
-- User-facing HUD presentation.
+- Race commentary captions, voice playback, and the commentary/engineer/coach/bot control tabs.
+- Configuration for every feature that broadcasts over `/ws` and doesn't request a dedicated overlay window.
 
-`overlay-app` currently ships two floating windows, both connected to the same `ws://127.0.0.1:8880/ws` endpoint and the same shared connection/voice settings, but each only displaying messages routed to it (see "Multiple Overlay Windows" below):
+`overlay-app` is an Electron floating-window app reserved for features that specifically need an always-on-top caption HUD outside the browser. Today that is **Feature 1 (AI Racing Engineer Chatbot) only** -- it owns:
 
-| Window | Loads | Shows messages where |
-| --- | --- | --- |
-| Commentary overlay (bottom-center) | `overlay-app/src/index.html` + `renderer.js` | `source` is absent, `"commentary"`, or any value not recognized as a dedicated window |
-| Engineer overlay (top-center) | `overlay-app/src/engineer.html` + `engineer-renderer.js` | `source === "engineer"` |
+- The engineer caption window (`overlay-app/src/engineer.html` + `engineer-renderer.js`), which shows only messages tagged `"source": "engineer"`.
+- Voice playback, floating window behavior, and connection settings for that window.
+- A shared settings window (Model API, Voice, Server TTS, overlay connection) reachable from the engineer window's app menu.
+
+Race commentary (Feature 3) does **not** use `overlay-app`. It used to ship its own floating caption window (`overlay-app/src/index.html` + `renderer.js`); that window was removed once the dashboard grew its own "Commentary feed" tab, and `midware`'s `/ws` broadcast for untagged/`"commentary"`-sourced messages is now consumed by the dashboard instead.
 
 AI feature code owns:
 
@@ -51,9 +48,7 @@ AI feature code owns:
 - Calling the model, directly or through shared midware helpers.
 - Sending display messages through the standard WebSocket broadcast.
 
-AI feature code should not create separate caption windows, browser toolbars, Tkinter popups, terminal-only presentation paths, or feature-specific display overlays for user-facing output.
-
-This means a feature should not stand up its own ad-hoc window *outside* `overlay-app`. It does not mean every feature is stuck sharing one window: a feature that needs its own dedicated floating window should get one through `overlay-app`'s own officially supported mechanism -- a new `BrowserWindow` in `electron/main.js` plus a `source`-filtered renderer, exactly as described in "Multiple Overlay Windows (Source Routing)" below. The engineer overlay window (Feature 1) is a verified, working example of this: `overlay-app` now runs two floating windows side by side (commentary + engineer) from the same WebSocket stream.
+AI feature code should not create separate caption windows, browser toolbars, Tkinter popups, terminal-only presentation paths, or feature-specific display overlays for user-facing output. New features default to showing up in the dashboard automatically (any message not tagged with a dedicated `source` that already owns its own overlay window). A feature should only add its own `overlay-app` floating window if it specifically needs an always-on-top HUD outside the browser -- that requires a new `BrowserWindow` in `electron/main.js` plus a `source`-filtered renderer, following the pattern the engineer window already establishes.
 
 ## WebSocket Endpoint
 
@@ -63,7 +58,7 @@ The standard endpoint is:
 ws://127.0.0.1:8880/ws
 ```
 
-`midware/commentary.py` currently exposes this endpoint and keeps track of connected clients.
+`midware/runtime.py` (the FastAPI app started via `python3 -m midware.app`) exposes this endpoint and keeps track of connected clients. `midware/commentary.py` is a deprecated one-cycle compatibility wrapper kept only for older scripts/docs -- do not treat it as the primary entry point.
 
 ## Required Message Types
 
@@ -79,9 +74,9 @@ Sent by the backend when a client connects.
 }
 ```
 
-Overlay behavior:
+Dashboard/overlay behavior:
 
-- Shows `Waiting for commentary...`.
+- Shows a waiting/idle state (`Waiting for commentary...` on the dashboard's commentary tab, `Waiting for engineer reply...` on the engineer overlay).
 - Does not speak.
 
 ### AI Start
@@ -94,10 +89,10 @@ Sent when an AI response begins.
 }
 ```
 
-Overlay behavior:
+Behavior:
 
 - Clears pending streamed text.
-- Shows `Generating captions...`.
+- Shows a "generating" state.
 - Stops any currently playing voice.
 
 ### Token
@@ -111,7 +106,7 @@ Sent for streamed model output.
 }
 ```
 
-Overlay behavior:
+Behavior:
 
 - Buffers the token text.
 - Does not update the visible caption yet.
@@ -129,7 +124,7 @@ Sent when the AI response is complete.
 }
 ```
 
-Overlay behavior:
+Behavior:
 
 - Displays `content` if present.
 - Falls back to buffered `token` text if `content` is empty.
@@ -146,14 +141,14 @@ Sent when a user-facing AI action fails.
 }
 ```
 
-Overlay behavior:
+Behavior:
 
-- Shows `Commentary error` plus a concise message.
+- Shows an error state plus a concise message (`Commentary error` on the dashboard, `Engineer error` on the engineer overlay).
 - Does not speak.
 
 ## Existing Non-Display Messages
 
-These messages may continue to be broadcast for dashboards, logs, or future UI, but the current overlay ignores them:
+These messages may continue to be broadcast for dashboards, logs, or future UI, but `overlay-app` ignores them:
 
 ```json
 { "type": "telemetry_update" }
@@ -162,11 +157,11 @@ These messages may continue to be broadcast for dashboards, logs, or future UI, 
 { "type": "pong" }
 ```
 
-Do not rely on these messages to show captions in `overlay-app`.
+Do not rely on these messages to show captions in `overlay-app`. The dashboard does consume `telemetry_update`/`event_detected` for its own panels.
 
 ## Language Policy
 
-The overlay caption HUD is English-first.
+The engineer overlay caption HUD is English-first.
 
 For content that should appear in the overlay, prefer final English text in:
 
@@ -188,11 +183,11 @@ If a feature needs bilingual or structured output later, add explicit fields whi
 }
 ```
 
-The overlay currently displays only `content`.
+The engineer overlay currently displays only `content`.
 
 ## Recommended Optional Fields
 
-Future AI features may include these optional fields. The current overlay safely ignores unknown fields.
+Future AI features may include these optional fields. The dashboard and overlay safely ignore unknown fields.
 
 ```json
 {
@@ -206,35 +201,25 @@ Future AI features may include these optional fields. The current overlay safely
 
 Suggested meaning:
 
-- `source`: feature identifier, such as `commentary`, `engineer`, `strategy`, or `incident_analysis`.
+- `source`: feature identifier, such as `commentary`, `engineer`, `coach`, `bot`, `strategy`, or `incident_analysis`.
 - `priority`: display priority, where higher values may later interrupt lower-priority messages.
 - `stats`: token/context metadata for diagnostics.
 
-`priority` and `stats` remain optional and are not yet used by the overlay. `source` is no longer purely advisory: as of the engineer overlay window, `overlay-app` uses it to route `ai_start`/`token`/`ai_done`/`error` to the correct window (see "Multiple Overlay Windows" below). Any feature that wants its own dedicated window must set `source` on every one of those four message types.
+`priority` and `stats` remain optional and are not yet used by the dashboard or overlay. `source` is not purely advisory: `overlay-app`'s single engineer window only renders `source === "engineer"`; everything else is left for the dashboard to render.
 
-## Multiple Overlay Windows (Source Routing)
+## Adding a Dedicated Overlay Window
 
-`overlay-app` now renders more than one floating window from the same WebSocket stream. Each window's renderer applies its own filter to `message.source`:
+`overlay-app` renders exactly one floating window today (the engineer window). A feature should only add a second one if it specifically needs its own always-on-top HUD outside the browser (own position, own "Generating..." state, own voice playback that shouldn't be interrupted by the engineer window or vice versa) -- most new features should just rely on the dashboard instead. To add one, follow the pattern `overlay_broadcast.py` / `engineer-renderer.js` already establish:
 
-- `renderer.js` (commentary window): displays a message if `source` is missing, equals `"commentary"`, or is otherwise not claimed by a known dedicated window. This keeps existing features that never set `source` working unchanged.
-- `engineer-renderer.js` (engineer window, Feature 1 / `overlay_broadcast.py`): displays a message only if `source === "engineer"`.
-
-The `connected` message has no `source` and is shown by every window independently, so each window can report its own connection status.
-
-Rules for new features:
-
-- If your feature is fine sharing the existing commentary caption, omit `source` (or set it to `"commentary"`) and no overlay changes are needed.
-- If your feature needs its own floating window (own position, own "Generating..." state, own voice playback that shouldn't be interrupted by commentary or vice versa), follow the pattern in `overlay_broadcast.py`:
-  1. Pick a unique `source` string and tag every `ai_start`/`token`/`ai_done`/`error` message with it.
-  2. Add a `electron/main.js` `BrowserWindow` (own bounds, non-overlapping with existing windows) and a corresponding `src/<feature>.html` + `src/<feature>-renderer.js` pair, cloned from `index.html`/`renderer.js`, that only reacts when `message.source === "<feature>"` (and still handles the sourceless `connected` message).
-  3. Update the commentary window's filter in `renderer.js` if needed so it continues to ignore the new `source`.
-  4. Document the new window in the table under "Display Ownership" above.
+1. Pick a unique `source` string and tag every `ai_start`/`token`/`ai_done`/`error` message with it.
+2. Add an `electron/main.js` `BrowserWindow` (own bounds, non-overlapping with the engineer window) and a corresponding `src/<feature>.html` + `src/<feature>-renderer.js` pair, cloned from `engineer.html`/`engineer-renderer.js`, that only reacts when `message.source === "<feature>"` (and still handles the sourceless `connected` message).
+3. Document the new window in the table under "Display Ownership" above.
 
 This is intentionally simple two-tier routing (per-source window ownership), not priority arbitration. `priority`-based interruption/merging across windows is still future work.
 
 ## Implementation Pattern
 
-In `midware/commentary.py`, the existing path already follows this contract:
+In `midware/runtime.py`, the existing path already follows this contract:
 
 ```python
 await broadcast({"type": "ai_start"})
@@ -255,23 +240,23 @@ overlay_broadcast.broadcast_engineer_start()
 overlay_broadcast.broadcast_engineer_reply(answer)   # or broadcast_engineer_error(str(exc))
 ```
 
-On the `midware` side, `/ws` in `commentary.py` makes this work by relaying: any text frame received from a connected client that is not the literal `"ping"` is parsed as JSON, and if its `type` is one of `ai_start`/`token`/`ai_done`/`error`, it is re-broadcast to every connected client via the same `broadcast()` used internally for commentary. This is what lets a short-lived external client like `overlay_broadcast.py` reach both overlay windows -- each window's own renderer still filters by `source` (see "Multiple Overlay Windows" above). Any other received text (unrecognized `type`, invalid JSON) is silently ignored.
+On the `midware` side, `/ws` makes this work by relaying: any text frame received from a connected client that is not the literal `"ping"` is parsed as JSON, and if its `type` is one of `ai_start`/`token`/`ai_done`/`error`, it is re-broadcast to every connected client via the same `broadcast()` used internally for commentary. This is what lets a short-lived external client like `overlay_broadcast.py` reach the engineer overlay window -- the dashboard and the engineer window each still filter by `source` on their own. Any other received text (unrecognized `type`, invalid JSON) is silently ignored.
 
 ## Testing Expectations
 
 Any new feature using the display layer should verify:
 
-- `ai_start` shows `Generating captions...`.
+- `ai_start` shows a "generating" state wherever the feature displays.
 - streamed `token` messages do not create partial visible captions.
-- `ai_done.content` appears in the overlay.
+- `ai_done.content` appears in the display surface.
 - voice playback occurs only on final `ai_done` text when enabled.
 - `error.message` appears as a concise error state.
-- telemetry and event messages do not disturb the current caption.
+- telemetry and event messages do not disturb the current caption in `overlay-app`.
 
-If your feature uses a dedicated `source` and window (see "Multiple Overlay Windows"), also verify:
+If your feature uses a dedicated `source` and its own overlay window, also verify:
 
-- messages tagged with your `source` appear only in your window, not the commentary window.
-- commentary messages (no `source`, or `source: "commentary"`) do not appear in your window.
-- both windows reconnect and recover independently if `midware` restarts.
+- messages tagged with your `source` appear only in your window, not the engineer window or the dashboard.
+- messages tagged with a different `source` (or no `source`) do not appear in your window.
+- your window and the engineer window reconnect and recover independently if `midware` restarts.
 
 Use `overlay-app/TESTING.md` for the full overlay test flow.
