@@ -269,11 +269,10 @@ class ContextManager:
         event_type = payload.get("event_type", "unknown")
         reason = payload.get("event_reason", "")
         event_time = payload.get("event_time", "?")
-        state = payload.get("current_state", {})
         return (
             f"事件摘要: {event_type} @ {event_time}s; {reason}; "
-            f"P{state.get('race_pos', '?')}, lap {state.get('lap', '?')}, "
-            f"speed {state.get('speed_x', '?')} km/h."
+            f"P{payload.get('race_pos', '?')}, lap {payload.get('lap', '?')}, "
+            f"speed {payload.get('speed', '?')} km/h."
         )
 
     # ------------------------------------------------------------------
