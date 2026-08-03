@@ -403,7 +403,7 @@
     <div class="disabled-note" id="note-commentary">Commentary is disabled — flip the switch above to re-enable manual triggers and the auto loop.</div>
     <div class="grid-2">
       <div class="panel panel-pad">
-        <h2 class="card-title">Live captions</h2>
+        <h2 class="card-title">Commentary feed</h2>
         <div class="feed" id="cmFeed"><div class="feed-empty">Waiting for commentary…</div></div>
         <div class="playback-strip" id="cmPlaybackStatus">Voice idle.</div>
         <div class="token-meter">
@@ -413,7 +413,7 @@
         </div>
         <div class="composer">
           <textarea id="cmPrompt" placeholder="Optional custom prompt, or leave blank to use live telemetry…"></textarea>
-          <button id="cmTriggerBtn">Trigger</button>
+          <button id="cmTriggerBtn">Trigger commentary</button>
         </div>
         <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--text-soft);font-size:0.8rem;cursor:pointer;">
           <input type="checkbox" id="cmHideSentInput">
@@ -986,6 +986,14 @@ function routeWsMessage(msg) {
       break;
     case "ai_done":
       if (source !== "engineer" && cmMessageIsCurrent(msg)) {
+        if (msg.duplicate) {
+          // Backend suppressed this reply as a near-duplicate of recently
+          // shown text -- don't fall back to the streamed pending buffer,
+          // that buffer *is* the duplicate text.
+          State.cmPendingText = "";
+          cmUpdateStats(msg.stats);
+          break;
+        }
         const content = msg.content || State.cmPendingText;
         cmOnDone(content);
         cmUpdateStats(msg.stats);
@@ -1098,7 +1106,7 @@ function cmOnError(message) {
   $("cmFeed").appendChild(el);
   State.cmStreaming = null;
   State.cmPendingText = "";
-  cmSetPlaybackStatus("Voice error: " + message, "error");
+  cmSetPlaybackStatus("Error: " + message, "error");
 }
 
 $("cmTriggerBtn").addEventListener("click", async () => {

@@ -10,7 +10,7 @@
     <header class="topbar">
       <div>
         <h1>TORCS AI Overlay Settings</h1>
-        <p id="backendStatus">Checking commentary service...</p>
+        <p id="backendStatus">Checking midware service...</p>
       </div>
       <button id="reloadBackend" class="secondary" type="button">Reload</button>
     </header>
@@ -60,31 +60,11 @@
         <p id="apiNote" class="note"></p>
       </section>
 
-      <section class="panel wide">
-        <h2>Commentator Persona</h2>
-        <div class="split">
-          <label>
-            Context tokens <span id="contextTokensValue">4096</span>
-            <input id="contextTokens" type="range" min="512" max="32768" step="256" />
-          </label>
-          <label>
-            Response tokens <span id="responseTokensValue">512</span>
-            <input id="responseTokens" type="range" min="128" max="4096" step="64" />
-          </label>
-        </div>
-        <label>
-          System Prompt
-          <textarea id="persona" rows="8"></textarea>
-        </label>
-        <button id="saveContext" type="button">Save Persona</button>
-        <p id="contextNote" class="note"></p>
-      </section>
-
       <section class="panel">
         <h2>Voice</h2>
         <label class="check-row">
           <input id="voiceEnabled" type="checkbox" />
-          Enable voice commentary
+          Enable voice playback
         </label>
         <label>
           Voice
@@ -171,62 +151,6 @@
         </div>
         <button id="saveTts" type="button">Save TTS</button>
         <p id="ttsNote" class="note"></p>
-      </section>
-
-      <section class="panel">
-        <h2>Auto Commentary</h2>
-        <label>
-          Mode
-          <select id="autoMode">
-            <option value="off">Off</option>
-            <option value="interval">Interval</option>
-            <option value="event">Event only</option>
-            <option value="hybrid">Event + interval</option>
-          </select>
-        </label>
-        <label>
-          Baseline interval <span id="baselineIntervalValue">10</span>s
-          <input id="baselineInterval" type="range" min="0" max="60" step="1" />
-        </label>
-        <label>
-          Event window <span id="windowSecondsValue">6</span>s
-          <input id="windowSeconds" type="range" min="1" max="30" step="1" />
-        </label>
-        <label>
-          Event cooldown <span id="eventCooldownValue">1.0</span>s
-          <input id="eventCooldown" type="range" min="0" max="10" step="0.5" />
-        </label>
-        <label>
-          Dedupe window <span id="dedupeSecondsValue">10</span>s
-          <input id="dedupeSeconds" type="range" min="0" max="60" step="1" />
-        </label>
-        <label>
-          Max words <span id="maxWordsValue">45</span>
-          <input id="maxWords" type="range" min="10" max="80" step="1" />
-        </label>
-        <button id="saveAuto" type="button">Save Auto Commentary</button>
-        <p id="autoNote" class="note"></p>
-      </section>
-
-      <section class="panel wide">
-        <h2>Data Source & Actions</h2>
-        <div class="split">
-          <label>
-            CSV path
-            <input id="csvPath" type="text" spellcheck="false" placeholder="/path/to/player.csv" />
-          </label>
-          <label>
-            Rankings CSV path
-            <input id="rankingsPath" type="text" spellcheck="false" placeholder="/path/to/rankings.csv" />
-          </label>
-        </div>
-        <div class="button-row">
-          <button id="loadCsv" class="secondary" type="button">Load CSV & Commentate</button>
-          <button id="injectDemo" class="secondary" type="button">Inject Demo Data</button>
-          <button id="manualCommentary" class="secondary" type="button">Trigger Commentary</button>
-          <button id="clearHistory" class="danger" type="button">Clear History</button>
-        </div>
-        <p id="dataNote" class="note"></p>
       </section>
     </main>
 

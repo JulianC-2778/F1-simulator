@@ -19,7 +19,7 @@ This paper solves the gap between high-frequency racing-simulator telemetry and 
 - The commentary middleware ingests UDP telemetry on port `3101`, stores recent frames in a sliding window, detects race events, and generates structured event payloads.
 - The system supports event priorities, event-specific cooldowns, and hybrid commentary modes that combine interval-based updates with event-driven interruptions.
 - The context manager converts telemetry and event payloads into natural-language prompts while keeping history inside a token budget.
-- Generated commentary is streamed through a FastAPI/WebSocket service to browser UI and Electron overlay clients.
+- Generated commentary is streamed through a FastAPI/WebSocket service to a browser dashboard client.
 - A second standalone service reuses telemetry history from the commentary service to provide rule-based dashboard feedback without opening another UDP listener.
 
 ## Contribution Chain
@@ -28,12 +28,12 @@ This paper solves the gap between high-frequency racing-simulator telemetry and 
 2. Interface design: a separate commentary middleware subscribes to telemetry without taking control authority from the driving loop.
 3. Event abstraction: high-frequency frames are compressed into priority-ranked race events such as contact, position change, off-track moments, lap completion, battles, and pace surges.
 4. Context-bounded generation: prompts are assembled from persona, recent event history, and current telemetry while respecting a configurable token budget.
-5. Playback pipeline: generated tokens are streamed to browser and Electron overlay clients, allowing commentary text and speech to be displayed during simulation.
+5. Playback pipeline: generated tokens are streamed to a browser dashboard client, allowing commentary text and speech to be displayed during simulation.
 6. Extension path: a standalone dashboard service demonstrates how the same telemetry substrate can support rule-based guidance and LLM-assisted explanation.
 
 ## Proposed Abstract
 
-Racing simulators expose dense telemetry streams that are useful for control, analysis, and replay, but these streams are difficult to translate into timely human-facing commentary. This paper presents an event-driven AI commentary middleware for TORCS, a real-time racing simulator. The system listens to telemetry from a non-control UDP channel, maintains a sliding window of recent vehicle states, detects priority-ranked race events, and converts selected events into bounded prompts for an OpenAI-compatible language model. Generated commentary is streamed through a FastAPI and WebSocket layer to a browser interface and an Electron overlay, enabling live captions and optional speech playback. The design separates observation from control: the commentary layer does not issue driving commands and can therefore be developed alongside, rather than inside, the autonomous-driving loop. Current implementation evidence shows that the middleware can parse simulator telemetry, construct event payloads, manage context length, and support both interval-based and event-triggered commentary. The remaining evaluation will measure event-to-output latency, event detection quality, prompt grounding, interruption behaviour, and user-facing readability across controlled racing scenarios.
+Racing simulators expose dense telemetry streams that are useful for control, analysis, and replay, but these streams are difficult to translate into timely human-facing commentary. This paper presents an event-driven AI commentary middleware for TORCS, a real-time racing simulator. The system listens to telemetry from a non-control UDP channel, maintains a sliding window of recent vehicle states, detects priority-ranked race events, and converts selected events into bounded prompts for an OpenAI-compatible language model. Generated commentary is streamed through a FastAPI and WebSocket layer to a browser dashboard interface, enabling live captions and optional speech playback. The design separates observation from control: the commentary layer does not issue driving commands and can therefore be developed alongside, rather than inside, the autonomous-driving loop. Current implementation evidence shows that the middleware can parse simulator telemetry, construct event payloads, manage context length, and support both interval-based and event-triggered commentary. The remaining evaluation will measure event-to-output latency, event detection quality, prompt grounding, interruption behaviour, and user-facing readability across controlled racing scenarios.
 
 ## Draft Introduction
 
@@ -43,7 +43,7 @@ Recent large language models make it possible to generate fluent descriptions fr
 
 This project addresses that gap through an event-driven commentary middleware for TORCS. The middleware listens to telemetry emitted by the simulator, stores recent frames in a sliding window, detects meaningful race events, and constructs compact event payloads for language generation. Instead of sending every frame to a language model, the system selects moments such as contact, position changes, off-track events, lap completion, close battles, and pace surges. Each event type has a priority and cooldown policy, allowing important incidents to interrupt routine updates while preventing repetitive narration.
 
-The proposed architecture separates four responsibilities: telemetry ingestion, event detection, context-bounded prompt construction, and client playback. Telemetry is received over UDP and normalised into structured frames. Event detection compresses recent frame windows into semantic race events. The context manager combines a commentator persona, recent history, and the current event into a bounded prompt. Finally, a WebSocket layer streams generated tokens to browser and Electron overlay clients. This separation makes the system easier to test, allows the commentary layer to evolve independently from the driving-control middleware, and provides a reusable telemetry substrate for additional features such as a rule-based dashboard.
+The proposed architecture separates four responsibilities: telemetry ingestion, event detection, context-bounded prompt construction, and client playback. Telemetry is received over UDP and normalised into structured frames. Event detection compresses recent frame windows into semantic race events. The context manager combines a commentator persona, recent history, and the current event into a bounded prompt. Finally, a WebSocket layer streams generated tokens to a browser dashboard client. This separation makes the system easier to test, allows the commentary layer to evolve independently from the driving-control middleware, and provides a reusable telemetry substrate for additional features such as a rule-based dashboard.
 
 The current paper reports the design and implementation of this middleware and outlines an evaluation plan for the next development phase. The central claim is not that the system improves driving performance. Rather, the claim is that a structured event layer can make high-frequency simulator telemetry usable for real-time, human-facing language output while keeping the language model inside an observational and bounded role.
 
@@ -69,7 +69,7 @@ The current implementation supports OpenAI-compatible local or remote model prov
 
 ### Client Playback
 
-The middleware broadcasts commentary lifecycle messages over WebSocket. Clients receive `ai_start`, `token`, `ai_done`, and `error` messages. The browser UI can display streamed text, while the Electron overlay provides a transparent always-on-top caption layer. When speech playback is enabled, completed commentary is split into sentences and played sequentially. A new high-priority event can cancel current generation and clear queued speech, allowing urgent commentary to replace routine narration.
+The middleware broadcasts commentary lifecycle messages over WebSocket. Clients receive `ai_start`, `token`, `ai_done`, and `error` messages. The browser dashboard displays streamed text as it arrives. When speech playback is enabled, completed commentary is split into sentences and played sequentially. A new high-priority event can cancel current generation and clear queued speech, allowing urgent commentary to replace routine narration.
 
 ## Results To Collect In The Next Two Weeks
 
@@ -90,7 +90,7 @@ The middleware broadcasts commentary lifecycle messages over WebSocket. Clients 
 - Finalise the paper title, research question, and claim boundary.
 - Add timestamp instrumentation for event detection, model request start, first token, final token, and client display.
 - Create 4-6 controlled TORCS scenarios: stable driving, off-track, contact, position change, lap completion, and close battle.
-- Capture representative screenshots of the simulator, web UI, and Electron overlay.
+- Capture representative screenshots of the simulator and the browser dashboard UI.
 - Start a small results table with latency, detected event type, generated output, and manual correctness notes.
 
 ### Week 2
@@ -103,7 +103,7 @@ The middleware broadcasts commentary lifecycle messages over WebSocket. Clients 
 
 ## Figures And Tables To Prepare
 
-1. Architecture figure: TORCS telemetry/control separation, middleware, model provider, browser UI, Electron overlay.
+1. Architecture figure: TORCS telemetry/control separation, middleware, model provider, browser dashboard UI.
 2. Event pipeline figure: sliding window, event detection, priority/cooldown, payload construction, prompt generation.
 3. Playback sequence figure: `ai_start`, streaming tokens, `ai_done`, speech queue, high-priority interruption.
 4. Results table: controlled scenario, event type, latency, output correctness, notes.

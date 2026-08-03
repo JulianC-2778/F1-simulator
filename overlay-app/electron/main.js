@@ -3,24 +3,9 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-let overlayWindow;
 let engineerWindow;
 let settingsWindow;
 let speechProcess;
-
-// Which floating window this process should own. Commentary and Engineer
-// used to always launch together from one `npm start`; they're now split
-// into two independent processes so either feature can run without the
-// other. Set via `OVERLAY_FEATURE=commentary|engineer` (see package.json's
-// `start:commentary` / `start:engineer` scripts).
-const OVERLAY_FEATURE = process.env.OVERLAY_FEATURE;
-if (OVERLAY_FEATURE !== 'commentary' && OVERLAY_FEATURE !== 'engineer') {
-  console.error(
-    'OVERLAY_FEATURE env var must be "commentary" or "engineer". ' +
-    'Run "npm run start:commentary" or "npm run start:engineer" instead of "npm start".'
-  );
-  process.exit(1);
-}
 
 // Shared with the Python side via ../../config.json (repo root) -- this is
 // the same file config.py reads, so the mainline commentary service's host
@@ -87,23 +72,9 @@ function writeSettings(settings) {
   return merged;
 }
 
-function getWindowBounds() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { x, y, width, height } = primaryDisplay.workArea;
-  const windowWidth = 900;
-  const windowHeight = 160;
-
-  return {
-    width: windowWidth,
-    height: windowHeight,
-    x: Math.round(x + (width - windowWidth) / 2),
-    y: Math.round(y + height - windowHeight - 56)
-  };
-}
-
-// Feature 1 (AI Racing Engineer Chatbot) gets its own floating window so its
-// replies never overwrite/compete with race commentary captions. Anchored
-// near the top-center of the screen so the two windows never overlap.
+// Feature 1 (AI Racing Engineer Chatbot) is the only floating caption window
+// this app renders now; race commentary moved to midware's own dashboard UI.
+// Anchored near the top-center of the screen.
 function getEngineerWindowBounds() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { x, y, width } = primaryDisplay.workArea;
@@ -116,30 +87,6 @@ function getEngineerWindowBounds() {
     x: Math.round(x + (width - windowWidth) / 2),
     y: Math.round(y + 56)
   };
-}
-
-function createOverlayWindow() {
-  overlayWindow = new BrowserWindow({
-    ...getWindowBounds(),
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    fullscreenable: false,
-    hasShadow: false,
-    title: 'TORCS AI Overlay',
-    backgroundColor: '#00000000',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  });
-
-  overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  overlayWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
 }
 
 function createEngineerWindow() {
@@ -193,16 +140,6 @@ function createSettingsWindow() {
   });
 }
 
-function showOverlayWindow() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) {
-    createOverlayWindow();
-    return;
-  }
-
-  overlayWindow.show();
-  overlayWindow.focus();
-}
-
 function showEngineerWindow() {
   if (!engineerWindow || engineerWindow.isDestroyed()) {
     createEngineerWindow();
@@ -214,33 +151,6 @@ function showEngineerWindow() {
 }
 
 function buildMenu() {
-  // Only this process's own window ever exists here (see OVERLAY_FEATURE
-  // above), so the menu only offers Show/Hide for that one feature instead
-  // of both.
-  const featureItems = OVERLAY_FEATURE === 'commentary'
-    ? [
-        { label: 'Show Overlay', click: showOverlayWindow },
-        {
-          label: 'Hide Overlay',
-          click: () => {
-            if (overlayWindow) {
-              overlayWindow.hide();
-            }
-          }
-        }
-      ]
-    : [
-        { label: 'Show Engineer Overlay', click: showEngineerWindow },
-        {
-          label: 'Hide Engineer Overlay',
-          click: () => {
-            if (engineerWindow) {
-              engineerWindow.hide();
-            }
-          }
-        }
-      ];
-
   const template = [
     {
       label: 'TORCS AI Overlay',
@@ -249,7 +159,15 @@ function buildMenu() {
           label: 'Settings',
           click: createSettingsWindow
         },
-        ...featureItems,
+        { label: 'Show Engineer Overlay', click: showEngineerWindow },
+        {
+          label: 'Hide Engineer Overlay',
+          click: () => {
+            if (engineerWindow) {
+              engineerWindow.hide();
+            }
+          }
+        },
         { type: 'separator' },
         { role: 'quit' }
       ]
@@ -343,27 +261,18 @@ function speakNative(text, voiceSettings = {}, sender = null) {
 app.whenReady().then(() => {
   writeSettings(readSettings());
   buildMenu();
-
-  if (OVERLAY_FEATURE === 'commentary') {
-    createOverlayWindow();
-  } else {
-    createEngineerWindow();
-  }
+  createEngineerWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      if (OVERLAY_FEATURE === 'commentary') {
-        createOverlayWindow();
-      } else {
-        createEngineerWindow();
-      }
+      createEngineerWindow();
     }
   });
 });
 
 ipcMain.handle('overlay:hide', () => {
-  if (overlayWindow) {
-    overlayWindow.hide();
+  if (engineerWindow) {
+    engineerWindow.hide();
   }
 });
 
@@ -375,9 +284,6 @@ ipcMain.handle('settings:get', () => readSettings());
 
 ipcMain.handle('settings:save', (_event, settings) => {
   const saved = writeSettings(settings);
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('settings:updated', saved);
-  }
   if (engineerWindow && !engineerWindow.isDestroyed()) {
     engineerWindow.webContents.send('settings:updated', saved);
   }
@@ -391,28 +297,18 @@ ipcMain.handle('voice:stop', () => {
 });
 
 ipcMain.handle('overlay:resize', (event, contentHeight) => {
-  const { y, height: screenH } = screen.getPrimaryDisplay().workArea;
-  const newH = Math.max(80, Math.min(Math.ceil(contentHeight) + 24, 400));
-
-  // Commentary window: bottom edge stays put, grows upward.
-  if (overlayWindow && !overlayWindow.isDestroyed() && event.sender === overlayWindow.webContents) {
-    const bounds = overlayWindow.getBounds();
-    overlayWindow.setSize(bounds.width, newH);
-    overlayWindow.setPosition(bounds.x, Math.round(y + screenH - newH - 56));
+  if (!engineerWindow || engineerWindow.isDestroyed() || event.sender !== engineerWindow.webContents) {
     return;
   }
 
-  // Engineer window: top edge stays put, grows downward (mirror of the above).
-  // Capped higher than the commentary window (600 vs 400) since engineer
-  // answers are multi-sentence explanations, not short commentary bursts,
-  // and were getting clipped at the shared 400px cap.
-  if (engineerWindow && !engineerWindow.isDestroyed() && event.sender === engineerWindow.webContents) {
-    const bounds = engineerWindow.getBounds();
-    const engineerH = Math.max(80, Math.min(Math.ceil(contentHeight) + 24, 600));
-    engineerWindow.setSize(bounds.width, engineerH);
-    engineerWindow.setPosition(bounds.x, Math.round(y + 56));
-    return;
-  }
+  // Top edge stays put, window grows downward. Capped at 600px since
+  // engineer answers are multi-sentence explanations, not short commentary
+  // bursts, and were getting clipped at a lower cap.
+  const { y } = screen.getPrimaryDisplay().workArea;
+  const bounds = engineerWindow.getBounds();
+  const engineerH = Math.max(80, Math.min(Math.ceil(contentHeight) + 24, 600));
+  engineerWindow.setSize(bounds.width, engineerH);
+  engineerWindow.setPosition(bounds.x, Math.round(y + 56));
 });
 
 app.on('window-all-closed', () => {

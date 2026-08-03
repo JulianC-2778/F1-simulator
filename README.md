@@ -31,7 +31,8 @@ TORCS human driver -- UDP :3101 --> Middleware (sole listener)
        |                                         |
        |                         REST + WebSocket :8880/:8766
        |                                         |
-       |                              Electron overlay-app
+       |                    |-- Browser dashboard (all features)
+       |                    `-- Electron overlay-app (Feature 1 caption only)
        |                                         |
        |                              optional Kokoro TTS :8881
        |
@@ -105,13 +106,15 @@ python -m pip install -r requirements-core.txt
 - `requirements-tts.txt`：Kokoro TTS 服务及模型下载工具。
 - `requirements.txt`：聚合以上三个文件，用于完整安装。
 
-### 3. 安装 Electron Overlay
+### 3. 安装 Electron Overlay（Feature 1 工程师字幕窗口，可选）
 
 ```bash
 cd ~/F1-simulator/overlay-app
 npm install
 cd ..
 ```
+
+这个 Electron 应用只渲染 Feature 1（AI 赛车工程师）的悬浮字幕窗口；Feature 3 的实时解说显示在下方“最小演示流程”里打开的浏览器 dashboard，不再需要这里的 overlay-app。
 
 WSL 用户应先执行 `which node` 和 `which npm`，确认结果不是 `/mnt/c/...` 或 `/mnt/d/...`。
 
@@ -165,7 +168,7 @@ WSL2 无法访问 Windows 上的 LM Studio 时，在 LM Studio 开启局域网�
 
 ## 最小演示流程（Feature 3 实时解说）
 
-以下流程从仓库根目录开始，使用四个终端。
+以下流程从仓库根目录开始，使用三个终端。解说输出显示在浏览器 dashboard（`http://127.0.0.1:8880`），不需要启动 Electron overlay-app。
 
 终端 1：启动 Granite 模型服务后，启动主 midware：
 
@@ -175,14 +178,7 @@ source .venv/bin/activate
 python3 -m midware.app
 ```
 
-终端 2：启动字幕 Overlay：
-
-```bash
-cd ~/F1-simulator/overlay-app
-npm start
-```
-
-终端 3：配置遥测并启动 TORCS：
+终端 2：配置遥测并启动 TORCS：
 
 ```bash
 cd ~/F1-simulator
@@ -196,7 +192,7 @@ export TORCS_PLAYER_UDP_PORT=3101
 
 若不需要 WSLg 窗口修复，也可直接运行 `./BUILD/bin/torcs`。进入 **Race → Quick Race**，选择 human driver 并开始驾驶。
 
-终端 4（可选）：启动本地 TTS：
+终端 3（可选）：启动本地 TTS：
 
 ```bash
 cd ~/F1-simulator
@@ -204,7 +200,7 @@ source .venv/bin/activate
 python tts_server.py
 ```
 
-验收信号：`http://127.0.0.1:8880` 能打开、遥测数值随比赛变化、Overlay 已连接，并在事件触发后显示 Granite 生成的解说。
+验收信号：`http://127.0.0.1:8880` 能打开、遥测数值随比赛变化、dashboard 的 Commentary 标签页已连接（WebSocket 状态显示 ready），并在事件触发后显示 Granite 生成的解说。
 
 ## 四个 Feature 的启动方法
 
@@ -244,7 +240,7 @@ python telemetry_analyzer.py
 
 ### Feature 3 — AI 实时赛事解说
 
-按“最小演示流程”启动 `python3 -m midware.app`、`overlay-app` 和 TORCS。事件检测、上下文构建与流式输出说明见 [docs/commentary-loop.md](docs/commentary-loop.md)。
+按“最小演示流程”启动 `python3 -m midware.app` 和 TORCS，在浏览器打开 `http://127.0.0.1:8880` 查看解说输出（不需要 overlay-app）。事件检测、上下文构建与流式输出说明见 [docs/commentary-loop.md](docs/commentary-loop.md)。
 
 ### Feature 4 — AI 驾驶机器人
 
@@ -302,7 +298,6 @@ python tools/runtime_matrix_check.py
 
 # Electron JavaScript 静态检查
 node --check overlay-app/electron/main.js
-node --check overlay-app/src/renderer.js
 node --check overlay-app/src/engineer-renderer.js
 ```
 

@@ -2,24 +2,30 @@
 
 This document explains how to test the `TORCS AI Overlay` Electron app.
 
-The overlay is an English-only floating caption HUD. It connects to:
+The overlay is an English-only floating caption HUD for **Feature 1 (AI
+Racing Engineer Chatbot)** only. Race commentary (Feature 3) no longer has
+an Electron overlay window -- it is shown in midware's own browser
+dashboard (`midware/static/dashboard.html`) instead. This app connects to:
 
 ```text
 ws://127.0.0.1:8880/ws
 ```
+
+and only displays messages tagged `"source": "engineer"` (see
+`overlay_broadcast.py` / `docs/display-layer-contract.md`).
 
 ## 1. Test Goals
 
 Use this guide to verify:
 
 - The Electron app installs and starts.
-- The window is frameless, transparent, always on top, and positioned near the bottom center.
+- The window is frameless, transparent, always on top, and positioned near the top center.
 - The UI shows the caption/status text plus a small settings button.
 - The WebSocket state flow works correctly.
-- The app reconnects when the commentary service is unavailable.
+- The app reconnects when midware is unavailable.
 - The settings button opens the settings window.
 - The app menu can show or hide the overlay.
-- Voice commentary can be enabled and tested from settings.
+- Voice playback can be enabled and tested from settings.
 
 ## 2. Expected Project Files
 
@@ -36,9 +42,9 @@ Expected important files:
 overlay-app/package.json
 overlay-app/electron/main.js
 overlay-app/electron/preload.js
-overlay-app/src/index.html
+overlay-app/src/engineer.html
 overlay-app/src/styles.css
-overlay-app/src/renderer.js
+overlay-app/src/engineer-renderer.js
 overlay-app/src/settings.html
 overlay-app/src/settings.css
 overlay-app/src/settings.js
@@ -148,7 +154,8 @@ Run:
 cd /home/ubu/test/torcs-1.3.7/overlay-app
 node --check electron/main.js
 node --check electron/preload.js
-node --check src/renderer.js
+node --check src/engineer-renderer.js
+node --check src/settings.js
 ```
 
 Expected result:
@@ -160,7 +167,7 @@ If there is a syntax error, Node will print the file and line number.
 
 ## 6. Start Without Backend
 
-Make sure the Python commentary backend is not running.
+Make sure midware (`python3 -m midware.app`) is not running.
 
 Then start the overlay:
 
@@ -173,7 +180,7 @@ Expected result:
 
 - A floating overlay window appears.
 - It is around `900px` wide and `160px` tall.
-- It is near the bottom center of the primary display.
+- It is near the top center of the primary display.
 - It has no title bar, toolbar, close button, or visible browser chrome.
 - It has a small settings button in the caption panel.
 - It shows:
@@ -188,7 +195,7 @@ The app should keep trying to reconnect every 3 seconds.
 
 ## 7. Start With Real Backend
 
-Start the existing Python commentary backend that exposes:
+Start midware, which exposes:
 
 ```text
 ws://127.0.0.1:8880/ws
@@ -204,29 +211,30 @@ npm start
 Expected initial result:
 
 ```text
-Waiting for commentary...
+Waiting for engineer reply...
 ```
 
-When the backend sends commentary events, the expected UI states are:
+Ask a question via `chat_engineer.py` / `chat_engineer_gui.py` (or `POST
+/api/engineer/ask`). The backend tags every commentary lifecycle message
+with `"source": "engineer"` when it's meant for this window; anything
+without that tag (e.g. race commentary) is ignored here. Expected UI states:
 
 | Backend message | Expected caption |
 | --- | --- |
-| `{ "type": "connected", "stats": ... }` | `Waiting for commentary...` |
-| `{ "type": "ai_start" }` | `Generating captions...` |
-| `{ "type": "token", "text": "..." }` | No immediate display change; text is buffered |
-| `{ "type": "ai_done", "content": "..." }` | Final English commentary text |
-| `{ "type": "error", "message": "..." }` | `Commentary error: ...` |
-| `{ "type": "telemetry_update", ... }` | Ignored |
-| `{ "type": "event_detected", ... }` | Ignored |
+| `{ "type": "connected" }` | `Waiting for engineer reply...` |
+| `{ "type": "ai_start", "source": "engineer" }` | `Generating engineer reply...` |
+| `{ "type": "token", "source": "engineer", "text": "..." }` | No immediate display change; text is buffered |
+| `{ "type": "ai_done", "source": "engineer", "content": "..." }` | Final engineer reply text |
+| `{ "type": "error", "source": "engineer", "message": "..." }` | `Engineer error: ...` |
+| Any message with a different/missing `source` | Ignored |
 
 ## 8. Settings Window Test
 
 Start the backend and overlay:
 
 ```bash
-cd /home/ubu/test/torcs-1.3.7/midware
-source .venv/bin/activate
-python commentary.py
+cd /home/ubu/test/torcs-1.3.7
+python3 -m midware.app
 ```
 
 ```bash
@@ -243,10 +251,13 @@ Verify the settings window includes:
 
 - Connection: WebSocket URL, reconnect interval, ping interval.
 - Model API: provider, Base URL, API Key, model, temperature, streaming.
-- Commentator persona: context tokens, response tokens, system prompt.
 - Voice: enable voice, voice selection, rate, pitch, volume, test voice.
-- Auto commentary: mode, baseline interval, event window, cooldown, dedupe window, max words.
-- Data source and actions: CSV path, rankings CSV path, load CSV, inject demo data, trigger commentary, clear history.
+- Text-to-Speech (Server): enable, provider, URL, voice, speed, volume.
+
+Auto-commentary configuration, persona editing, CSV loading, and manual
+commentary triggers are **not** part of this settings window -- those live
+in midware's dashboard now (`/static/dashboard.html`), since they configure
+race commentary, not the engineer overlay.
 
 Click `Reload` and verify backend configuration loads from `midware`.
 
@@ -256,18 +267,18 @@ Save each section after making a small change, then restart the overlay and conf
 
 Open the settings window.
 
-1. Enable `Enable voice commentary`.
+1. Enable `Enable voice playback`.
 2. Select a voice, or keep `System default`.
 3. Click `Test Voice`.
 4. Click `Save Voice`.
-5. Trigger commentary from settings or from the backend UI.
+5. Ask the engineer a question to trigger a real reply.
 
 Expected result:
 
 - The test sentence is spoken.
-- During real commentary, `ai_start` stops any previous speech.
-- When `ai_done` arrives, the final commentary text is spoken once.
-- `Connection lost`, `Waiting for commentary...`, and `Commentary error` are not spoken.
+- During a real reply, `ai_start` (source `engineer`) stops any previous speech.
+- When `ai_done` arrives, the final reply text is spoken once.
+- `Connection lost`, `Waiting for engineer reply...`, and `Engineer error` are not spoken.
 
 If the voice dropdown only shows `System default`, install and verify the native Linux TTS fallback:
 
@@ -276,7 +287,7 @@ sudo apt-get install -y speech-dispatcher espeak-ng
 spd-say "TORCS voice test"
 ```
 
-If that command speaks, restart the overlay. `Test Voice` and final commentary should use `spd-say` automatically.
+If that command speaks, restart the overlay. `Test Voice` and final replies should use `spd-say` automatically.
 
 ## 10. Manual WebSocket Mock Test
 
@@ -324,28 +335,32 @@ async def handler(websocket):
     ping_task = asyncio.create_task(log_ping(websocket))
 
     await asyncio.sleep(1)
-    await websocket.send(json.dumps({"type": "ai_start"}))
+    await websocket.send(json.dumps({"type": "ai_start", "source": "engineer"}))
 
     await asyncio.sleep(1)
     await websocket.send(json.dumps({
         "type": "token",
-        "text": "Brake late into turn one, "
+        "source": "engineer",
+        "text": "Box this lap, "
     }))
     await websocket.send(json.dumps({
         "type": "token",
-        "text": "then ease back onto the throttle."
+        "source": "engineer",
+        "text": "tyres are done."
     }))
 
     await asyncio.sleep(1)
     await websocket.send(json.dumps({
         "type": "ai_done",
-        "content": "Brake late into turn one, then ease back onto the throttle."
+        "source": "engineer",
+        "content": "Box this lap, tyres are done."
     }))
 
     await asyncio.sleep(3)
     await websocket.send(json.dumps({
         "type": "error",
-        "message": "Mock commentary fault"
+        "source": "engineer",
+        "message": "Mock engineer fault"
     }))
 
     await ping_task
@@ -387,10 +402,10 @@ npm start
 Expected overlay sequence:
 
 ```text
-Waiting for commentary...
-Generating captions...
-Brake late into turn one, then ease back onto the throttle.
-Commentary error: Mock commentary fault
+Waiting for engineer reply...
+Generating engineer reply...
+Box this lap, tyres are done.
+Engineer error: Mock engineer fault
 ```
 
 The mock server should also print:
@@ -410,7 +425,7 @@ Use either the real backend or the mock backend.
 3. Confirm the overlay shows:
 
 ```text
-Waiting for commentary...
+Waiting for engineer reply...
 ```
 
 4. Stop the backend with `Ctrl+C`.
@@ -425,7 +440,7 @@ Connection lost
 8. Confirm the overlay returns to:
 
 ```text
-Waiting for commentary...
+Waiting for engineer reply...
 ```
 
 ## 12. Window Behavior Test
@@ -448,6 +463,7 @@ Verify:
 - The application menu can show or hide the overlay.
 - The panel can be dragged by dragging the caption area.
 - The overlay stays above normal application windows.
+- The window grows downward from the top edge as replies get longer (up to `600px`), instead of upward like the old commentary window did.
 
 Note: the current version has no tray icon. Use the app menu or restart with `npm start` if the hidden overlay needs to be shown again.
 
@@ -470,12 +486,13 @@ Verify the overlay visually:
 
 ## 14. Long Caption Test
 
-Use the mock server or real backend to send a long `ai_done` message:
+Use the mock server or real backend to send a long `ai_done` message tagged `"source": "engineer"`:
 
 ```json
 {
   "type": "ai_done",
-  "content": "Hold the outside line through the fast right-hander, keep the steering calm, and prepare to brake hard once the car is fully straight."
+  "source": "engineer",
+  "content": "Box this lap for a fresh set of mediums, push hard on the out-lap, and watch your fuel mixture until the pit window closes."
 }
 ```
 
@@ -514,10 +531,10 @@ Expected behavior:
 - Only minimal overlay/settings IPC methods are exposed.
 - No broad Node.js APIs are exposed to the renderer.
 
-Inspect `src/renderer.js`:
+Inspect `src/engineer-renderer.js`:
 
 ```bash
-grep -n "textContent\\|innerHTML" src/renderer.js
+grep -n "textContent\\|innerHTML" src/engineer-renderer.js
 ```
 
 Expected result:
@@ -559,7 +576,7 @@ npm install
 
 Cause:
 
-The backend is not running or is not listening on:
+midware is not running or is not listening on:
 
 ```text
 ws://127.0.0.1:8880/ws
@@ -567,7 +584,7 @@ ws://127.0.0.1:8880/ws
 
 Fix:
 
-Start the backend, then wait up to 3 seconds for reconnect.
+Start midware, then wait up to 3 seconds for reconnect.
 
 ### Port 8880 is already in use
 
@@ -577,11 +594,7 @@ Run:
 ss -ltnp | grep 8880
 ```
 
-Stop the process using the port, or change the backend port and update `WS_URL` in:
-
-```text
-overlay-app/src/renderer.js
-```
+Stop the process using the port, or change the backend port and update the WebSocket URL from the overlay's settings window.
 
 ### Electron window does not appear in WSL
 
@@ -611,7 +624,7 @@ If `spd-say` speaks but the overlay does not, restart `npm start` so Electron pi
 
 ### Overlay is hidden
 
-Use the application menu and choose `TORCS AI Overlay` -> `Show Overlay`.
+Use the application menu and choose `TORCS AI Overlay` -> `Show Engineer Overlay`.
 
 If the menu is unavailable, restart the app:
 
@@ -627,20 +640,20 @@ Mark the overlay as passing if all items are true:
 - `npm start` opens the overlay.
 - The window is frameless and transparent.
 - The window is always on top.
-- The window appears near the bottom center.
+- The window appears near the top center.
 - The caption panel is draggable.
 - The UI has no toolbar, no close button, and no browser chrome.
 - The small settings button opens the settings window.
 - The application menu opens the settings window.
 - The application menu can show and hide the overlay.
-- Initial connected state shows `Waiting for commentary...`.
+- Initial connected state shows `Waiting for engineer reply...`.
 - Missing backend state shows `Connection lost`.
-- `ai_start` shows `Generating captions...`.
-- `token` messages are buffered.
-- `ai_done` shows final English commentary.
-- `error` shows `Commentary error` with a concise message when available.
-- `telemetry_update` and `event_detected` do not change the caption.
+- `ai_start` (source `engineer`) shows `Generating engineer reply...`.
+- `token` messages (source `engineer`) are buffered.
+- `ai_done` (source `engineer`) shows the final engineer reply.
+- `error` (source `engineer`) shows `Engineer error` with a concise message when available.
+- Messages without `source: "engineer"` (e.g. race commentary) do not change the caption.
 - Long English captions wrap cleanly.
-- Voice can be enabled, tested, saved, and used for final commentary.
-- Settings can save model API, context, auto commentary, data source actions, and overlay connection.
+- Voice can be enabled, tested, saved, and used for final replies.
+- Settings can save model API, voice, TTS, and overlay connection.
 - No Chinese text appears in the overlay UI.
