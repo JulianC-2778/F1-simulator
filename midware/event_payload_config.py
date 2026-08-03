@@ -17,6 +17,7 @@ last_lap_time     : float — last completed lap time in seconds
 
 # Window summary (computed over the recent 6-second window)
 damage_delta      : float — damage increase in this window
+speed_delta       : float — speed change over this window (km/h)
 
 # Opponent distances (metres; 200 = no opponent detected)
 front_gap         : float — gap to nearest car ahead
@@ -72,6 +73,7 @@ EVENT_FIELDS: dict[str, list[str]] = {
         "race_pos",
         "lap",
         "gear",
+        "speed_delta",
         "front_gap",
         "rear_gap",
         "nearest_gap",

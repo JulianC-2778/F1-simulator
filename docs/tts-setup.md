@@ -159,11 +159,15 @@ Open three terminals:
 
 | Terminal | Command | Port |
 |----------|---------|------|
-| 1 — Midware | `cd ~/F1-simulator/midware && source .venv/bin/activate && python commentary.py` | 8880 |
+| 1 — Midware | `cd ~/F1-simulator && source .venv/bin/activate && python3 -m midware.app` | 8880 |
 | 2 — TTS | `cd ~/F1-simulator && source midware/.venv/bin/activate && python tts_server.py` | 8881 |
 | 3 — TORCS | `~/F1-simulator/BUILD/bin/torcs` | — |
 
-The Electron overlay is started separately with `cd overlay-app && npm start`.
+Open `http://127.0.0.1:8880` in a browser to see commentary captions and hear
+the synthesized audio play back -- the Electron overlay is not needed for
+this. It only renders Feature 1's (AI Racing Engineer) floating caption
+window, and is started separately with `cd overlay-app && npm start` if you
+want that too.
 
 ---
 

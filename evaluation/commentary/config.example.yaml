@@ -1,0 +1,26 @@
+# AI Live Commentary experiment metadata template (commentary_test_plan.md
+# section 9). Copy to config.yaml (gitignored) before a real experiment and
+# fill in every field -- do not commit the filled-in copy if it contains
+# machine-specific paths. No secrets belong in this file; the middleware's
+# own API key lives in midware runtime config, never here.
+
+git_commit: ""                 # `git rev-parse HEAD` at experiment time
+test_timestamp_utc: ""         # ISO 8601, e.g. 2026-08-02T16:00:00Z
+torcs_version: ""
+middleware_version: ""         # git tag/commit if different from git_commit
+granite_model: ""              # e.g. granite-4.1-8b-instruct
+granite_quantisation: ""       # e.g. Q4_K_M, or "none" for full precision
+lm_studio_version: ""
+operating_system: ""
+cpu: ""
+gpu: ""
+ram_gb: null
+commentary_mode: ""            # off | interval | event | hybrid
+detection_interval_s: null     # baseline_interval, only meaningful for interval/hybrid
+temperature: null
+max_tokens: null
+streaming: null
+tts_enabled: null
+tracks: []
+opponents: null
+event_match_tolerance_s: 1.0   # match_events.py --tolerance, keep in sync

@@ -214,16 +214,12 @@ def build_registry() -> dict[str, ManagedProcess]:
             [PYTHON, "-m", "midware.app"], ROOT_DIR,
         ),
         ManagedProcess(
-            "overlay_commentary", "解说字幕 Overlay (Electron, start:commentary)",
-            ["npm", "run", "start:commentary"], OVERLAY_DIR,
-        ),
-        ManagedProcess(
             "engineer_gui", "Feature 1 -- 工程师聊天窗口 (chat_engineer_gui.py)",
             [PYTHON, "chat_engineer_gui.py"], ROOT_DIR,
         ),
         ManagedProcess(
-            "overlay_engineer", "工程师字幕 Overlay (Electron, start:engineer，可选)",
-            ["npm", "run", "start:engineer"], OVERLAY_DIR,
+            "overlay_engineer", "工程师字幕 Overlay (Electron，可选)",
+            ["npm", "start"], OVERLAY_DIR,
         ),
         ManagedProcess(
             "feature2", "Feature 2 -- 遥测看板 (midware/feature2_service.py)",
@@ -256,7 +252,7 @@ def build_registry() -> dict[str, ManagedProcess]:
 # Grouping only affects layout, not behaviour.
 GROUPS: list[tuple[str, list[str]]] = [
     ("TORCS 本体（两种模式互斥，一次只开一个）", ["torcs_human", "torcs_scr"]),
-    ("Feature 3 -- 实时解说 / 共享中枢", ["midware", "overlay_commentary"]),
+    ("Feature 3 -- 实时解说 / 共享中枢", ["midware"]),
     ("Feature 1 -- AI 赛车工程师", ["engineer_gui", "overlay_engineer"]),
     ("Feature 2 -- 遥测看板", ["feature2"]),
     ("Feature 4 -- AI 驾驶 Bot", ["ai_bot"]),

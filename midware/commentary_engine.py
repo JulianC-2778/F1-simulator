@@ -381,6 +381,7 @@ def _extract_fields(
         "fuel_remaining":      round(latest["fuel"], 3),
         "total_damage":        round(latest["damage"], 3),
         "damage_delta":        round(summary.get("damage_delta", 0.0), 3),
+        "speed_delta":         round(summary.get("speed_delta", 0.0), 3),
         "last_lap_time":       round(latest.get("last_lap_time", 0.0), 3),
         "front_gap":           round(opp["front_gap"], 3),
         "rear_gap":            round(opp["rear_gap"], 3),

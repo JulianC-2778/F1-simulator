@@ -40,6 +40,7 @@ import config
 from telemetry_common import extract_json_object
 from commentary_engine import CommentaryConfig, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
+from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
 from midware.services.model_broker import MODEL_PRIORITIES, ModelBroker
@@ -140,6 +141,9 @@ commentary_engine = CommentaryEngine(
 _auto_task: asyncio.Task | None = None
 _commentary_task: asyncio.Task | None = None
 _commentary_priority: int = 0
+# Opt-in t0-t5 latency capture for work package C -- disabled unless
+# COMMENTARY_LATENCY_LOG is set in the environment; see midware/latency_log.py.
+latency_log = LatencyLog()
 runtime_manager = FeatureGate(feature_specs())
 model_broker = ModelBroker(max_queue_size=16, max_concurrency=1)
 bot_status_service = BotStatusService()
@@ -293,6 +297,7 @@ async def call_ai(
     )
 
     async def on_token(token: str) -> None:
+        latency_log.record(request_id, "t2_first_token")
         await broadcast({"type": "token", "text": token, "source": "commentary", "request_id": request_id})
 
     full_text = await model_broker.submit(
@@ -368,11 +373,20 @@ async def generate_commentary(
     manual_prompt: str | None = None,
     event_payload: dict | None = None,
     history_mode: str = "full",
+    request_id: str | None = None,
 ) -> str:
     """
     构建上下文 → 调用 AI → 存入历史 → 广播。
+
+    `request_id`: normally minted here (uuid4, unchanged default for every
+    existing caller -- manual/baseline/CSV-replay commentary). The
+    auto-event path (_auto_commentary_loop -> _run_commentary) mints one
+    earlier instead and passes it through, purely so the opt-in latency
+    logger (see midware/latency_log.py) can correlate t1_event_detected
+    (logged before generate_commentary is even called) with this same
+    request's t2/t3 stages.
     """
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     # 1. Build user message
     if event_payload:
         user_content = ctx_mgr.format_event_prompt(event_payload)
@@ -432,18 +446,32 @@ async def generate_commentary(
     # 6. 把 AI 回复存入历史
     ctx_mgr.add_assistant(reply)
 
+    # 6.5 事件驱动解说的展示前去重。token 在流式阶段就已经广播给客户端了
+    # （生成完成前无法预知最终文本，没法拦住流式 token），但如果完成后判定
+    # 这段文本和近期已展示过的重复，就不再把它作为一条新的可见字幕/语音提交
+    # 给客户端：content 置空 + duplicate=True，客户端据此清空自己在流式阶段
+    # 攒下来的缓冲区，而不是在 content 为空时回退去显示那份重复内容。
+    is_duplicate = False
+    if event_payload is not None:
+        event_time = float(event_payload.get("event_time", 0.0))
+        is_duplicate = not commentary_engine.should_emit_text(reply, event_time)
+        if is_duplicate:
+            log.info("重复解说已在展示前被去重，不广播 ai_done 正文/tts_audio")
+
     # 7. TTS — 先合成语音，再广播字幕，确保字幕和音频始终一起出现。
     # 如果这期间被新事件取消（见 _auto_commentary_loop 的抢占逻辑），
     # 这条解说会连字幕带音频一起被丢弃，不会出现"有字没声"的半吊子状态。
-    audio = await call_tts(reply)
+    audio = None if is_duplicate else await call_tts(reply)
 
     # 8. 广播字幕 + 音频（一起提交，用 shield 保护不被取消打断）
     async def _commit():
+        latency_log.record(request_id, "t3_ai_done")
         await broadcast({
             "type": "ai_done",
             "source": "commentary",
             "request_id": request_id,
-            "content": reply,
+            "content": "" if is_duplicate else reply,
+            "duplicate": is_duplicate,
             "stats": ctx_mgr.stats(),
         })
         if audio:
@@ -464,16 +492,23 @@ async def generate_commentary(
 # 自动解说定时任务
 # ---------------------------------------------------------------------------
 
-async def _run_commentary(decision, t, r):
+async def _run_commentary(decision, t, r, request_id=None):
     try:
-        reply = await generate_commentary(t, r, event_payload=decision.payload, history_mode="summary")
-        if not commentary_engine.should_emit_text(reply, float(decision.payload.get("event_time", 0.0))):
-            log.info("重复解说已被去重记录标记")
+        # 去重判断已经挪进 generate_commentary() 内部、广播之前完成（见该函数
+        # 第 6.5 步）；这里不再重复调用 should_emit_text ——它有副作用
+        # （命中时会把 text_history 里的时间戳刷新成当前 sim_time），重复调用
+        # 会让第二次调用永远判定为"重复"，把去重逻辑弄错。
+        await generate_commentary(
+            t, r, event_payload=decision.payload, history_mode="summary", request_id=request_id,
+        )
     except asyncio.CancelledError:
         log.info(f"解说被新事件中断: {decision.event.get('event_type')}")
         raise
     except Exception as e:
         log.warning(f"自动解说失败: {e}")
+    finally:
+        if request_id:
+            latency_log.forget(request_id)
 
 
 async def _auto_commentary_loop():
@@ -508,9 +543,12 @@ async def _auto_commentary_loop():
                 else:
                     continue
 
+            request_id = str(uuid.uuid4())
+            latency_log.record(request_id, "t1_event_detected")
+
             await broadcast({"type": "event_detected", "event": decision.event, "payload": decision.payload})
             _commentary_priority = new_priority
-            _commentary_task = asyncio.create_task(_run_commentary(decision, t, r))
+            _commentary_task = asyncio.create_task(_run_commentary(decision, t, r, request_id=request_id))
 
         except Exception as e:
             log.warning(f"自动解说失败: {e}")
@@ -955,7 +993,10 @@ async def ask_engineer(body: dict):
             temperature=0.4,
             max_tokens=180,
             stream=False,
-            timeout=45,
+            # 45s was too tight for this local model with the full
+            # telemetry-context prompt, especially while TORCS is also
+            # competing for GPU/CPU -- bumped to give it more headroom.
+            timeout=90,
             request_id=request_id,
         )
     except Exception as exc:
