@@ -48,7 +48,8 @@ reply text*, independent of the event cooldown (`should_emit_text`, L122-130).
 | Input validation | `commentary_engine.py::normalize_frame`, `next_decision` | none | `tests/unit/test_commentary_input.py` | done |
 | Event detection / boundaries | `commentary_engine.py::detect_event` | none | `tests/unit/test_commentary_events.py` | done |
 | Modes (off/interval/event/hybrid) | `commentary_engine.py::next_decision` L82-108 | none | `tests/unit/test_commentary_modes.py` | done |
-| Priority / pre-emption | `runtime.py::_auto_commentary_loop` L479-517 | none | `tests/unit/test_commentary_modes.py` (`TestPreemption`) | done |
+| Priority / pre-emption | `runtime.py::_auto_commentary_loop` (interrupt_mode == "interrupt" branch) | none | `tests/integration/test_commentary_runtime.py::TestHighFrequencyEvents` | done |
+| Queue mode (interrupt_mode == "queue"): new event queues instead of cancelling, single-slot newest/highest-priority-wins, silent background prefetch, release gated on `/api/commentary/playback_done`, manual trigger always bypasses the queue | `commentary_engine.py::CommentaryConfig.interrupt_mode`, `runtime.py::_queue_event`/`_start_prefetch`/`_advance_queue`/`_auto_commentary_loop`/`manual_commentary`/`commentary_playback_done` | none (new 2026-08-04 feature) | `tests/integration/test_commentary_queue_mode.py` | done — see §7 |
 | Cooldown | `commentary_engine.py::_can_emit_event` | none | `tests/unit/test_commentary_modes.py` (`TestCooldown`) | done |
 | Event deduplication (signature/sim-time) | `commentary_engine.py::event_signature` + `_can_emit_event` | none | `tests/unit/test_commentary_modes.py` | done |
 | Text deduplication before display | `commentary_engine.py::should_emit_text` | none | `tests/integration/test_commentary_runtime.py::test_dedupe_before_broadcast` | done |
@@ -129,3 +130,61 @@ decision, not a testing one.
   `evaluation/commentary/sample_data/` (explicitly marked `SAMPLE — NOT REAL RESULTS`).
   No real experiment was run; see `docs/commentary_experiment_protocol.md` for the
   human-executed procedure and the exact commands to produce real `results/` data.
+
+## 7. 2026-08-04 addition: `interrupt_mode` ("interrupt" vs "queue")
+
+Feedback from the supervising instructor: a new event cutting off the sentence
+currently being read out loud felt jarring. `CommentaryConfig` gained a second mode
+axis, `interrupt_mode: "interrupt" | "queue"`, independent of the existing `mode`
+(`off`/`interval`/`event`/`hybrid`):
+
+- `interrupt` (default): unchanged pre-existing behaviour — `_auto_commentary_loop`
+  cancels the in-flight generation when an equal-or-higher-priority event arrives.
+  Covered by the pre-existing `TestHighFrequencyEvents` (now the "priority /
+  pre-emption" row's real reference, correcting a stale test-class name in the
+  original §3 row — the file has no `TestPreemption` class).
+- `queue`: a busy period (still generating, or the frontend hasn't reported the
+  previous one finished playing via the new `POST /api/commentary/playback_done`)
+  no longer cancels anything. The new event is written into a single-slot queue
+  (`runtime._pending_decision`) — only the newest/highest-priority candidate
+  survives, lower-priority arrivals while something is already queued are dropped —
+  and generated (text + TTS) silently in the background right away
+  (`runtime._start_prefetch`, `generate_commentary(..., silent=True)`), so it's
+  ready by the time the current item finishes. Nothing about it (not even the
+  "Event: ..." system line) reaches clients until `runtime._advance_queue()`
+  releases it. A manual "Trigger commentary" request always interrupts immediately
+  in both modes — it cancels whatever is in flight, clears the queue slot, and
+  generates live.
+
+New test file: `tests/integration/test_commentary_queue_mode.py` (11 tests, all
+passing against this commit). Coverage:
+
+- `GET`/`POST /api/commentary/config` expose and update `interrupt_mode`.
+- A queued item generates fully in the background but broadcasts nothing until
+  released (proven via a distinguishing probe message, same technique as
+  `TestBroadcastIsolation`).
+- `_advance_queue()` broadcasts `event_detected` + `user_msg` + `ai_start` +
+  `ai_done` for the released item and leaves `_playback_busy` true (the released
+  item is now "current"); with nothing pending it just clears the busy flag.
+- Single-slot priority: a lower-priority arrival does not replace an existing
+  pending item; an equal-or-higher-priority arrival does (and supersedes its
+  prefetch).
+- `POST /api/commentary/playback_done` end-to-end releases a queued item over a
+  real WebSocket connection, and is a harmless no-op in `interrupt` mode.
+- Manual trigger clears a populated queue slot and broadcasts immediately.
+- `_auto_commentary_loop` itself, driven for real (not just the helper functions
+  in isolation): under `queue` mode a second event arriving while the first is
+  still generating is queued as a silent prefetch rather than cancelling the live
+  generation — the mirror-image assertion of `TestHighFrequencyEvents`, which pins
+  the opposite (cancel, not queue) behaviour under the default `interrupt` mode.
+
+Not covered (out of scope for this pass, consistent with §6): the frontend
+(`midware/static/dashboard.html`) playback-completion reporting (audio `onended`,
+browser-speech queue draining, and the estimated-read-time fallback timer for
+TTS-off) has no browser-driven test in this repository; it was exercised manually
+against the live dashboard, not automated. A known edge case is also undocumented
+in code comments only, not tested: switching `interrupt_mode` from `"queue"` back
+to `"interrupt"` (or vice versa) while an item is mid-flight can leave a stale
+`_pending_decision` un-drained until the next busy cycle overwrites it — this
+requires an admin actively flipping the setting mid-generation and was judged low
+enough impact not to warrant the added state-machine complexity to close.

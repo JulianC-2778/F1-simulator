@@ -38,7 +38,7 @@ if str(MIDWARE_DIR) not in sys.path:
 
 import config
 from telemetry_common import extract_json_object
-from commentary_engine import CommentaryConfig, CommentaryEngine
+from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
@@ -141,6 +141,13 @@ commentary_engine = CommentaryEngine(
 _auto_task: asyncio.Task | None = None
 _commentary_task: asyncio.Task | None = None
 _commentary_priority: int = 0
+# -- queue 模式（interrupt_mode == "queue"）状态 --
+# 当前有一条解说正在生成或播放，等待前端 /api/commentary/playback_done 通知播完。
+_playback_busy: bool = False
+# 排队中的下一条（单槽：只保留最新/最高优先级一条，见 _queue_event）。
+_pending_decision: "CommentaryDecision | None" = None
+# 为 _pending_decision 在后台静默生成好文本+语音的任务（不广播，见 generate_commentary(silent=True)）。
+_prefetch_task: asyncio.Task | None = None
 # Opt-in t0-t5 latency capture for work package C -- disabled unless
 # COMMENTARY_LATENCY_LOG is set in the environment; see midware/latency_log.py.
 latency_log = LatencyLog()
@@ -278,8 +285,15 @@ async def call_ai(
     priority: int,
     stale_key: str | None = None,
     request_id: str,
+    silent: bool = False,
 ) -> str:
-    """Call the OpenAI-compatible API and return full reply text, streaming tokens via WebSocket."""
+    """Call the OpenAI-compatible API and return full reply text, streaming tokens via WebSocket.
+
+    `silent`: used by queue-mode prefetch (see _start_prefetch) to generate a
+    reply in the background without leaking any token/text to clients before
+    its turn to be released -- latency is still recorded, only the broadcast
+    is suppressed.
+    """
     key      = api_config["api_key"]
     base_url = api_config["base_url"].rstrip("/")
     model    = api_config["model"]
@@ -298,7 +312,8 @@ async def call_ai(
 
     async def on_token(token: str) -> None:
         latency_log.record(request_id, "t2_first_token")
-        await broadcast({"type": "token", "text": token, "source": "commentary", "request_id": request_id})
+        if not silent:
+            await broadcast({"type": "token", "text": token, "source": "commentary", "request_id": request_id})
 
     full_text = await model_broker.submit(
         lambda: gateway.chat(messages, on_token=on_token if do_stream else None),
@@ -308,7 +323,7 @@ async def call_ai(
         timeout_s=75,
         stale_key=stale_key,
     )
-    if not do_stream:
+    if not do_stream and not silent:
         await broadcast({"type": "token", "text": full_text, "source": "commentary", "request_id": request_id})
     return full_text
 
@@ -374,7 +389,8 @@ async def generate_commentary(
     event_payload: dict | None = None,
     history_mode: str = "full",
     request_id: str | None = None,
-) -> str:
+    silent: bool = False,
+) -> str | dict:
     """
     构建上下文 → 调用 AI → 存入历史 → 广播。
 
@@ -385,6 +401,13 @@ async def generate_commentary(
     logger (see midware/latency_log.py) can correlate t1_event_detected
     (logged before generate_commentary is even called) with this same
     request's t2/t3 stages.
+
+    `silent`: queue-mode prefetch (see _start_prefetch). Builds context and
+    calls the model exactly as usual (so ctx_mgr history stays correct and
+    the reply is ready ahead of time), but suppresses every client-facing
+    broadcast (user_msg/ai_start/token/ai_done/tts_audio) and returns a dict
+    of everything a caller needs to broadcast later via
+    _broadcast_silent_result, instead of committing it immediately.
     """
     request_id = request_id or str(uuid.uuid4())
     # 1. Build user message
@@ -404,20 +427,22 @@ async def generate_commentary(
     if history_mode != "assistant_only":
         ctx_mgr.add_user(history_content)
 
-    # 3. 广播 user 消息（用于 UI 显示）
-    await broadcast({
-        "type": "user_msg",
-        "source": "commentary",
-        "request_id": request_id,
-        "content": user_content,
-        "stats": ctx_mgr.stats(),
-    })
+    # 3. 广播 user 消息（用于 UI 显示）—— silent 模式下推迟到发布时再广播
+    if not silent:
+        await broadcast({
+            "type": "user_msg",
+            "source": "commentary",
+            "request_id": request_id,
+            "content": user_content,
+            "stats": ctx_mgr.stats(),
+        })
 
     # 4. 构建发送给 AI 的消息列表（已裁剪）
     messages = ctx_mgr.build_messages()
 
     # 5. 调用 AI
-    await broadcast({"type": "ai_start", "source": "commentary", "request_id": request_id})
+    if not silent:
+        await broadcast({"type": "ai_start", "source": "commentary", "request_id": request_id})
     try:
         if event_payload:
             model_broker.invalidate("commentary_baseline")
@@ -438,9 +463,11 @@ async def generate_commentary(
             priority=priority,
             stale_key=stale_key,
             request_id=request_id,
+            silent=silent,
         )
     except Exception as e:
-        await broadcast({"type": "error", "source": "commentary", "message": str(e), "request_id": request_id})
+        if not silent:
+            await broadcast({"type": "error", "source": "commentary", "message": str(e), "request_id": request_id})
         raise
 
     # 6. 把 AI 回复存入历史
@@ -462,6 +489,19 @@ async def generate_commentary(
     # 如果这期间被新事件取消（见 _auto_commentary_loop 的抢占逻辑），
     # 这条解说会连字幕带音频一起被丢弃，不会出现"有字没声"的半吊子状态。
     audio = None if is_duplicate else await call_tts(reply)
+
+    # silent 模式：不在这里广播，把生成结果打包返回，由调用方（队列释放逻辑）
+    # 在轮到它播放时调用 _broadcast_silent_result 广播。
+    if silent:
+        latency_log.record(request_id, "t3_ai_done")
+        return {
+            "request_id": request_id,
+            "user_content": user_content,
+            "reply": reply,
+            "is_duplicate": is_duplicate,
+            "audio": audio,
+            "stats": ctx_mgr.stats(),
+        }
 
     # 8. 广播字幕 + 音频（一起提交，用 shield 保护不被取消打断）
     async def _commit():
@@ -488,6 +528,36 @@ async def generate_commentary(
     return reply
 
 
+async def _broadcast_silent_result(result: dict, event: dict | None = None, payload: dict | None = None) -> None:
+    """把 silent=True 生成好、暂存待播的解说结果广播给客户端（queue 模式排队项到点释放时调用）。"""
+    if event is not None:
+        await broadcast({"type": "event_detected", "event": event, "payload": payload})
+    await broadcast({
+        "type": "user_msg",
+        "source": "commentary",
+        "request_id": result["request_id"],
+        "content": result["user_content"],
+        "stats": result["stats"],
+    })
+    await broadcast({"type": "ai_start", "source": "commentary", "request_id": result["request_id"]})
+    await broadcast({
+        "type": "ai_done",
+        "source": "commentary",
+        "request_id": result["request_id"],
+        "content": "" if result["is_duplicate"] else result["reply"],
+        "duplicate": result["is_duplicate"],
+        "stats": result["stats"],
+    })
+    if result["audio"]:
+        await broadcast({
+            "type": "tts_audio",
+            "source": "commentary",
+            "request_id": result["request_id"],
+            "audio": base64.b64encode(result["audio"]).decode(),
+            "mime": tts_config.get("mime") or "audio/wav",
+        })
+
+
 # ---------------------------------------------------------------------------
 # 自动解说定时任务
 # ---------------------------------------------------------------------------
@@ -511,8 +581,73 @@ async def _run_commentary(decision, t, r, request_id=None):
             latency_log.forget(request_id)
 
 
+async def _start_prefetch(decision: CommentaryDecision) -> None:
+    """queue 模式：为排队中的下一条（_pending_decision）在后台静默生成文本+语音，
+    不广播给客户端，等它被 _advance_queue 释放时才发布。若已有一个正在跑的
+    预生成任务（对应一条更早/更低优先级被替换掉的排队事件），先取消它——
+    "只保留最新/最高优先级一条" 的策略在 _queue_event 里已经决定了 pending
+    该不该被替换，这里只需要让预生成任务跟 pending 保持一致。"""
+    global _prefetch_task
+    if _prefetch_task and not _prefetch_task.done():
+        _prefetch_task.cancel()
+    t, r = telemetry_store.latest()
+    request_id = str(uuid.uuid4())
+
+    async def _run():
+        return await generate_commentary(
+            t, r, event_payload=decision.payload, history_mode="summary",
+            request_id=request_id, silent=True,
+        )
+
+    _prefetch_task = asyncio.create_task(_run())
+
+
+async def _queue_event(decision: CommentaryDecision) -> None:
+    """queue 模式：当前正忙（上一条还在生成或还在前端播放），把新事件放进排队槽位。
+    单槽队列：只保留最新/最高优先级一条，priority 更低的新事件直接丢弃，避免
+    连续事件堆积导致解说越来越滞后于实时赛况。"""
+    global _pending_decision
+    new_priority = decision.event.get("priority", 0)
+    if _pending_decision is not None and new_priority < _pending_decision.event.get("priority", 0):
+        return
+    _pending_decision = decision
+    await _start_prefetch(decision)
+
+
+async def _advance_queue() -> None:
+    """queue 模式：前端播放完成（/api/commentary/playback_done）后调用，把排队槽位
+    里的下一条释放出来。如果它的后台预生成还没跑完，就等跑完再广播；没有排队
+    内容则回到空闲，等待下一次自动检测。"""
+    global _pending_decision, _prefetch_task, _commentary_task, _commentary_priority, _playback_busy
+
+    if commentary_engine.config.interrupt_mode != "queue" or _pending_decision is None:
+        _playback_busy = False
+        return
+
+    decision = _pending_decision
+    _pending_decision = None
+    prefetch = _prefetch_task
+    _prefetch_task = None
+    _commentary_priority = decision.event.get("priority", 0)
+    # _playback_busy 保持 True —— 排队的下一条现在变成"当前"，直到它自己的
+    # playback_done 到来才会再次进入这里。
+
+    async def _release():
+        try:
+            result = await prefetch if prefetch is not None else None
+        except asyncio.CancelledError:
+            result = None
+        except Exception as e:
+            log.warning(f"排队解说预生成失败: {e}")
+            result = None
+        if result is not None:
+            await _broadcast_silent_result(result, event=decision.event, payload=decision.payload)
+
+    _commentary_task = asyncio.create_task(_release())
+
+
 async def _auto_commentary_loop():
-    global _commentary_task, _commentary_priority
+    global _commentary_task, _commentary_priority, _playback_busy
     while True:
         if not runtime_manager.is_enabled("commentary"):
             await asyncio.sleep(0.5)
@@ -536,6 +671,21 @@ async def _auto_commentary_loop():
 
             new_priority = decision.event.get("priority", 0)
 
+            if cfg.interrupt_mode == "queue":
+                busy = _playback_busy or (_commentary_task and not _commentary_task.done())
+                if busy:
+                    await _queue_event(decision)
+                    continue
+
+                request_id = str(uuid.uuid4())
+                latency_log.record(request_id, "t1_event_detected")
+                await broadcast({"type": "event_detected", "event": decision.event, "payload": decision.payload})
+                _commentary_priority = new_priority
+                _playback_busy = True
+                _commentary_task = asyncio.create_task(_run_commentary(decision, t, r, request_id=request_id))
+                continue
+
+            # interrupt 模式（默认）：新事件优先级足够高就直接抢占取消上一条。
             if _commentary_task and not _commentary_task.done():
                 if new_priority >= _commentary_priority:
                     _commentary_task.cancel()
@@ -722,6 +872,7 @@ async def update_auto_interval(body: dict):
 async def get_commentary_config():
     return {
         "mode": commentary_engine.config.mode,
+        "interrupt_mode": commentary_engine.config.interrupt_mode,
         "baseline_interval": commentary_engine.config.baseline_interval,
         "event_cooldown": commentary_engine.config.event_cooldown,
         "window_seconds": commentary_engine.config.window_seconds,
@@ -740,14 +891,40 @@ async def update_commentary_config(body: dict):
 
 @app.post("/api/commentary/manual")
 async def manual_commentary(body: dict):
-    """手动触发一次解说（可附带自定义 prompt）。"""
+    """手动触发一次解说（可附带自定义 prompt）。手动解说永远立即打断当前正在
+    播放/生成的内容、清空排队槽位，不受 interrupt_mode 的 queue 设置约束。"""
+    global _commentary_task, _commentary_priority, _pending_decision, _prefetch_task, _playback_busy
     if not runtime_manager.is_enabled("commentary"):
         return JSONResponse({"ok": False, "error": "commentary feature is disabled"}, status_code=409)
     t, r = telemetry_store.latest()
 
+    if _commentary_task and not _commentary_task.done():
+        _commentary_task.cancel()
+    if _prefetch_task and not _prefetch_task.done():
+        _prefetch_task.cancel()
+    _pending_decision = None
+    _prefetch_task = None
+    # _commentary_priority is on the EVENT_PRIORITIES scale (see
+    # commentary_engine.py, currently 1-5), used by interrupt-mode's
+    # preemption check (new_priority >= _commentary_priority) -- NOT the
+    # unrelated MODEL_PRIORITIES scheduling scale. A manual trigger should
+    # win over any auto-detected event, so give it a priority above the
+    # highest defined event priority.
+    _commentary_priority = max(EVENT_PRIORITIES.values()) + 1
+    _playback_busy = True
+
     prompt = body.get("prompt") or None
-    asyncio.create_task(generate_commentary(t, r, manual_prompt=prompt))
+    _commentary_task = asyncio.create_task(generate_commentary(t, r, manual_prompt=prompt))
     return {"ok": True, "queued": True}
+
+
+@app.post("/api/commentary/playback_done")
+async def commentary_playback_done(body: dict | None = None):
+    """前端播放/展示完当前这条解说后调用（音频播完、浏览器朗读队列耗尽，或纯
+    文字模式下按估算阅读时长兜底）。interrupt 模式下这是个无害的空操作，只清
+    掉 _playback_busy；queue 模式下会把排队槽位里的下一条释放出来。"""
+    await _advance_queue()
+    return {"ok": True}
 
 
 @app.post("/api/commentary/clear")

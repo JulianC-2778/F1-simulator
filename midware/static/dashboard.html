@@ -438,6 +438,13 @@
             <div class="field"><label>Cooldown (s)</label><input type="number" id="cmCooldown" min="0" max="10" step="0.5" value="1"></div>
           </div>
           <div class="field"><label>Event window (s)</label><input type="number" id="cmWindow" min="2" max="30" value="6"></div>
+          <div class="field">
+            <label>New event vs. current playback</label>
+            <select id="cmInterruptMode">
+              <option value="interrupt">Interrupt immediately</option>
+              <option value="queue">Queue — finish current sentence first</option>
+            </select>
+          </div>
           <button id="cmApplyBtn" style="width:100%">Apply</button>
         </div>
         <div class="panel panel-pad">
@@ -768,6 +775,9 @@ const State = {
   cmPlaybackText: "",
   cmSentenceQueue: [],
   cmSentenceTimer: null,
+  cmSpeakIsCommentary: false,
+  cmPlaybackTimer: null,
+  cmPlaybackDoneReported: true,
   engStreaming: null,
   engRecording: false,
   coSessionId: null,
@@ -989,25 +999,38 @@ function routeWsMessage(msg) {
         if (msg.duplicate) {
           // Backend suppressed this reply as a near-duplicate of recently
           // shown text -- don't fall back to the streamed pending buffer,
-          // that buffer *is* the duplicate text.
+          // that buffer *is* the duplicate text. Nothing will play, so tell
+          // the backend right away (matters in queue mode -- otherwise it
+          // would wait forever for a playback that's never coming).
           State.cmPendingText = "";
           cmUpdateStats(msg.stats);
+          cmReportPlaybackDone(msg.request_id);
           break;
         }
         const content = msg.content || State.cmPendingText;
         cmOnDone(content);
         cmUpdateStats(msg.stats);
         cmHandleSpeech(content);
+        // Fallback deadline for queue mode's playback_done report: covers
+        // TTS-off (pure text) and any case where the expected audio/speech
+        // event never fires (TTS failure, autoplay block). Real playback
+        // completion (below) reports earlier and this timer is then a
+        // no-op via the cmReportPlaybackDone guard.
+        State.cmPlaybackTimer = setTimeout(
+          () => cmReportPlaybackDone(msg.request_id),
+          cmEstimateReadMs(content) + 800,
+        );
       }
       break;
     case "error":
       if (source !== "engineer" && cmMessageIsCurrent(msg)) {
         cmStopAudio();
         cmOnError(msg.message);
+        cmReportPlaybackDone(msg.request_id);
       }
       break;
     case "tts_audio":
-      if (source !== "engineer" && cmMessageIsCurrent(msg)) cmPlayTtsAudio(msg.audio, msg.mime);
+      if (source !== "engineer" && cmMessageIsCurrent(msg)) cmPlayTtsAudio(msg.audio, msg.mime, msg.request_id);
       break;
     case "message":
       if (source === "bot") pollBot();
@@ -1071,12 +1094,36 @@ function cmSetPlaybackStatus(text, state = "") {
 function cmMessageIsCurrent(msg) {
   return !msg.request_id || !State.cmCurrentRequestId || msg.request_id === State.cmCurrentRequestId;
 }
+function cmReportPlaybackDone(requestId) {
+  // Idempotent per playback cycle: the real completion event (audio.onended
+  // / browser speech queue empty) and the estimated-read-time fallback timer
+  // race to call this -- whichever fires first wins, the other is a no-op.
+  // Told apart from cmOnStart's stale-detection tag, this also guards the
+  // request being current: 队列模式下等待中的下一条会有自己的新 requestId，
+  // 一条旧消息的迟到事件不该把新的一条也判定为"播完"。
+  if (State.cmPlaybackDoneReported) return;
+  if (requestId && State.cmCurrentRequestId && requestId !== State.cmCurrentRequestId) return;
+  State.cmPlaybackDoneReported = true;
+  if (State.cmPlaybackTimer) {
+    clearTimeout(State.cmPlaybackTimer);
+    State.cmPlaybackTimer = null;
+  }
+  fetch("/api/commentary/playback_done", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ request_id: requestId || State.cmCurrentRequestId || null }),
+  }).catch(() => {});
+}
 function cmOnStart(requestId = null) {
   cmClearEmpty();
   cmStopAudio();
   State.cmCurrentRequestId = requestId || State.cmCurrentRequestId;
   State.cmPendingText = "";
   State.cmPlaybackText = "";
+  State.cmPlaybackDoneReported = false;
+  if (State.cmPlaybackTimer) {
+    clearTimeout(State.cmPlaybackTimer);
+    State.cmPlaybackTimer = null;
+  }
   cmSetPlaybackStatus("Generating commentary…", "loading");
   const el = document.createElement("div");
   el.className = "msg ai";
@@ -1130,6 +1177,7 @@ $("cmApplyBtn").addEventListener("click", async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         mode: $("cmMode").value,
+        interrupt_mode: $("cmInterruptMode").value,
         baseline_interval: parseFloat($("cmInterval").value) || 0,
         window_seconds: parseFloat($("cmWindow").value) || 6,
         event_cooldown: parseFloat($("cmCooldown").value) || 1,
@@ -1249,6 +1297,7 @@ async function cmLoadConfig() {
     cmBuildFieldGrid();
     if (cfg.commentary) {
       $("cmMode").value = cfg.commentary.mode || "hybrid";
+      $("cmInterruptMode").value = cfg.commentary.interrupt_mode || "interrupt";
       $("cmInterval").value = cfg.commentary.baseline_interval ?? 10;
       $("cmWindow").value = cfg.commentary.window_seconds ?? 6;
       $("cmCooldown").value = cfg.commentary.event_cooldown ?? 1;
@@ -1369,6 +1418,10 @@ function cmEstimateReadMs(text) {
 function cmSpeakNextSentence() {
   if (!State.cmSentenceQueue.length) {
     cmSetPlaybackStatus("Browser speech complete.");
+    // Only the live commentary flow (cmHandleSpeech) should advance the
+    // playback queue -- the Engineer tab and the "Test voice" button also
+    // drive this same sentence queue with State.cmSpeakIsCommentary unset.
+    if (State.cmSpeakIsCommentary) cmReportPlaybackDone(State.cmCurrentRequestId);
     return;
   }
   const text = State.cmSentenceQueue.shift();
@@ -1398,9 +1451,10 @@ function cmSpeakNextSentence() {
   speechSynthesis.speak(utterance);
 }
 
-function cmSpeakBrowser(text, prefix = "cm") {
+function cmSpeakBrowser(text, prefix = "cm", isCommentary = false) {
   cmStopAudio();
   State.cmSpeakPrefix = prefix;
+  State.cmSpeakIsCommentary = isCommentary;
   State.cmSentenceQueue = cmSplitSentences(text);
   cmSpeakNextSentence();
 }
@@ -1411,7 +1465,7 @@ function cmHandleSpeech(text) {
   // dispatch above), so "en" only comes from that tab's own Test button.
   const provider = cmTtsProvider("cm");
   if (provider === "browser") {
-    cmSpeakBrowser(text, "cm");
+    cmSpeakBrowser(text, "cm", true);
   } else if (provider === "kokoro" || provider === "custom_http") {
     State.cmPlaybackText = text;
     cmSetPlaybackStatus(text, "loading");
@@ -1421,7 +1475,7 @@ function cmHandleSpeech(text) {
   }
 }
 
-function cmPlayTtsAudio(base64, mime = "audio/wav") {
+function cmPlayTtsAudio(base64, mime = "audio/wav", requestId = null) {
   if (!["kokoro", "custom_http"].includes(cmTtsProvider()) || !base64) return;
   cmStopAudio();
   try {
@@ -1434,18 +1488,24 @@ function cmPlayTtsAudio(base64, mime = "audio/wav") {
       URL.revokeObjectURL(url);
       if (State.cmAudio === audio) State.cmAudio = null;
       cmSetPlaybackStatus(State.cmPlaybackText || "TTS playback complete.");
+      cmReportPlaybackDone(requestId);
     };
-    audio.onerror = () => cmSetPlaybackStatus("TTS audio could not be decoded or played.", "error");
+    audio.onerror = () => {
+      cmSetPlaybackStatus("TTS audio could not be decoded or played.", "error");
+      cmReportPlaybackDone(requestId);
+    };
     State.cmAudio = audio;
     audio.play().catch(e => {
       console.warn("TTS audio play failed", e);
       URL.revokeObjectURL(url);
       if (State.cmAudio === audio) State.cmAudio = null;
       cmSetPlaybackStatus("Browser blocked TTS autoplay; interact with the page and trigger again.", "error");
+      cmReportPlaybackDone(requestId);
     });
   } catch (e) {
     console.warn("Invalid TTS audio", e);
     cmSetPlaybackStatus("Invalid TTS audio payload.", "error");
+    cmReportPlaybackDone(requestId);
   }
 }
 
