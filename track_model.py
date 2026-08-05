@@ -45,32 +45,33 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 
 _DS         = 2.0     # m: sample spacing of the precomputed profile
-_A_LAT      = 16.5    # m/s^2: mechanical (low-speed) lateral grip, ~1.65 g.
-                      # (10.0 → 12.0 → 13.5 → 15.0 → 16.5: each bump raised
-                      # the slowest point on this track — 75 → 83 → 88 km/h —
-                      # damage stayed flat and a full clean lap ran at 15.0/
-                      # 17.0 with tpos peaking ~0.6 (well off the edge) and
-                      # mode never leaving "race", so there was still margin.
-                      # Past ~1.5-1.6 g this is above what a road tyre can
-                      # really do without slicks/big aero, so treat the NEXT
-                      # bump past this one much more cautiously — if damage
-                      # climbs or tpos starts riding the edge, this is close
-                      # to the real limit for this car/track.)
+_A_LAT      = 17.5    # m/s^2: mechanical (low-speed) lateral grip, ~1.75 g.
+                      # (10.0 → 12.0 → 13.5 → 15.0 → 16.5 → 17.5: at 16.5 the
+                      # lap completed clean (no new damage; the one dmg jump
+                      # that lap was a side-by-side traffic scrape, not an
+                      # off-track/grip failure) but tpos peaked at -0.70,
+                      # noticeably closer to the 0.85 edge-free band than the
+                      # ~0.6 seen at earlier steps — the car is starting to
+                      # use up the track width.  Smaller step than previous
+                      # bumps for that reason.  If the next lap pushes tpos
+                      # past ~0.8, or damage climbs outside a traffic
+                      # incident, this is the real limit — stop here.)
 _K_AERO     = 0.002   # 1/m: downforce term — grip grows with v^2, so the
                       # cornering limit is v^2 = A_LAT*r / (1 - K_AERO*r).
                       # Radii past ~1/K_AERO are flat-out (no cap at all);
                       # hairpins are barely affected (downforce needs speed).
                       # Too slow in fast sweepers → raise; sliding wide in
                       # them → lower.
-_A_BRAKE    = 19.0    # m/s^2: braking deceleration used by the backward
+_A_BRAKE    = 20.5    # m/s^2: braking deceleration used by the backward
                       # pass.  Brakes visibly earlier than the sensors ever
                       # needed to → raise; arrives hot with the sensor brake
-                      # scrambling → lower.  (10 → 11 → 13 → 15 → 17 → 19: the
-                      # map is a backstop, so keep it on the optimistic side
-                      # and let the sensors do the fine braking; 17 was still
-                      # lifting well before corners the car took flat-out on
-                      # a full clean lap.  If this starts arriving hot into
-                      # corners / running wide, back off toward 17 first.)
+                      # scrambling → lower.  (10 → 11 → 13 → 15 → 17 → 19 →
+                      # 20.5: the map is a backstop, so keep it on the
+                      # optimistic side and let the sensors do the fine
+                      # braking.  Smaller step than previous bumps — see
+                      # _A_LAT comment, tpos is starting to ride closer to
+                      # the edge.  If this starts arriving hot into corners /
+                      # running wide, back off toward 19 first.)
 _V_CAP_KMH  = 330.0   # km/h: profile ceiling (straights are "no limit")
 
 
@@ -462,7 +463,7 @@ def _run_tests() -> None:
 
     # mid-corner limit for an R=30 hairpin (downforce is negligible that slow)
     mid = tm.limit_kmh(600.0 + hairpin / 2.0)
-    assert 65.0 < mid < 85.0, f"FAIL mid-corner limit={mid:.1f}"
+    assert 65.0 < mid < 95.0, f"FAIL mid-corner limit={mid:.1f}"
 
     # far up the straight the braking curve is above the cap → 330
     assert tm.limit_kmh(0.0) == _V_CAP_KMH, f"FAIL open straight={tm.limit_kmh(0.0)}"
