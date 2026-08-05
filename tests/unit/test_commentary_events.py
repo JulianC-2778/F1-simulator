@@ -18,10 +18,27 @@ tests/unit/test_commentary_modes.py.
 """
 
 import unittest
+from unittest.mock import patch
 
+from midware import commentary_engine as ce_module
 from midware.commentary_engine import CommentaryConfig, CommentaryEngine
 
 EPS = 1e-6
+
+
+class ControlledClock:
+    """Deterministic stand-in for time.time(): advances by a fixed step per
+    call, so the global wall-clock cooldown in _can_emit_event doesn't block
+    a second event fired microseconds later in real time (see
+    test_commentary_modes.py for the same pattern)."""
+
+    def __init__(self, start: float = 1_000_000.0, step: float = 5.0):
+        self.value = start
+        self.step = step
+
+    def __call__(self) -> float:
+        self.value += self.step
+        return self.value
 
 
 def base_frame(sim_time: float, **overrides) -> dict:
@@ -211,63 +228,175 @@ class TestBattleSpeedBoundary(unittest.TestCase):
         self.assertEqual(decision.event["event_type"], "battle")
 
 
-class TestPaceSurgeDeltaBoundary(unittest.TestCase):
-    """pace_surge: speed_delta > 22.0 (strict) AND throttle > 0.8 (strict).
-    Delta sub-boundary holds throttle fixed safely above 0.8."""
+def run_ticks(engine, frames):
+    """Feed frames as consecutive (frames[i-1], frames[i]) two-frame windows,
+    in order, using the SAME engine instance so pace_surge's burst-tracking
+    state (pace_surge_active/_start_speed/_peak_speed) persists across
+    calls the way it does against a real, continuously-polled telemetry
+    stream. frames[0] only seeds state. Returns one decision (or None) per
+    subsequent frame."""
+    engine.next_decision([frames[0]])
+    decisions = []
+    for i in range(1, len(frames)):
+        decisions.append(engine.next_decision([frames[i - 1], frames[i]]))
+    return decisions
 
-    def test_delta_below_threshold_does_not_trigger(self):
-        decision = detect(
-            "event",
-            base_frame(0.0, speed_x=100.0, throttle=0.9),
-            base_frame(0.5, speed_x=100.0 + 21.99, throttle=0.9),
-        )
-        self.assertIsNone(decision)
 
-    def test_delta_exactly_at_threshold_does_not_trigger_strict_inequality(self):
-        decision = detect(
-            "event",
-            base_frame(0.0, speed_x=100.0, throttle=0.9),
-            base_frame(0.5, speed_x=100.0 + 22.0, throttle=0.9),
-        )
-        self.assertIsNone(decision)
+class TestPaceSurgeBurstAccumulation(unittest.TestCase):
+    """pace_surge is tracked as a continuous burst, not a per-tick delta
+    check: PACE_SURGE_MIN_DELTA_KMH (20.0, strict) applies to the TOTAL
+    gain across the whole burst (start speed to peak speed), and exactly
+    one event is reported once the burst ends (throttle drops or speed
+    stops climbing) -- not once per detection tick. Found via a real
+    driving session where a single ~20s start-line acceleration produced
+    14 separate pace_surge events; see docs/commentary_test_matrix.md."""
 
-    def test_delta_above_threshold_triggers(self):
-        decision = detect(
-            "event",
-            base_frame(0.0, speed_x=100.0, throttle=0.9),
-            base_frame(0.5, speed_x=100.0 + 22.01, throttle=0.9),
-        )
+    def test_no_event_while_still_accelerating(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=10.0, throttle=0.9),
+            base_frame(1.0, speed_x=20.0, throttle=0.9),
+            base_frame(1.5, speed_x=30.0, throttle=0.9),
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertTrue(all(d is None for d in decisions))
+        self.assertTrue(engine.pace_surge_active)
+
+    def test_burst_reports_once_when_it_ends_with_full_start_to_peak_range(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=10.0, throttle=0.9),
+            base_frame(1.0, speed_x=20.0, throttle=0.9),
+            base_frame(1.5, speed_x=30.0, throttle=0.9),
+            base_frame(2.0, speed_x=30.0, throttle=0.0),  # lifts off -- burst ends
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertEqual(decisions[:-1], [None, None, None])
+        decision = decisions[-1]
         self.assertIsNotNone(decision)
         self.assertEqual(decision.event["event_type"], "pace_surge")
+        self.assertIn("0.0", decision.event["reason"])
+        self.assertIn("30.0", decision.event["reason"])
+        self.assertFalse(engine.pace_surge_active)
+
+    def test_total_gain_at_or_below_threshold_does_not_report(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=20.0, throttle=0.9),  # total gain == 20.0, not > 20.0
+            base_frame(1.0, speed_x=20.0, throttle=0.0),  # burst ends
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertTrue(all(d is None for d in decisions))
+
+    def test_total_gain_above_threshold_reports(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=20.01, throttle=0.9),
+            base_frame(1.0, speed_x=20.01, throttle=0.0),
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertIsNotNone(decisions[-1])
+        self.assertEqual(decisions[-1].event["event_type"], "pace_surge")
+
+    def test_speed_plateauing_without_throttle_drop_also_ends_the_burst(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=30.0, throttle=0.9),
+            base_frame(1.0, speed_x=30.0, throttle=0.9),  # speed stops climbing, throttle still down
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertIsNotNone(decisions[-1])
+        self.assertEqual(decisions[-1].event["event_type"], "pace_surge")
+
+    def test_state_resets_so_a_second_independent_burst_can_report(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=30.0, throttle=0.9),
+            base_frame(1.0, speed_x=30.0, throttle=0.0),   # first burst ends: 0 -> 30
+            base_frame(1.5, speed_x=30.0, throttle=0.9),
+            base_frame(2.0, speed_x=60.0, throttle=0.9),
+            base_frame(2.5, speed_x=60.0, throttle=0.0),   # second burst ends: 30 -> 60
+        ]
+        # The two burst-end ticks happen microseconds apart in real
+        # wall-clock time within this test; without a controlled clock the
+        # global 1s wall-clock cooldown in _can_emit_event would swallow
+        # the second, genuinely-distinct event.
+        with patch.object(ce_module.time, "time", ControlledClock()):
+            decisions = run_ticks(engine, frames)
+        surges = [d for d in decisions if d is not None]
+        self.assertEqual(len(surges), 2)
+        self.assertIn("0.0", surges[0].event["reason"])
+        self.assertIn("30.0", surges[0].event["reason"])
+        self.assertIn("30.0", surges[1].event["reason"])
+        self.assertIn("60.0", surges[1].event["reason"])
 
 
-class TestPaceSurgeThrottleBoundary(unittest.TestCase):
-    """pace_surge throttle sub-boundary: holds speed_delta fixed safely above 22."""
+class TestPaceSurgeThrottleGate(unittest.TestCase):
+    """A tick only counts as 'still accelerating' with throttle > 0.8 (strict)."""
 
-    def test_throttle_below_threshold_does_not_trigger(self):
-        decision = detect(
-            "event",
-            base_frame(0.0, speed_x=100.0, throttle=0.79),
-            base_frame(0.5, speed_x=130.0, throttle=0.79),
-        )
-        self.assertIsNone(decision)
+    def test_throttle_at_or_below_threshold_never_starts_a_burst(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.8),
+            base_frame(0.5, speed_x=30.0, throttle=0.8),
+        ]
+        run_ticks(engine, frames)
+        self.assertFalse(engine.pace_surge_active)
 
-    def test_throttle_exactly_at_threshold_does_not_trigger_strict_inequality(self):
-        decision = detect(
-            "event",
-            base_frame(0.0, speed_x=100.0, throttle=0.80),
-            base_frame(0.5, speed_x=130.0, throttle=0.80),
-        )
-        self.assertIsNone(decision)
+    def test_throttle_above_threshold_starts_a_burst(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.81),
+            base_frame(0.5, speed_x=30.0, throttle=0.81),
+        ]
+        run_ticks(engine, frames)
+        self.assertTrue(engine.pace_surge_active)
 
-    def test_throttle_above_threshold_triggers(self):
-        decision = detect(
-            "event",
-            base_frame(0.0, speed_x=100.0, throttle=0.81),
-            base_frame(0.5, speed_x=130.0, throttle=0.81),
-        )
-        self.assertIsNotNone(decision)
-        self.assertEqual(decision.event["event_type"], "pace_surge")
+
+class TestPaceSurgeRequiresNonNegativeSpeed(unittest.TestCase):
+    """Regression test for a real bug found during work-package-B testing:
+    a car flung backward by a hard collision could swing from e.g. -102.2
+    to -46.4 km/h -- a real 55.8 km/h numeric increase with throttle
+    pinned, but not an intentional acceleration. Both endpoints of every
+    tick must be non-negative (genuine forward speed) for that tick to
+    count toward a burst at all."""
+
+    def test_negative_to_negative_never_starts_a_burst_even_with_large_delta(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=-102.2, throttle=0.9),
+            base_frame(0.5, speed_x=-46.4, throttle=0.9),
+            base_frame(1.0, speed_x=-46.4, throttle=0.0),
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertTrue(all(d is None for d in decisions))
+        self.assertFalse(engine.pace_surge_active)
+
+    def test_negative_to_positive_does_not_start_a_burst(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=-10.0, throttle=0.9),
+            base_frame(0.5, speed_x=30.0, throttle=0.9),
+        ]
+        run_ticks(engine, frames)
+        self.assertFalse(engine.pace_surge_active)
+
+    def test_positive_to_positive_still_works(self):
+        engine = CommentaryEngine(CommentaryConfig(mode="event"))
+        frames = [
+            base_frame(0.0, speed_x=0.0, throttle=0.9),
+            base_frame(0.5, speed_x=25.0, throttle=0.9),
+            base_frame(1.0, speed_x=25.0, throttle=0.0),
+        ]
+        decisions = run_ticks(engine, frames)
+        self.assertIsNotNone(decisions[-1])
+        self.assertEqual(decisions[-1].event["event_type"], "pace_surge")
 
 
 class TestPaceUpdateIntervalBoundary(unittest.TestCase):

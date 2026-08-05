@@ -49,7 +49,7 @@ reply text*, independent of the event cooldown (`should_emit_text`, L122-130).
 | Event detection / boundaries | `commentary_engine.py::detect_event` | none | `tests/unit/test_commentary_events.py` | done |
 | Modes (off/interval/event/hybrid) | `commentary_engine.py::next_decision` L82-108 | none | `tests/unit/test_commentary_modes.py` | done |
 | Priority / pre-emption | `runtime.py::_auto_commentary_loop` (interrupt_mode == "interrupt" branch) | none | `tests/integration/test_commentary_runtime.py::TestHighFrequencyEvents` | done |
-| Queue mode (interrupt_mode == "queue"): new event queues instead of cancelling, single-slot newest/highest-priority-wins, silent background prefetch, release gated on `/api/commentary/playback_done`, manual trigger always bypasses the queue | `commentary_engine.py::CommentaryConfig.interrupt_mode`, `runtime.py::_queue_event`/`_start_prefetch`/`_advance_queue`/`_auto_commentary_loop`/`manual_commentary`/`commentary_playback_done` | none (new 2026-08-04 feature) | `tests/integration/test_commentary_queue_mode.py` | done — see §7 |
+| Queue mode (interrupt_mode == "queue"): new event queues instead of cancelling, single-slot newest/highest-priority-wins, silent background prefetch, release gated on `/api/commentary/playback_done`, manual trigger always bypasses the queue | `commentary_engine.py::CommentaryConfig.interrupt_mode`, `runtime.py::_queue_event`/`_start_prefetch`/`_advance_queue`/`_auto_commentary_loop`/`manual_commentary`/`commentary_playback_done` | none (new 2026-08-04 feature) | `tests/integration/test_commentary_queue_mode.py` (in-process, internals mocked) + `tools/smoke_test_commentary_queue.py` (black-box, real `python -m midware.app` process over real HTTP/WebSocket) | done — see §7 |
 | Cooldown | `commentary_engine.py::_can_emit_event` | none | `tests/unit/test_commentary_modes.py` (`TestCooldown`) | done |
 | Event deduplication (signature/sim-time) | `commentary_engine.py::event_signature` + `_can_emit_event` | none | `tests/unit/test_commentary_modes.py` | done |
 | Text deduplication before display | `commentary_engine.py::should_emit_text` | none | `tests/integration/test_commentary_runtime.py::test_dedupe_before_broadcast` | done |
@@ -177,6 +177,22 @@ passing against this commit). Coverage:
   still generating is queued as a silent prefetch rather than cancelling the live
   generation — the mirror-image assertion of `TestHighFrequencyEvents`, which pins
   the opposite (cancel, not queue) behaviour under the default `interrupt` mode.
+
+Second, complementary check: `tools/smoke_test_commentary_queue.py` -- a black-box
+script, run manually (not part of `tools/run_tests.sh`'s L0-L3 layers, and not
+executed in CI). Unlike the pytest file above, which drives `runtime.py`'s internal
+functions directly inside one process with `call_ai`/`call_tts` mocked, this script
+spawns a real `python -m midware.app` subprocess on scratch ports and talks to it
+only through its real REST API and a real `/ws` WebSocket connection -- the same
+surface a browser would use. It self-hosts a tiny fake OpenAI-compatible
+`/chat/completions` endpoint (instant canned replies, optional artificial delay) so
+it needs no real LM Studio/Granite, and leaves TTS disabled so it only has to reason
+about text broadcast ordering. It re-verifies the same four behaviours end-to-end
+(queue holds a busy-period event back until `playback_done`, single-slot
+newest/highest-priority-wins, `interrupt` mode still cancels immediately, manual
+trigger always bypasses the queue) — 9/9 checks passing, stable across repeated
+runs. Run it with `.venv/bin/python tools/smoke_test_commentary_queue.py` (`-v` for
+per-message logging); exit code 0/1.
 
 Not covered (out of scope for this pass, consistent with §6): the frontend
 (`midware/static/dashboard.html`) playback-completion reporting (audio `onended`,
