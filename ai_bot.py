@@ -679,7 +679,15 @@ _EDGE_GAIN = 1.2           # gentle tuck-in once past the free band
 # opponent dead centre at 4.5-9 m, obnd stayed 0 the whole time).  There must
 # be no gap between the two windows — every angle from just-behind-left to
 # just-behind-right has to land in at least one of them.
-_AVOID_DIST  = 10.0                 # m: side gap closer than this triggers a nudge
+# 10.0 → 14.0 (2026-08-06): a live crash showed rgap=5.4 (already inside the
+# old 10 m trigger, so the nudge WAS active) go to a full off-track hit just
+# 2 seconds later — the gap was closing too fast for the reaction time the
+# old distance gave it.  Widened distance (more warning, gentler correction
+# starting earlier) rather than raising _AVOID_GAIN (same reaction, just
+# later and harsher, which doesn't fix a timing problem and risks a sharper
+# swerve at speed).  One variable at a time — leave _AVOID_GAIN alone until
+# this alone is confirmed to help or not over several races.
+_AVOID_DIST  = 14.0                 # m: side gap closer than this triggers a nudge
 _AVOID_GAIN  = 0.15                 # steer authority at zero gap (~centre-term scale)
 _AVOID_LEFT  = range(9, 18)         # ~-90° to -10°: opponent ahead-left/alongside/just behind
 _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongside/just behind
@@ -687,7 +695,7 @@ _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongs
                                      # point is the split, not which side owns the boundary)
 
 # Start-of-race caution: the whole grid launches together into a narrowing
-# racing line (see quickrace.xml's 2-row grid), so the first ~150 m see far
+# racing line (see quickrace.xml's 2-row grid), so the first stretch sees far
 # more cars converging from the side, far closer together, than any point in
 # open racing — logged live: a car swapped from the right cone to the left
 # cone between two 100-step samples right at the green light and the door
@@ -698,6 +706,13 @@ _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongs
 # and take a little heat off the throttle, only while dist_raced is small —
 # this fades back to normal full-send racing well before the first braking
 # zone on any real track, so it costs no meaningful lap time.
+# 150 → 100 → 150 (2026-08-06): tried a shorter window, then reverted —
+# the crashes seen after the 100 m cut were happening well past even the
+# original 150 m mark anyway (estimated dist_raced ~250-300 m), so shortening
+# the window wasn't tested against anything conclusive either way, and 150 is
+# the version with an actual clean-launch confirmation behind it.  Back to
+# the known-good value while the close-encounter logging (see run_bot) is
+# used to actually diagnose those later-race collisions instead.
 _START_CAUTION_DIST = 150.0         # m: dist_raced below this = still launching
 _START_AVOID_DIST   = 25.0          # m: replaces _AVOID_DIST during the launch
 _START_AVOID_GAIN   = 0.35          # replaces _AVOID_GAIN during the launch
@@ -905,40 +920,68 @@ _TA_REV_MAX_FRAMES  = 120           # hard cap on one continuous reverse leg (2.
                                     # going, force a forward leg after 2.4 s so no
                                     # single reverse attempt can travel far.
 
-# Stabilize-first gate: a violent impact can fling the car many track-widths
-# off (observed live: track_pos hit +7 after a high-speed hit, vs. the normal
-# 1.15-2 range for a plain off-track excursion).  The turn-around/re-entry
-# logic below is a LOCAL heuristic (current angle + track_pos only, not a real
-# path planner) — starting a three-point turn while the car is still carrying
-# impact speed (skidding, possibly still rotating) just adds more chaotic
-# motion on top of an already-extreme position, and that specific run took
-# 36 real seconds to claw back to normal driving.  So: if track_pos is out at
-# this extreme AND the car still has real speed, brake straight to a stop
-# first — every other recovery branch below assumes a roughly-stationary,
-# already-settled car to work from, which this restores before anything else
-# runs.
+# Extreme-excursion stabilize gate (checked at the very top of compute_control,
+# ahead of BOTH the stuck-jam burst and the wrong-way turnaround): a violent
+# impact can fling the car many track-widths off (observed live: track_pos hit
+# +7 after a high-speed hit, vs. the normal 1.15-2 range for a plain off-track
+# excursion) — and can leave it either still carrying impact speed OR already
+# nearly stationary.  First cut of this only handled the "still fast" half
+# (gated on speed > _EXTREME_STOP_SPEED) and left it inside _recovery_control;
+# a live incident showed the *already slow* half never triggers that gate at
+# all, so the car fell straight through to the stuck-jam burst and wrong-way
+# turnaround fighting each other — neither knows the other exists, and
+# neither factors in how extreme track_pos actually is — for 30+ seconds
+# while track_pos kept climbing instead of recovering.  Moved to the top of
+# compute_control and widened to cover both cases so it pre-empts every tick
+# the position stays this extreme, not just the high-speed moment.
 _EXTREME_TPOS       = 2.5           # track_pos units: this far off is not a normal
                                     # kerb/off-track case (those top out ~1.15-2);
                                     # it means the car was thrown clear of the track.
-_EXTREME_STOP_SPEED = 10.0          # km/h: "stopped enough" to hand off to the
-                                    # normal turnaround/re-entry logic below.
+_EXTREME_STOP_SPEED = 10.0          # km/h: above this, brake off the impact speed
+                                    # first; at or below it, hold a single steady
+                                    # reverse-toward-centre creep instead (see
+                                    # compute_control) rather than sitting idle.
+
+# No-progress watchdog: track_pos alone isn't a reliable "is this recovery
+# attempt actually working" signal — logged live, a car wedged at track_pos
+# ~2.3 (just UNDER the 2.5 extreme-excursion gate above) sat with
+# dist_from_start frozen and the stuck-jam burst / wrong-way turnaround
+# cycling between each other for 46+ real seconds without ever escaping.
+# Position alone can't tell "off to the side but free to manoeuvre" apart
+# from "wedged against a wall no matter which way you point the wheels" —
+# actual forward progress can.  So: whenever the mode from the previous tick
+# wasn't plain "race" (i.e. some recovery branch is active), watch
+# dist_from_start; if it hasn't moved _NO_PROGRESS_DIST in _NO_PROGRESS_FRAMES,
+# whatever's running clearly isn't working — escalate to the same stabilize
+# action as the extreme-excursion gate, regardless of how far off-centre the
+# car actually is.
+_NO_PROGRESS_FRAMES = 200           # 4 s @ 50 Hz before a stalled recovery escalates
+_NO_PROGRESS_DIST   = 5.0           # m: must gain at least this much in that window
 
 _recovering = False   # module state: in off-track re-entry (with hysteresis)
 _turnaround = False   # module state: executing a wrong-way turn-around
 _ta_fwd     = 0       # module state: forward-leg frames remaining
 _ta_jam     = 0       # module state: consecutive jammed frames while reversing
 _ta_rev     = 0       # module state: consecutive frames in the current reverse leg
+_stuck_progress_dist   = None   # module state: dist_from_start when the current
+                                # no-progress watch window started (None = not watching)
+_stuck_progress_frames = 0      # module state: frames elapsed in that window
+_stabilizing = False   # module state: latched in the stabilize action (either
+                       # trigger) until track_pos/angle are genuinely safe again
 
 
 def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
     global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
-    global _target_lp, _line_lp
+    global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
     _stuck_frames = _reverse_frames = 0
     _recovering = _turnaround = False
     _ta_fwd = _ta_jam = _ta_rev = 0
     _target_lp = None
     _line_lp = 0.0
+    _stuck_progress_dist = None
+    _stuck_progress_frames = 0
+    _stabilizing = False
 
 
 def _recovery_steer(angle: float, tpos: float) -> float:
@@ -946,6 +989,25 @@ def _recovery_steer(angle: float, tpos: float) -> float:
     In reverse the steering effect inverts, so the signs are flipped relative to
     the normal forward correction."""
     return clamp(-angle * 0.5 + tpos * 0.4, -0.6, 0.6)
+
+
+def _stabilize_action(speed: float, angle: float, tpos: float, gear: int,
+                       speed_y: float) -> str:
+    """Shared control for the extreme-excursion and no-progress stabilize gates.
+
+    Brake to a stop if still carrying real speed; once slow, creep back toward
+    the centre line — forward if roughly facing the right way (reusing the
+    plain off-track re-entry steer formula, the faster way back), reverse only
+    if facing badly wrong (forward would just dig the hole deeper).
+    """
+    if abs(speed) > _EXTREME_STOP_SPEED:
+        return format_scr_control(accel=0.0, brake=0.9, gear=max(gear, 1), steer=0.0)
+    if abs(angle) > _WRONG_WAY:
+        return format_scr_control(accel=0.5, brake=0.0, gear=-1,
+                                  steer=_recovery_steer(angle, tpos))
+    steer = clamp(angle - tpos * 0.5 - speed_y * _STEER_DAMP, -1.0, 1.0)
+    fwd_gear = 1 if abs(speed) < 30.0 else _gear_from_speed(max(gear, 1), speed)
+    return format_scr_control(accel=0.5, brake=0.0, gear=fwd_gear, steer=steer)
 
 
 def _recovery_control(state: dict[str, Any]) -> str:
@@ -961,18 +1023,12 @@ def _recovery_control(state: dict[str, Any]) -> str:
     """
     global _turnaround, _ta_fwd, _ta_jam, _ta_rev
 
-    speed    = state.get("speed_x", 0.0)
-    speed_y  = state.get("speed_y", 0.0) / 3.6
-    gear     = state.get("gear", 1)
-    angle    = state.get("angle", 0.0)
-    raw_tpos = state.get("track_pos", 0.0)
-    tpos     = clamp(raw_tpos, -2.0, 2.0)
-    wheels   = state.get("wheel_spin_vel", [])
-
-    # --- flung far off track: stabilize before attempting anything clever ---
-    if abs(raw_tpos) > _EXTREME_TPOS and abs(speed) > _EXTREME_STOP_SPEED:
-        _dbg["mode"] = "stabilize"
-        return format_scr_control(accel=0.0, brake=0.9, gear=max(gear, 1), steer=0.0)
+    speed   = state.get("speed_x", 0.0)
+    speed_y = state.get("speed_y", 0.0) / 3.6
+    gear    = state.get("gear", 1)
+    angle   = state.get("angle", 0.0)
+    tpos    = clamp(state.get("track_pos", 0.0), -2.0, 2.0)
+    wheels  = state.get("wheel_spin_vel", [])
 
     # --- wrong way: turn the car around (hysteresis: finish the manoeuvre) ---
     if abs(angle) > _WRONG_WAY:
@@ -1064,6 +1120,65 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     _dbg["dist"] = dist_from_start
 
     global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp
+    global _stuck_progress_dist, _stuck_progress_frames, _stabilizing
+
+    # --- stabilize latch: once entered (see the two triggers below), STAYS
+    # active until the car is genuinely back under control — not just "moved
+    # a bit".  First cut exited as soon as dist_from_start had crept forward
+    # _NO_PROGRESS_DIST, but that distance is often just the stabilize creep
+    # itself — handing back to the stuck-jam burst / wrong-way turnaround
+    # that early let them throw the car right back into trouble, verified
+    # live: mode bounced stabilize→turn-fwd→turn-rev→stabilize→... for 30+
+    # seconds instead of actually recovering.  Reusing the SAME "genuinely
+    # fine" hysteresis the plain off-track re-entry logic already uses
+    # (_RECOVER_EXIT_TPOS/_ANGLE) to decide when it's actually done fixes
+    # that — it stops handing back control on a technicality.
+    if _stabilizing:
+        if abs(tpos) <= _RECOVER_EXIT_TPOS and abs(angle) <= _RECOVER_EXIT_ANGLE:
+            _stabilizing = False   # genuinely fine now — fall through to normal driving
+        else:
+            _dbg["mode"] = "stabilize"
+            return _stabilize_action(speed, angle, tpos, gear, speed_y)
+
+    # --- extreme excursion: stabilize before either recovery subsystem can
+    # compete for control ---
+    # A violent impact can fling the car many track-widths off (track_pos hit
+    # +7 in one live incident) while ALSO leaving it nearly stationary — that
+    # combination falls between the two recovery subsystems below and neither
+    # one accounts for just how extreme the position is: the stuck-jam burst
+    # only looks at (speed, front-sensor distance), the wrong-way turnaround
+    # only looks at (angle, jam-speed).  Logged live: both fired independently
+    # and alternated burst/turn-rev/turn-fwd for 30+ seconds while track_pos
+    # kept climbing (+3 → +6) instead of coming back, because neither one is
+    # even aware the other exists.  This check takes absolute priority over
+    # both — checked before the burst logic, so it pre-empts it the moment the
+    # position gets this extreme.
+    if abs(tpos) > _EXTREME_TPOS:
+        _stabilizing = True
+        _dbg["mode"] = "stabilize"
+        return _stabilize_action(speed, angle, tpos, gear, speed_y)
+
+    # --- no-progress watchdog: track_pos alone can't tell "off to the side
+    # but free to manoeuvre" apart from "wedged, going nowhere no matter which
+    # way you point the wheels" — actual forward progress can.  Logged live: a
+    # car wedged at track_pos ~2.3 (just under the 2.5 gate above) sat with
+    # dist_from_start frozen while the stuck-jam burst and wrong-way
+    # turnaround cycled between each other for 46+ real seconds, never
+    # escaping.  So: whenever the previous tick wasn't plain racing, watch
+    # dist_from_start — no real progress within _NO_PROGRESS_FRAMES escalates
+    # into the stabilize latch above, regardless of track_pos.
+    if _dbg.get("mode") == "race" or dist_from_start < 0.0:
+        _stuck_progress_dist, _stuck_progress_frames = None, 0
+    else:
+        if (_stuck_progress_dist is None
+                or abs(dist_from_start - _stuck_progress_dist) >= _NO_PROGRESS_DIST):
+            _stuck_progress_dist, _stuck_progress_frames = dist_from_start, 0
+        else:
+            _stuck_progress_frames += 1
+            if _stuck_progress_frames >= _NO_PROGRESS_FRAMES:
+                _stabilizing = True
+                _dbg["mode"] = "stabilize"
+                return _stabilize_action(speed, angle, tpos, gear, speed_y)
 
     # --- stuck / crash recovery (works on OR off track, takes priority) ---
     # Once we've committed to a reverse burst, see it through; then resume normal
@@ -1708,6 +1823,8 @@ def run_bot(
         lap_bound        = 0                      # … of which the map governed
         lap_trust        = 0                      # … of which trust mode ruled
         prev_dist        = -1.0                   # distFromStart last frame
+        close_hold       = 0                      # frames left of high-rate logging
+                                                   # (see CLOSE_LOG_* below)
 
         try:
             while True:
@@ -1803,7 +1920,27 @@ def run_bot(
                     last_lap   = llt
                     lap_frames = lap_bound = lap_trust = 0
 
-                if verbose and step % 100 == 0:
+                # Close-encounter high-rate logging: the regular 100-step
+                # (~2 s) cadence is too coarse to see what actually happens in
+                # the 1-2 s before a side-contact crash — a live log showed a
+                # car go from a 33 m gap to a full off-track hit in 4 s, but
+                # only ONE sample (2 s in) fell inside that window, hiding
+                # exactly the part that determines whether avoidance reacted
+                # in time.  So: once either side gap drops under
+                # _CLOSE_LOG_DIST, log every single step (not every 100) —
+                # and keep doing so for _CLOSE_LOG_HOLD steps after the gap
+                # opens back up, to also capture the immediate aftermath
+                # (contact, damage, recovery mode) of a close pass.
+                _CLOSE_LOG_DIST = 20.0   # m: either side gap under this triggers it
+                _CLOSE_LOG_HOLD = 100    # steps (~2 s) of high-rate logging after
+                                        # the gap last read closer than the above
+                close_gap = min(_dbg.get("lgap", 200.0), _dbg.get("rgap", 200.0))
+                if close_gap < _CLOSE_LOG_DIST:
+                    close_hold = _CLOSE_LOG_HOLD
+                elif close_hold > 0:
+                    close_hold -= 1
+
+                if verbose and (step % 100 == 0 or close_hold > 0):
                     speed = state.get("speed_x", 0.0)
                     gear  = state.get("gear",    0)
                     fuel  = state.get("fuel",    0.0)
@@ -2068,19 +2205,34 @@ def _run_tests() -> None:
 
     # Flung far off track (track_pos way past a normal excursion) while still
     # carrying real speed → stabilize: brake straight to a stop, no steering,
-    # before any turnaround/re-entry manoeuvring starts.
+    # taking priority over BOTH the stuck-jam burst and wrong-way turnaround
+    # so they can't fight each other for control.
     _reset_driver_state()
     cs_flung = {**cs, "track_pos": 3.0, "speed_x": 50.0, "angle": 0.2}
     cc_flung = compute_control(cs_flung, ATTACK)
     assert "(accel 0.000)" in cc_flung, f"FAIL flung accel: {cc_flung}"
     assert "(brake 0.900)" in cc_flung, f"FAIL flung brake: {cc_flung}"
     assert "(steer 0.000)" in cc_flung, f"FAIL flung steer: {cc_flung}"
-    # Once speed has bled off, the SAME extreme track_pos must fall through to
-    # the normal recovery logic instead of braking forever.
+    # Once speed has bled off, the SAME extreme track_pos must switch to a
+    # single steady creep back toward the centre line — not keep braking, and
+    # not sit idle waiting for something else to happen (the gap this whole
+    # fix closes: a car that crashed down to near-zero speed almost instantly
+    # never left this state under the old speed-gated version).  Still facing
+    # roughly the right way (angle 0.2, well inside _WRONG_WAY) → forward is
+    # the faster way back, same steer formula as the plain re-entry branch.
     _reset_driver_state()
-    cc_settled = compute_control({**cs_flung, "speed_x": 5.0}, ATTACK)
-    assert "(brake 0.900)" not in cc_settled, \
-        f"FAIL: settled car must hand off to normal recovery: {cc_settled}"
+    cc_settled_fwd = compute_control({**cs_flung, "speed_x": 5.0}, ATTACK)
+    assert "(gear -1)" not in cc_settled_fwd, \
+        f"FAIL: facing roughly right must creep FORWARD, not reverse: {cc_settled_fwd}"
+    assert "(brake 0.900)" not in cc_settled_fwd, \
+        f"FAIL: settled car must not keep braking forever: {cc_settled_fwd}"
+    # But facing badly wrong (angle > _WRONG_WAY) at the same extreme
+    # track_pos and low speed → forward would only dig the hole deeper, so
+    # this must still reverse.
+    _reset_driver_state()
+    cc_settled_rev = compute_control({**cs_flung, "speed_x": 5.0, "angle": 3.0}, ATTACK)
+    assert "(gear -1)" in cc_settled_rev, \
+        f"FAIL: facing badly wrong must still creep in reverse: {cc_settled_rev}"
     print(f"compute_control flung off-track → stabilize (regression) ... OK  →  {cc_flung}")
     _reset_driver_state()
 
@@ -2132,6 +2284,26 @@ def _run_tests() -> None:
     assert "(gear 1)" in out and "(accel 0.400)" in out, \
         f"FAIL: reverse leg must cap out and force a forward leg: {out}"
     print("compute_control turnaround reverse-leg cap (regression) ... OK")
+    _reset_driver_state()
+
+    # No-progress watchdog: track_pos=2.3 is UNDER the 2.5 extreme-excursion
+    # gate, so it alone never triggers stabilize — but dist_from_start pinned
+    # at a fixed value (simulating a genuinely wedged car, whatever the
+    # turn-rev/turn-fwd/burst cycling underneath is doing) must still escalate
+    # after _NO_PROGRESS_FRAMES, regardless of how "not extreme" the position
+    # looks (logged live: a car wedged at ~2.3 cycled for 46+ real seconds
+    # before this fix existed).
+    cs_wedged = {**cs, "track_pos": 2.3, "speed_x": 0.0, "angle": 3.0,
+                "dist_from_start": 500.0}
+    for _ in range(_NO_PROGRESS_FRAMES - 10):
+        compute_control(cs_wedged, NORMAL)
+    assert _dbg["mode"] != "stabilize", \
+        f"FAIL: watchdog fired too early, before the full window: mode={_dbg['mode']}"
+    for _ in range(20):
+        out = compute_control(cs_wedged, NORMAL)
+    assert _dbg["mode"] == "stabilize", \
+        f"FAIL: no-progress watchdog must escalate to stabilize: mode={_dbg['mode']}  {out}"
+    print("compute_control no-progress watchdog (regression) ... OK")
     _reset_driver_state()
 
     # on-track but ALL beams unusable (sensor glitch) → angle/centre fallback,
