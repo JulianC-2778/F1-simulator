@@ -686,6 +686,25 @@ _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongs
                                      # (index 18, dead ahead, arbitrarily assigned here — the
                                      # point is the split, not which side owns the boundary)
 
+# Start-of-race caution: the whole grid launches together into a narrowing
+# racing line (see quickrace.xml's 2-row grid), so the first ~150 m see far
+# more cars converging from the side, far closer together, than any point in
+# open racing — logged live: a car swapped from the right cone to the left
+# cone between two 100-step samples right at the green light and the door
+# got clipped (damage 0 → 1247 by dist_raced ~60 m, EVERY subsequent lap in
+# this session carried that hit as a permanent handicap).  _AVOID_DIST/_GAIN
+# above are tuned for cars already spread out at racing speed; they're too
+# tight/weak for a shoulder-to-shoulder launch.  Widen and strengthen both,
+# and take a little heat off the throttle, only while dist_raced is small —
+# this fades back to normal full-send racing well before the first braking
+# zone on any real track, so it costs no meaningful lap time.
+_START_CAUTION_DIST = 150.0         # m: dist_raced below this = still launching
+_START_AVOID_DIST   = 25.0          # m: replaces _AVOID_DIST during the launch
+_START_AVOID_GAIN   = 0.35          # replaces _AVOID_GAIN during the launch
+_START_ACCEL_CAP    = 0.75          # caps accel during the launch — still a
+                                     # strong start, just not pinned at 1.0
+                                     # into a car that's about to cut across
+
 # Front-opponent following/overtake: the "track" beams only see the road, so a
 # slower car sitting dead ahead is otherwise invisible to this function — it
 # just floors the throttle into their bumper.  Two effects, both gated on
@@ -993,6 +1012,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     track      = state.get("track",         [])
     wheel_vels = state.get("wheel_spin_vel", [])
     dist_from_start = state.get("dist_from_start", -1.0)   # -1 = not in packet
+    dist_raced = state.get("dist_raced", 1e9)   # missing/huge = never "launching"
     _dbg["dist"] = dist_from_start
 
     global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp
@@ -1092,11 +1112,14 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     hold_gain = _LINE_GAIN if abs(_line_lp) > 0.05 else _HOLD_CENTRE
     fade    = max(0.0, 1.0 - abs(pursuit) / _PP_FREE)
     centre  = clamp((_line_lp - tpos) * hold_gain, -0.25, 0.25) * fade
+    launching  = dist_raced < _START_CAUTION_DIST
+    avoid_dist = _START_AVOID_DIST if launching else _AVOID_DIST
+    avoid_gain = _START_AVOID_GAIN if launching else _AVOID_GAIN
     avoid = 0.0
-    if left_gap < _AVOID_DIST:
-        avoid -= _AVOID_GAIN * (1.0 - left_gap / _AVOID_DIST)
-    if right_gap < _AVOID_DIST:
-        avoid += _AVOID_GAIN * (1.0 - right_gap / _AVOID_DIST)
+    if left_gap < avoid_dist:
+        avoid -= avoid_gain * (1.0 - left_gap / avoid_dist)
+    if right_gap < avoid_dist:
+        avoid += avoid_gain * (1.0 - right_gap / avoid_dist)
     avoid  *= fade   # back off once a real corner needs the wheel
     steer   = aim * _PP_GAIN + centre + barrier + avoid - speed_y * _STEER_DAMP
     steer  /= (1.0 + max(speed, 0.0) * _STEER_SPEED_K)
@@ -1225,6 +1248,12 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         # mid-corner target drop can't snap the rear loose (trail-brake guard).
         brake *= 1.0 - _BRAKE_STEER_CUT * min(abs(steer), 1.0)
 
+    # Start-of-race caution: take a little heat off the launch (see the
+    # _START_CAUTION_DIST comment) — still a strong start, just not pinned at
+    # full throttle into a grid still sorting itself out.
+    if launching:
+        accel = min(accel, _START_ACCEL_CAP)
+
     # ABS: prevent wheel lock-up under braking (snakeoil.py)
     brake = _apply_abs(brake, speed, wheel_vels)
     # TCL: prevent rear-wheel spin on acceleration (snakeoil.py)
@@ -1324,9 +1353,14 @@ Given live sensor data, choose one driving strategy and explain in one sentence 
 Respond with JSON only — no markdown, no extra text:
 {"strategy": "<one of ATTACK|NORMAL|DEFEND|SAVE_FUEL|PIT>", "reason": "<one sentence>"}
 
-Strategy guide:
-- ATTACK:    push hard, high risk, use when fuel ok and no damage and clear track
-- NORMAL:    balanced pace, default choice
+Strategy guide (a separate safety system already downgrades ATTACK automatically
+when fuel or damage get risky, so you do not need to hedge — default to ATTACK
+whenever nothing below rules it out):
+- ATTACK:    default choice — push hard whenever fuel is above ~15 L and damage
+             is below ~8000, even with other cars nearby; only avoid it when an
+             opponent is close directly behind you (use DEFEND instead)
+- NORMAL:    only pick this if ATTACK does not clearly apply and nothing forces
+             DEFEND/SAVE_FUEL/PIT either
 - DEFEND:    cautious, use when damaged or opponent close behind
 - SAVE_FUEL: economical, use when fuel < 20 L and many laps remain
 - PIT:       slow down for pit stop, use when fuel < 5 L or damage critical"""
@@ -2123,7 +2157,7 @@ def _run_tests() -> None:
             f"FAIL: must power flat-out to the brake point: {out_bp}"
         # …and just below the curve sits a small neutral gap (no sawtooth).
         _reset_driver_state()
-        out_coast = compute_control({**cs_line, "speed_x": 211.0, "gear": 5}, NORMAL)
+        out_coast = compute_control({**cs_line, "speed_x": 250.0, "gear": 5}, NORMAL)
         assert "(accel 0.000)" in out_coast and "(brake 0.000)" in out_coast, \
             f"FAIL: neutral gap just below the curve: {out_coast}"
         print("compute_control map brake-point mode ... OK")
@@ -2199,6 +2233,35 @@ def _run_tests() -> None:
         f"FAIL: dead-ahead opponent must not fall into a blind gap: {out_dead_ahead}"
     _reset_driver_state()
     print("compute_control side-traffic avoidance ... OK")
+
+    # ---- start-of-race caution ------------------------------------------
+    # A 15 m gap is fine at racing speed (outside the normal 10 m
+    # _AVOID_DIST) — but the whole grid launches together into one
+    # narrowing line, closer together than any point in open racing, and a
+    # real race logged exactly this: damage 0 → 1247 within the first
+    # ~60 m raced.  While dist_raced is small the wider _START_AVOID_DIST
+    # must catch a gap the normal-racing check would ignore.
+    _reset_driver_state()
+    opps_launch = [200.0] * 36
+    opps_launch[22] = 15.0
+    out_calm = compute_control({**cs, "speed_x": 80.0, "opponents": opps_launch,
+                                "dist_raced": 1000.0}, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_calm)
+    assert m and float(m.group(1)) == 0.0, \
+        f"FAIL: 15 m gap must not trigger avoidance once racing normally: {out_calm}"
+    _reset_driver_state()
+    out_launch = compute_control({**cs, "speed_x": 80.0, "opponents": opps_launch,
+                                  "dist_raced": 50.0}, NORMAL)
+    m = re.search(r"\(steer ([-0-9.]+)\)", out_launch)
+    assert m and float(m.group(1)) > 0.0, \
+        f"FAIL: same 15 m gap must trigger avoidance during the launch: {out_launch}"
+    # Throttle is also capped during the launch, clear road ahead.
+    _reset_driver_state()
+    out_launch_accel = compute_control({**cs, "speed_x": 80.0, "dist_raced": 50.0}, NORMAL)
+    assert "(accel 0.750)" in out_launch_accel, \
+        f"FAIL: accel must be capped during the launch: {out_launch_accel}"
+    _reset_driver_state()
+    print("compute_control start-of-race caution ... OK")
 
     # ---- front-opponent following/overtake -----------------------------------
     # Slower car dead ahead (25 m — inside the overtake trigger, outside the

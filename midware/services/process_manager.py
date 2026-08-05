@@ -43,7 +43,17 @@ class ManagedProcess:
         self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
         self.started_at: float | None = None
-        self.log: deque[str] = deque(maxlen=400)
+        # In-memory tail for the live dashboard view only -- NOT the source of
+        # truth. A long race prints far more than any reasonable in-memory cap
+        # (ai_bot.py alone logs a line every ~100 steps plus per-lap and
+        # Granite-decision lines), so a small deque silently drops the start
+        # of the run and the dashboard ends up showing only a late fragment
+        # (e.g. "only visible from step 16900 onward"). log_path below is the
+        # unbounded, unbounded-for-the-run ground truth; this deque just
+        # avoids holding the whole race in memory for the live poll.
+        self.log: deque[str] = deque(maxlen=2000)
+        self.log_path: Path | None = None
+        self._log_fh: Any = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
 
@@ -74,10 +84,19 @@ class ManagedProcess:
                 return f"failed to start: {exc}"
             self.started_at = time.time()
             self.log.clear()
-            self.log.append(
+            # Full, uncapped record of this run's output -- one file per key,
+            # overwritten each start() so it always holds exactly "this run",
+            # the same lifetime the deque above has, just without its cap.
+            log_dir = self.cwd / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self.log_path = log_dir / f"{self.key}.log"
+            self._log_fh = open(self.log_path, "w", encoding="utf-8", buffering=1)
+            start_line = (
                 f"[process_manager] started pid={self.proc.pid}: "
                 f"{' '.join(self.cmd)} (cwd={self.cwd})"
             )
+            self.log.append(start_line)
+            self._log_fh.write(start_line + "\n")
             self._reader_thread = threading.Thread(target=self._pump_output, daemon=True)
             self._reader_thread.start()
             return None
@@ -88,11 +107,19 @@ class ManagedProcess:
             return
         try:
             for line in proc.stdout:
-                self.log.append(line.rstrip("\n"))
+                text = line.rstrip("\n")
+                self.log.append(text)
+                if self._log_fh is not None:
+                    self._log_fh.write(text + "\n")
         except (OSError, ValueError):
             pass
         code = proc.poll()
-        self.log.append(f"[process_manager] exited (code={code})")
+        exit_line = f"[process_manager] exited (code={code})"
+        self.log.append(exit_line)
+        if self._log_fh is not None:
+            self._log_fh.write(exit_line + "\n")
+            self._log_fh.close()
+            self._log_fh = None
 
     def stop(self) -> None:
         with self._lock:
@@ -118,10 +145,19 @@ class ManagedProcess:
                 except (ProcessLookupError, PermissionError):
                     pass
             self.log.append("[process_manager] stopped")
+            if self._log_fh is not None:
+                self._log_fh.write("[process_manager] stopped\n")
             self.started_at = None
 
     def tail(self, n: int = 50) -> list[str]:
         return list(self.log)[-n:]
+
+    def read_full_log(self) -> str:
+        """Full, uncapped output of this run -- source of truth for the log
+        tail deque above, which is trimmed for the live dashboard view only."""
+        if self.log_path is None or not self.log_path.exists():
+            return "\n".join(self.log)
+        return self.log_path.read_text(encoding="utf-8", errors="replace")
 
     def status(self) -> dict[str, Any]:
         running = self.is_running()
@@ -132,6 +168,7 @@ class ManagedProcess:
             "pid": self.proc.pid if running and self.proc else None,
             "started_at": self.started_at,
             "log_tail": self.tail(50),
+            "log_file": str(self.log_path) if self.log_path else None,
         }
 
 

@@ -45,19 +45,34 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 
 _DS         = 2.0     # m: sample spacing of the precomputed profile
-_A_LAT      = 10.0    # m/s^2: mechanical (low-speed) lateral grip, ~1.0 g
+_A_LAT      = 16.5    # m/s^2: mechanical (low-speed) lateral grip, ~1.65 g.
+                      # (10.0 → 12.0 → 13.5 → 15.0 → 16.5 → 17.5 → back to
+                      # 16.5: 17.5/20.5 was tried and reverted after a single
+                      # corner (dist≈3800-3950 on Forza, a blind spot where
+                      # sight collapses to ~13-20 m at 200+ km/h entry) failed
+                      # 3 separate on-track runs in a row at that tier — a
+                      # damage-only hit, a wall-grinding stick, then a chaotic
+                      # multi-second spin, three different symptoms from the
+                      # same root cause (too much entry speed, not enough
+                      # warning distance).  16.5/19.0 is the last tier that
+                      # completed a full lap clean.  Do NOT re-raise this pair
+                      # without either fixing that specific corner's map
+                      # profile or re-verifying it stays clean multiple runs
+                      # in a row, not just once.)
 _K_AERO     = 0.002   # 1/m: downforce term — grip grows with v^2, so the
                       # cornering limit is v^2 = A_LAT*r / (1 - K_AERO*r).
                       # Radii past ~1/K_AERO are flat-out (no cap at all);
                       # hairpins are barely affected (downforce needs speed).
                       # Too slow in fast sweepers → raise; sliding wide in
                       # them → lower.
-_A_BRAKE    = 11.0    # m/s^2: braking deceleration used by the backward
+_A_BRAKE    = 19.0    # m/s^2: braking deceleration used by the backward
                       # pass.  Brakes visibly earlier than the sensors ever
                       # needed to → raise; arrives hot with the sensor brake
-                      # scrambling → lower.  (10 → 11 after lap-time A/B:
-                      # the map is a backstop, so keep it on the optimistic
-                      # side and let the sensors do the fine braking.)
+                      # scrambling → lower.  (10 → 11 → 13 → 15 → 17 → 19 →
+                      # 20.5 → back to 19: see the _A_LAT comment — 20.5 is
+                      # what let the car arrive at Forza's dist≈3800-3950
+                      # blind corner hot enough to fail 3/3 runs in a row.
+                      # 19.0 is the last tier verified clean over a full lap.)
 _V_CAP_KMH  = 330.0   # km/h: profile ceiling (straights are "no limit")
 
 
@@ -449,7 +464,7 @@ def _run_tests() -> None:
 
     # mid-corner limit for an R=30 hairpin (downforce is negligible that slow)
     mid = tm.limit_kmh(600.0 + hairpin / 2.0)
-    assert 55.0 < mid < 72.0, f"FAIL mid-corner limit={mid:.1f}"
+    assert 65.0 < mid < 85.0, f"FAIL mid-corner limit={mid:.1f}"
 
     # far up the straight the braking curve is above the cap → 330
     assert tm.limit_kmh(0.0) == _V_CAP_KMH, f"FAIL open straight={tm.limit_kmh(0.0)}"
