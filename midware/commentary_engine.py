@@ -32,6 +32,16 @@ EVENT_COOLDOWNS = {
     "pace_update": 6.0,
 }
 
+# pace_surge is tracked as a continuous burst (see CommentaryEngine's
+# pace_surge_active/_start_speed/_peak_speed fields and detect_event) rather
+# than a per-tick delta check: it accumulates while the driver keeps
+# accelerating and reports ONE event -- start speed to peak speed -- once
+# the driver stops accelerating, instead of re-firing on every ~1s
+# detection cycle for as long as the throttle stays down. Found via a real
+# driving session where a single 20+ second start-line acceleration
+# produced 14 separate pace_surge events; see docs/commentary_test_matrix.md.
+PACE_SURGE_MIN_DELTA_KMH = 20.0
+
 
 @dataclass
 class CommentaryConfig:
@@ -59,6 +69,9 @@ class CommentaryEngine:
     was_off_track: bool = False
     last_commentary_sim_time: float = 0.0
     last_event_wall_clock: float = 0.0
+    pace_surge_active: bool = False
+    pace_surge_start_speed: float = 0.0
+    pace_surge_peak_speed: float = 0.0
     event_history: dict[str, float] = field(default_factory=dict)
     text_history: dict[str, float] = field(default_factory=dict)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
@@ -313,12 +326,40 @@ def detect_event(
             "priority": EVENT_PRIORITIES["battle"],
         })
 
-    if latest["speed_x"] - previous["speed_x"] > 22.0 and latest["throttle"] > 0.8:
-        candidates.append({
-            "event_type": "pace_surge",
-            "reason": f"Acceleration burst from {previous['speed_x']:.1f} to {latest['speed_x']:.1f} km/h",
-            "priority": EVENT_PRIORITIES["pace_surge"],
-        })
+    # pace_surge: accumulate while the driver is still accelerating and
+    # report ONE event -- start speed to peak speed -- once the burst ends
+    # (throttle drops or speed stops climbing), instead of re-firing every
+    # detection cycle for as long as the throttle stays down. Both
+    # endpoints must be non-negative (genuine forward driving speed) -- a
+    # car flung backward by a hard collision can swing from e.g. -102 to
+    # -46 km/h, a real numeric increase but not an intentional acceleration.
+    still_accelerating = (
+        latest["throttle"] > 0.8
+        and latest["speed_x"] >= 0.0
+        and previous["speed_x"] >= 0.0
+        and latest["speed_x"] > previous["speed_x"]
+    )
+    if still_accelerating:
+        if not state.pace_surge_active:
+            state.pace_surge_active = True
+            state.pace_surge_start_speed = previous["speed_x"]
+            state.pace_surge_peak_speed = latest["speed_x"]
+        else:
+            state.pace_surge_peak_speed = max(state.pace_surge_peak_speed, latest["speed_x"])
+    elif state.pace_surge_active:
+        total_gain = state.pace_surge_peak_speed - state.pace_surge_start_speed
+        if total_gain > PACE_SURGE_MIN_DELTA_KMH:
+            candidates.append({
+                "event_type": "pace_surge",
+                "reason": (
+                    f"Acceleration burst from {state.pace_surge_start_speed:.1f} "
+                    f"to {state.pace_surge_peak_speed:.1f} km/h"
+                ),
+                "priority": EVENT_PRIORITIES["pace_surge"],
+            })
+        state.pace_surge_active = False
+        state.pace_surge_start_speed = 0.0
+        state.pace_surge_peak_speed = 0.0
 
     if latest["sim_time"] - state.last_commentary_sim_time >= state.config.baseline_interval:
         candidates.append({

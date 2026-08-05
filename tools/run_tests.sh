@@ -138,6 +138,9 @@ PYEOF
 if [ "$WITH_SERVICE" -eq 1 ] && want L3; then
     printf '\n\033[1;36m===== L3 真实服务进程冒烟 =====\033[0m\n'
     run_step "L3 运行时矩阵 + UDP 遥测链路" service_smoke
+    # 独立起自己的 midware.app 子进程（随机端口，不占 8880），跟 service_smoke
+    # 互不冲突，可以放在同一个 L3 阶段里顺序跑。
+    run_step "L3 Commentary 排队模式黑盒冒烟" "$PY" tools/smoke_test_commentary_queue.py
 fi
 
 # ---------------------------------------------------------------------- 汇总
