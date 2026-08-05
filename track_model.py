@@ -45,19 +45,27 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 
 _DS         = 2.0     # m: sample spacing of the precomputed profile
-_A_LAT      = 10.0    # m/s^2: mechanical (low-speed) lateral grip, ~1.0 g
+_A_LAT      = 13.5    # m/s^2: mechanical (low-speed) lateral grip, ~1.35 g.
+                      # (10.0 → 12.0 → 13.5: first bump raised the slowest
+                      # point on this track from 75 to 83 km/h and the car
+                      # still wasn't sliding — on-track logs showed map-corner
+                      # still binding noticeably below what the car visibly
+                      # had left, so raised again.)
 _K_AERO     = 0.002   # 1/m: downforce term — grip grows with v^2, so the
                       # cornering limit is v^2 = A_LAT*r / (1 - K_AERO*r).
                       # Radii past ~1/K_AERO are flat-out (no cap at all);
                       # hairpins are barely affected (downforce needs speed).
                       # Too slow in fast sweepers → raise; sliding wide in
                       # them → lower.
-_A_BRAKE    = 11.0    # m/s^2: braking deceleration used by the backward
+_A_BRAKE    = 15.0    # m/s^2: braking deceleration used by the backward
                       # pass.  Brakes visibly earlier than the sensors ever
                       # needed to → raise; arrives hot with the sensor brake
-                      # scrambling → lower.  (10 → 11 after lap-time A/B:
-                      # the map is a backstop, so keep it on the optimistic
-                      # side and let the sensors do the fine braking.)
+                      # scrambling → lower.  (10 → 11 → 13 → 15: the map is a
+                      # backstop, so keep it on the optimistic side and let
+                      # the sensors do the fine braking; 13 was still lifting
+                      # well before corners the car took flat-out.  If this
+                      # starts arriving hot into corners / running wide, back
+                      # off toward 13 before touching _A_LAT.)
 _V_CAP_KMH  = 330.0   # km/h: profile ceiling (straights are "no limit")
 
 
@@ -449,7 +457,7 @@ def _run_tests() -> None:
 
     # mid-corner limit for an R=30 hairpin (downforce is negligible that slow)
     mid = tm.limit_kmh(600.0 + hairpin / 2.0)
-    assert 55.0 < mid < 72.0, f"FAIL mid-corner limit={mid:.1f}"
+    assert 65.0 < mid < 85.0, f"FAIL mid-corner limit={mid:.1f}"
 
     # far up the straight the braking curve is above the cap → 330
     assert tm.limit_kmh(0.0) == _V_CAP_KMH, f"FAIL open straight={tm.limit_kmh(0.0)}"

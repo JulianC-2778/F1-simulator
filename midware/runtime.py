@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -1390,6 +1390,21 @@ async def get_bot_process_status():
     if proc is None:
         return JSONResponse({"ok": False, "error": "unknown process: ai_bot"}, status_code=404)
     return {"ok": True, "process": proc.status()}
+
+
+@app.get("/api/bot/process/log")
+async def get_bot_process_log():
+    """Full, uncapped log for the current/last ai_bot.py run.
+
+    The dashboard's live "process log" panel only polls the last 50 lines of
+    an in-memory tail (see ProcessRegistry), which is far shorter than a full
+    race's output -- this serves the whole file written alongside it so nothing
+    from earlier in the run is ever unrecoverable.
+    """
+    proc = process_registry.get("ai_bot")
+    if proc is None:
+        return JSONResponse({"ok": False, "error": "unknown process: ai_bot"}, status_code=404)
+    return PlainTextResponse(proc.read_full_log())
 
 
 @app.post("/api/telemetry/push")

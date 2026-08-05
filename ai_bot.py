@@ -2128,7 +2128,7 @@ def _run_tests() -> None:
             f"FAIL: must power flat-out to the brake point: {out_bp}"
         # …and just below the curve sits a small neutral gap (no sawtooth).
         _reset_driver_state()
-        out_coast = compute_control({**cs_line, "speed_x": 211.0, "gear": 5}, NORMAL)
+        out_coast = compute_control({**cs_line, "speed_x": 250.0, "gear": 5}, NORMAL)
         assert "(accel 0.000)" in out_coast and "(brake 0.000)" in out_coast, \
             f"FAIL: neutral gap just below the curve: {out_coast}"
         print("compute_control map brake-point mode ... OK")
