@@ -1324,9 +1324,14 @@ Given live sensor data, choose one driving strategy and explain in one sentence 
 Respond with JSON only — no markdown, no extra text:
 {"strategy": "<one of ATTACK|NORMAL|DEFEND|SAVE_FUEL|PIT>", "reason": "<one sentence>"}
 
-Strategy guide:
-- ATTACK:    push hard, high risk, use when fuel ok and no damage and clear track
-- NORMAL:    balanced pace, default choice
+Strategy guide (a separate safety system already downgrades ATTACK automatically
+when fuel or damage get risky, so you do not need to hedge — default to ATTACK
+whenever nothing below rules it out):
+- ATTACK:    default choice — push hard whenever fuel is above ~15 L and damage
+             is below ~8000, even with other cars nearby; only avoid it when an
+             opponent is close directly behind you (use DEFEND instead)
+- NORMAL:    only pick this if ATTACK does not clearly apply and nothing forces
+             DEFEND/SAVE_FUEL/PIT either
 - DEFEND:    cautious, use when damaged or opponent close behind
 - SAVE_FUEL: economical, use when fuel < 20 L and many laps remain
 - PIT:       slow down for pit stop, use when fuel < 5 L or damage critical"""
