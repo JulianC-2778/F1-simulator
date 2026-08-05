@@ -756,7 +756,16 @@ _STRAIGHT_ANGLE   = 0.20   # rad (~11°): below this the open road counts as str
 # nonzero whenever the car is off the centre line — that is HOW it re-centres),
 # not track curvature.  Penalising it cut the throttle on straights whenever
 # the car ran off-centre; only the excess above this band counts as a corner.
-_SHARP_FREE = 0.10
+# 0.10 → 0.14 (2026-08-06): user reported gentle bends braking noticeably even
+# though they aren't real corners — widened so more mild curvature reads as
+# "not a corner" and skips the _CORNER_SHARPNESS divisor entirely.  Deliberately
+# a small step and _CORNER_SHARPNESS itself is untouched, so genuinely sharp
+# corners (open_angle well above this band either way) keep their full
+# penalty — this only trims the free band, it doesn't make the curve gentler
+# overall.  Verify on track before widening further: this sensor curve is the
+# only defense against corners the map's own profile doesn't catch (see the
+# blind-corner incidents in project memory) — do not loosen it aggressively.
+_SHARP_FREE = 0.14
 
 # Forward sight (m) at/above which the road is treated as an open straight
 # and the corner-speed cap is lifted (track sensors saturate ~200 m).
@@ -885,20 +894,49 @@ _TA_JAM_SPEED       = 6.0           # km/h: below this a turnaround leg counts a
                                     # the counter, and sat in reverse for the
                                     # rest of the race; 6 lets the three-point
                                     # turn actually alternate and rock free.
+_TA_REV_MAX_FRAMES  = 120           # hard cap on one continuous reverse leg (2.4 s
+                                    # @ 50 Hz), regardless of _ta_jam.  _ta_jam only
+                                    # counts frames where speed < _TA_JAM_SPEED, so a
+                                    # car reversing FREELY (not stuck) but whose angle
+                                    # just isn't converging never tripped it — logged
+                                    # live: one recovery backed the car up ~40 m before
+                                    # anything forced a forward leg.  This is a second,
+                                    # independent backstop: however well the reverse is
+                                    # going, force a forward leg after 2.4 s so no
+                                    # single reverse attempt can travel far.
+
+# Stabilize-first gate: a violent impact can fling the car many track-widths
+# off (observed live: track_pos hit +7 after a high-speed hit, vs. the normal
+# 1.15-2 range for a plain off-track excursion).  The turn-around/re-entry
+# logic below is a LOCAL heuristic (current angle + track_pos only, not a real
+# path planner) — starting a three-point turn while the car is still carrying
+# impact speed (skidding, possibly still rotating) just adds more chaotic
+# motion on top of an already-extreme position, and that specific run took
+# 36 real seconds to claw back to normal driving.  So: if track_pos is out at
+# this extreme AND the car still has real speed, brake straight to a stop
+# first — every other recovery branch below assumes a roughly-stationary,
+# already-settled car to work from, which this restores before anything else
+# runs.
+_EXTREME_TPOS       = 2.5           # track_pos units: this far off is not a normal
+                                    # kerb/off-track case (those top out ~1.15-2);
+                                    # it means the car was thrown clear of the track.
+_EXTREME_STOP_SPEED = 10.0          # km/h: "stopped enough" to hand off to the
+                                    # normal turnaround/re-entry logic below.
 
 _recovering = False   # module state: in off-track re-entry (with hysteresis)
 _turnaround = False   # module state: executing a wrong-way turn-around
 _ta_fwd     = 0       # module state: forward-leg frames remaining
 _ta_jam     = 0       # module state: consecutive jammed frames while reversing
+_ta_rev     = 0       # module state: consecutive frames in the current reverse leg
 
 
 def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
-    global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam
+    global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
     global _target_lp, _line_lp
     _stuck_frames = _reverse_frames = 0
     _recovering = _turnaround = False
-    _ta_fwd = _ta_jam = 0
+    _ta_fwd = _ta_jam = _ta_rev = 0
     _target_lp = None
     _line_lp = 0.0
 
@@ -921,14 +959,20 @@ def _recovery_control(state: dict[str, Any]) -> str:
         car (|angle| > 90°) inside the track fell through to the normal branch,
         whose sensors read -1, and calmly drove off in the reverse direction.
     """
-    global _turnaround, _ta_fwd, _ta_jam
+    global _turnaround, _ta_fwd, _ta_jam, _ta_rev
 
-    speed   = state.get("speed_x", 0.0)
-    speed_y = state.get("speed_y", 0.0) / 3.6
-    gear    = state.get("gear", 1)
-    angle   = state.get("angle", 0.0)
-    tpos    = clamp(state.get("track_pos", 0.0), -2.0, 2.0)
-    wheels  = state.get("wheel_spin_vel", [])
+    speed    = state.get("speed_x", 0.0)
+    speed_y  = state.get("speed_y", 0.0) / 3.6
+    gear     = state.get("gear", 1)
+    angle    = state.get("angle", 0.0)
+    raw_tpos = state.get("track_pos", 0.0)
+    tpos     = clamp(raw_tpos, -2.0, 2.0)
+    wheels   = state.get("wheel_spin_vel", [])
+
+    # --- flung far off track: stabilize before attempting anything clever ---
+    if abs(raw_tpos) > _EXTREME_TPOS and abs(speed) > _EXTREME_STOP_SPEED:
+        _dbg["mode"] = "stabilize"
+        return format_scr_control(accel=0.0, brake=0.9, gear=max(gear, 1), steer=0.0)
 
     # --- wrong way: turn the car around (hysteresis: finish the manoeuvre) ---
     if abs(angle) > _WRONG_WAY:
@@ -936,7 +980,7 @@ def _recovery_control(state: dict[str, Any]) -> str:
     if _turnaround:
         if abs(angle) < _TURNAROUND_EXIT:
             _turnaround = False              # aligned — fall through to re-entry
-            _ta_fwd = _ta_jam = 0
+            _ta_fwd = _ta_jam = _ta_rev = 0
         elif speed > 15.0:
             # Still rolling forward in the wrong direction — stop first.
             _dbg["mode"] = "turn-stop"
@@ -953,11 +997,15 @@ def _recovery_control(state: dict[str, Any]) -> str:
             # nose toward the track direction while backing off the obstacle.
             if abs(speed) < _TA_JAM_SPEED:
                 _ta_jam += 1
-                if _ta_jam >= _TA_JAM_FRAMES:    # blocked behind too → go forward
-                    _ta_jam = 0
-                    _ta_fwd = _TA_FWD_FRAMES
             else:
                 _ta_jam = 0
+            _ta_rev += 1
+            if _ta_jam >= _TA_JAM_FRAMES or _ta_rev >= _TA_REV_MAX_FRAMES:
+                # Blocked behind too, OR this reverse leg has simply run long
+                # enough (car moving fine but angle not converging) → stop
+                # backing up regardless and try a forward leg instead.
+                _ta_jam = _ta_rev = 0
+                _ta_fwd = _TA_FWD_FRAMES
             _dbg["mode"] = "turn-rev"
             return format_scr_control(accel=0.5, brake=0.0, gear=-1,
                                       steer=clamp(-angle * 0.8 + tpos * 0.3, -1.0, 1.0))
@@ -2018,6 +2066,24 @@ def _run_tests() -> None:
     assert _gear_shift(2, 3800.0,  56.0) == 2, "FAIL: shift sag must not re-downshift"
     print("_gear_shift (rpm-first + anti-hunt) ... OK")
 
+    # Flung far off track (track_pos way past a normal excursion) while still
+    # carrying real speed → stabilize: brake straight to a stop, no steering,
+    # before any turnaround/re-entry manoeuvring starts.
+    _reset_driver_state()
+    cs_flung = {**cs, "track_pos": 3.0, "speed_x": 50.0, "angle": 0.2}
+    cc_flung = compute_control(cs_flung, ATTACK)
+    assert "(accel 0.000)" in cc_flung, f"FAIL flung accel: {cc_flung}"
+    assert "(brake 0.900)" in cc_flung, f"FAIL flung brake: {cc_flung}"
+    assert "(steer 0.000)" in cc_flung, f"FAIL flung steer: {cc_flung}"
+    # Once speed has bled off, the SAME extreme track_pos must fall through to
+    # the normal recovery logic instead of braking forever.
+    _reset_driver_state()
+    cc_settled = compute_control({**cs_flung, "speed_x": 5.0}, ATTACK)
+    assert "(brake 0.900)" not in cc_settled, \
+        f"FAIL: settled car must hand off to normal recovery: {cc_settled}"
+    print(f"compute_control flung off-track → stabilize (regression) ... OK  →  {cc_flung}")
+    _reset_driver_state()
+
     # off-track + slow + facing forward → forward crawl in 1st, shallow-angle steer
     _reset_driver_state()
     cs_crawl = {**cs, "track_pos": 1.5, "speed_x": 2.0, "angle": 0.0}
@@ -2050,6 +2116,22 @@ def _run_tests() -> None:
     assert "(brake 0.800)" in cc_wf, f"FAIL wrong-way at speed must brake: {cc_wf}"
     assert "(accel 0.000)" in cc_wf, f"FAIL wrong-way at speed must not accelerate: {cc_wf}"
     print(f"compute_control wrong-way (regression) ... OK  →  {cc_wrong}")
+    _reset_driver_state()
+
+    # Reverse leg must not run forever even when the car is NOT jammed (speed
+    # stays above _TA_JAM_SPEED the whole time, so that counter never fires).
+    # If the angle just isn't converging, _TA_REV_MAX_FRAMES must force a
+    # forward leg after 120 frames regardless — guards against the car
+    # backing up tens of metres in a single continuous reverse attempt
+    # (logged live: one recovery reversed ~40 m before anything intervened).
+    cs_freewheel = {**cs, "track_pos": 0.0, "speed_x": -10.0, "angle": 3.0,
+                    "track": [-1.0] * 19}
+    out = ""
+    for _ in range(_TA_REV_MAX_FRAMES + 1):
+        out = compute_control(cs_freewheel, NORMAL)
+    assert "(gear 1)" in out and "(accel 0.400)" in out, \
+        f"FAIL: reverse leg must cap out and force a forward leg: {out}"
+    print("compute_control turnaround reverse-leg cap (regression) ... OK")
     _reset_driver_state()
 
     # on-track but ALL beams unusable (sensor glitch) → angle/centre fallback,
