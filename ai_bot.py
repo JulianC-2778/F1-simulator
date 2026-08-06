@@ -706,14 +706,11 @@ _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongs
 # and take a little heat off the throttle, only while dist_raced is small —
 # this fades back to normal full-send racing well before the first braking
 # zone on any real track, so it costs no meaningful lap time.
-# 150 → 100 → 150 (2026-08-06): tried a shorter window, then reverted —
-# the crashes seen after the 100 m cut were happening well past even the
-# original 150 m mark anyway (estimated dist_raced ~250-300 m), so shortening
-# the window wasn't tested against anything conclusive either way, and 150 is
-# the version with an actual clean-launch confirmation behind it.  Back to
-# the known-good value while the close-encounter logging (see run_bot) is
-# used to actually diagnose those later-race collisions instead.
-_START_CAUTION_DIST = 150.0         # m: dist_raced below this = still launching
+# 150 → 100 (2026-08-06): back to 100 on purpose — this is now a repro knob,
+# not a tuning value.  Shrinking the launch window makes the post-crash
+# stuck/no-recovery bug trigger reliably instead of intermittently, so it
+# can actually be debugged.  Revert to 150 once that bug is fixed.
+_START_CAUTION_DIST = 100.0         # m: dist_raced below this = still launching
 _START_AVOID_DIST   = 25.0          # m: replaces _AVOID_DIST during the launch
 _START_AVOID_GAIN   = 0.35          # replaces _AVOID_GAIN during the launch
 _START_ACCEL_CAP    = 0.75          # caps accel during the launch — still a

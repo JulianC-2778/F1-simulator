@@ -129,11 +129,36 @@
   button:disabled { opacity: 0.45; cursor: not-allowed; }
 
   details.log-toggle { width: 100%; margin-top: 6px; }
-  details.log-toggle summary { color: var(--text-faint); font-size: 0.76rem; cursor: pointer; }
-  pre.log-tail {
-    margin: 8px 0 0; padding: 10px 12px; background: rgba(17,24,39,0.05); border-radius: 10px;
-    font-size: 0.72rem; color: var(--text-soft); max-height: 130px; overflow-y: auto; white-space: pre-wrap;
+  details.log-toggle summary {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text-faint); font-size: 0.76rem; cursor: pointer;
   }
+  details.log-toggle summary::-webkit-details-marker { margin-right: 2px; }
+  .log-count { color: var(--text-faint); font-size: 0.7rem; font-weight: 400; }
+  .log-copy-btn {
+    margin-left: auto; padding: 3px 10px; font-size: 0.68rem; font-weight: 600;
+    border-radius: 999px; background: rgba(17,24,39,0.06); color: var(--text-soft);
+  }
+  .log-copy-btn:disabled { opacity: 0.7; cursor: default; }
+  .log-wrap { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
+  .log-steps {
+    display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; width: 52px;
+    max-height: 260px; overflow-y: auto; padding-right: 2px;
+  }
+  .log-jump-btn {
+    padding: 3px 4px; font-size: 0.62rem; font-weight: 600; line-height: 1.2;
+    border-radius: 6px; background: rgba(17,24,39,0.05); color: var(--text-faint); text-align: center;
+  }
+  .log-jump-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .log-tail {
+    flex: 1; min-width: 0; padding: 10px 12px; background: rgba(17,24,39,0.05); border-radius: 10px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.72rem; color: var(--text-soft); max-height: 260px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .log-tail .log-line { padding: 1px 0; }
+  .log-tail .log-line.log-anchor { border-top: 1px dashed var(--border-strong); margin-top: 2px; }
+  .log-tail .log-line.log-empty { color: var(--text-faint); }
 
   /* ── Tabs ── */
   .tabbar { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
@@ -592,9 +617,15 @@
         its local steering/throttle/brake safety controller runs independently and keeps driving either way.
         To actually stop the car, use <strong>Stop ai_bot.py</strong>, which ends the process.
       </div>
-      <details class="log-toggle">
-        <summary>Process log (last 50 lines — <a href="/api/bot/process/log" target="_blank" rel="noopener">view full log</a>)</summary>
-        <pre class="log-tail" id="botLog">(not started)</pre>
+      <details class="log-toggle" id="botLogDetails">
+        <summary>
+          Process log <span id="botLogCount" class="log-count"></span>
+          <button type="button" id="botLogCopyBtn" class="log-copy-btn">Copy log</button>
+        </summary>
+        <div class="log-wrap">
+          <div class="log-steps" id="botLogSteps" title="Jump to step (every 500 steps)"></div>
+          <div class="log-tail" id="botLog"></div>
+        </div>
       </details>
     </div>
   </div>
@@ -1025,6 +1056,10 @@ const State = {
   engRecording: false,
   coSessionId: null,
   coChartHistory: {},
+  botLogCommitted: "",   // full-log text already rendered as DOM lines
+  botLogFullText: "",    // latest full-log text, for the copy button
+  botLogLastBucket: -1,  // highest step//500*500 that already has a jump anchor
+  botLogEmpty: true,     // showing the "(not started)" placeholder
 };
 
 function $(id) { return document.getElementById(id); }
@@ -1138,6 +1173,90 @@ document.querySelectorAll(".tab").forEach(tabEl => {
 });
 
 /* ────────────────────────── Bot card ────────────────────────── */
+
+// Renders one already-committed log line, wiring up a step-500 jump anchor
+// the first time a line's step number crosses into a new 500-step bucket.
+function appendBotLogLine(line) {
+  const box = $("botLog");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 28;
+  const div = document.createElement("div");
+  div.className = "log-line";
+  div.textContent = line;
+  const m = line.match(/step=\s*(\d+)/);
+  if (m) {
+    const bucket = Math.floor(Number(m[1]) / 500) * 500;
+    if (bucket > State.botLogLastBucket) {
+      State.botLogLastBucket = bucket;
+      div.id = "botlog-step-" + bucket;
+      div.classList.add("log-anchor");
+      const jump = document.createElement("button");
+      jump.type = "button";
+      jump.className = "log-jump-btn";
+      jump.textContent = bucket;
+      jump.title = "Jump to step " + bucket;
+      jump.addEventListener("click", () => jumpToBotLogStep(bucket));
+      $("botLogSteps").appendChild(jump);
+    }
+  }
+  box.appendChild(div);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function jumpToBotLogStep(bucket) {
+  const box = $("botLog");
+  const el = document.getElementById("botlog-step-" + bucket);
+  if (!box || !el) return;
+  box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+}
+
+function resetBotLogView() {
+  $("botLog").innerHTML = "";
+  $("botLogSteps").innerHTML = "";
+  State.botLogCommitted = "";
+  State.botLogLastBucket = -1;
+  State.botLogEmpty = true;
+}
+
+// Full, uncapped log text (from /api/bot/process/log) in, incrementally
+// appended DOM lines out -- only the newly-completed lines since the last
+// call are touched, so a long race doesn't mean rebuilding the whole view
+// every poll. A shorter/diverged fetch (new run started) triggers a reset.
+function renderBotLog(fullText) {
+  fullText = fullText || "";
+  if (!fullText) {
+    if (!State.botLogEmpty) resetBotLogView();
+    if (!$("botLog").childNodes.length) {
+      const div = document.createElement("div");
+      div.className = "log-line log-empty";
+      div.textContent = "(not started)";
+      $("botLog").appendChild(div);
+    }
+    $("botLogCount").textContent = "";
+    State.botLogFullText = "";
+    return;
+  }
+  if (!fullText.startsWith(State.botLogCommitted)) resetBotLogView();
+  if (State.botLogEmpty) { $("botLog").innerHTML = ""; State.botLogEmpty = false; }
+
+  const tail = fullText.slice(State.botLogCommitted.length);
+  const nlIdx = tail.lastIndexOf("\n");
+  if (nlIdx >= 0) {
+    const toCommit = tail.slice(0, nlIdx + 1);
+    toCommit.split("\n").slice(0, -1).forEach(appendBotLogLine);
+    State.botLogCommitted += toCommit;
+  }
+  State.botLogFullText = fullText;
+  const lineCount = State.botLogCommitted ? State.botLogCommitted.split("\n").length - 1 : 0;
+  $("botLogCount").textContent = lineCount ? `· ${lineCount} lines` : "";
+}
+
+async function fetchBotLog() {
+  try {
+    const r = await fetch("/api/bot/process/log", { cache: "no-store" });
+    renderBotLog(r.ok ? await r.text() : "");
+  } catch (e) { /* keep last state */ }
+}
+
 async function pollBot() {
   try {
     const r = await fetch("/api/bot/status", { cache: "no-store" });
@@ -1156,12 +1275,52 @@ async function pollBot() {
     const proc = data.process || {};
     $("botStartBtn").disabled = !!proc.running;
     $("botStopBtn").disabled = !proc.running;
-    $("botLog").textContent = (proc.log_tail && proc.log_tail.length) ? proc.log_tail.join("\n") : "(not started)";
   } catch (e) { /* keep last state */ }
+
+  // Only worth the extra fetch (full, uncapped log file) while it's visible.
+  if ($("botLogDetails").open) await fetchBotLog();
 }
+
+$("botLogDetails").addEventListener("toggle", () => {
+  if ($("botLogDetails").open) fetchBotLog();
+});
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  // Insecure-context fallback (e.g. dashboard opened over plain http://<lan-ip>),
+  // where the async Clipboard API isn't exposed at all.
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("execCommand copy failed");
+}
+
+$("botLogCopyBtn").addEventListener("click", async (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = $("botLogCopyBtn");
+  try {
+    await copyText(State.botLogFullText || "");
+    btn.textContent = "Copied!";
+  } catch (err) {
+    btn.textContent = "Copy failed";
+  }
+  btn.disabled = true;
+  setTimeout(() => { btn.textContent = "Copy log"; btn.disabled = false; }, 1400);
+});
 
 $("botStartBtn").addEventListener("click", async () => {
   $("botStartBtn").disabled = true;
+  resetBotLogView();
   try {
     const r = await fetch("/api/bot/process/start", { method: "POST" });
     const data = await r.json();
