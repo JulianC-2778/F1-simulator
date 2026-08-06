@@ -17,6 +17,7 @@ import base64
 import csv
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -1142,6 +1143,36 @@ async def get_coach_dashboard(
     )
 
 
+# Matches a sentence-ending . ! or ? that isn't sitting between two digits
+# (so a decimal number doesn't get mistaken for the end of the sentence),
+# and is followed by whitespace or the end of the string.
+_SENTENCE_END_RE = re.compile(r"(?<!\d)[.!?](?!\d)(?=\s|$)")
+
+
+def _first_sentence(text: str) -> str:
+    """Keep only the model's first sentence.
+
+    ENGINEER_PERSONA already asks for a single short sentence, but the local
+    model doesn't reliably stop there on its own -- it often keeps going with
+    an explanation even when told not to. Trimming here guarantees a short
+    answer regardless of what the model does, instead of relying purely on
+    the prompt (and without the awkward mid-word cutoff a low max_tokens
+    causes on its own).
+    """
+    text = text.strip()
+    match = _SENTENCE_END_RE.search(text)
+    if not match:
+        return text
+    return text[: match.end()].strip()
+
+
+# Questions that ask for reasoning get more generation room; everything else
+# (plain yes/no calls, short factual asks) is capped tight -- the model has
+# nowhere to ramble, which is what actually cuts generation time, not just
+# what gets displayed afterwards.
+_EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
+
+
 @app.post("/api/engineer/ask")
 async def ask_engineer(body: dict):
     if not runtime_manager.is_enabled("engineer"):
@@ -1168,7 +1199,11 @@ async def ask_engineer(body: dict):
             task="engineer",
             priority=MODEL_PRIORITIES["engineer"],
             temperature=0.4,
-            max_tokens=180,
+            # Tight cap by default -- the persona now asks for a bare
+            # "Yes"/"No" or a short call, which needs almost no tokens.
+            # Only widen it when the driver actually asked for reasoning,
+            # so that path still has room to explain itself.
+            max_tokens=60 if _EXPLAIN_REQUEST_RE.search(question) else 12,
             stream=False,
             # 45s was too tight for this local model with the full
             # telemetry-context prompt, especially while TORCS is also
@@ -1180,6 +1215,7 @@ async def ask_engineer(body: dict):
         await broadcast({"type": "error", "source": "engineer", "message": str(exc), "request_id": request_id})
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
 
+    answer = _first_sentence(answer)
     engineer_ctx_mgr.add_assistant(answer)
     await broadcast({"type": "ai_done", "source": "engineer", "content": answer, "request_id": request_id})
     return {

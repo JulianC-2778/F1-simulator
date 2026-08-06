@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -36,6 +36,73 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         model.assert_awaited_once()
         self.assertGreater(len(self.client.get("/api/engineer/history").json()["messages"]), 0)
         self.assertEqual(self.client.post("/api/engineer/clear").status_code, 200)
+
+    def test_engineer_answer_is_trimmed_to_first_sentence_even_if_the_model_rambles(self):
+        # Real local models don't reliably stop at one sentence just because
+        # the persona asks them to -- the endpoint must enforce it itself.
+        rambling = "No, stay out and continue racing. Pitting now would cost valuable time you don't need to lose."
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value=rambling)):
+            response = self.client.post("/api/engineer/ask", json={"question": "should I pit now?"})
+        self.assertEqual(response.json()["answer"], "No, stay out and continue racing.")
+        self.client.post("/api/engineer/clear")
+
+    def test_plain_question_gets_a_tight_token_budget_but_why_question_gets_more_room(self):
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes.")) as model:
+            self.client.post("/api/engineer/ask", json={"question": "should I push now?"})
+        plain_max_tokens = model.await_args.kwargs["max_tokens"]
+
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes.")) as model:
+            self.client.post("/api/engineer/ask", json={"question": "why should I push?"})
+        explain_max_tokens = model.await_args.kwargs["max_tokens"]
+
+        self.assertLess(plain_max_tokens, explain_max_tokens)
+        self.client.post("/api/engineer/clear")
+
+    def test_voice_available_reflects_mic_check(self):
+        with patch("voice_input.mic_available", return_value=True):
+            self.assertTrue(self.client.get("/api/engineer/voice/available").json()["available"])
+        with patch("voice_input.mic_available", return_value=False):
+            self.assertFalse(self.client.get("/api/engineer/voice/available").json()["available"])
+
+    def test_voice_start_rejects_when_engineer_feature_disabled(self):
+        self.client.post("/api/features/enabled", json={"enabled": ["commentary", "coach", "bot"]})
+        response = self.client.post("/api/engineer/voice/start")
+        self.assertEqual(response.status_code, 409)
+
+    def test_voice_start_rejects_when_mic_unavailable(self):
+        with patch("voice_input.mic_available", return_value=False):
+            response = self.client.post("/api/engineer/voice/start")
+        self.assertEqual(response.status_code, 503)
+
+    def test_voice_start_then_stop_returns_transcribed_text(self):
+        fake_recorder = MagicMock()
+        with patch("voice_input.mic_available", return_value=True), \
+             patch("voice_input.Recorder", return_value=fake_recorder):
+            start_response = self.client.post("/api/engineer/voice/start")
+        self.assertEqual(start_response.status_code, 200)
+        self.assertTrue(start_response.json()["recording"])
+
+        fake_recorder.stop.return_value = "/tmp/fake.wav"
+        with patch("voice_input.transcribe", return_value="should I push now?") as transcribe:
+            stop_response = self.client.post("/api/engineer/voice/stop")
+        self.assertEqual(stop_response.json(), {"ok": True, "text": "should I push now?"})
+        transcribe.assert_called_once_with("/tmp/fake.wav")
+
+    def test_voice_start_rejects_a_second_concurrent_recording(self):
+        fake_recorder = MagicMock()
+        with patch("voice_input.mic_available", return_value=True), \
+             patch("voice_input.Recorder", return_value=fake_recorder):
+            first = self.client.post("/api/engineer/voice/start")
+            second = self.client.post("/api/engineer/voice/start")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 409)
+        # Clean up the in-progress recording so it doesn't leak into other tests.
+        fake_recorder.stop.return_value = None
+        self.client.post("/api/engineer/voice/stop")
+
+    def test_voice_stop_without_a_prior_start_returns_409(self):
+        response = self.client.post("/api/engineer/voice/stop")
+        self.assertEqual(response.status_code, 409)
 
     def test_each_disabled_feature_changes_real_api_behavior(self):
         cases = {
