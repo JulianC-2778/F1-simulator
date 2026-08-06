@@ -687,12 +687,101 @@ _EDGE_GAIN = 1.2           # gentle tuck-in once past the free band
 # later and harsher, which doesn't fix a timing problem and risks a sharper
 # swerve at speed).  One variable at a time — leave _AVOID_GAIN alone until
 # this alone is confirmed to help or not over several races.
+# 0.15 → 0.22 (2026-08-06): the 14 m distance alone wasn't enough — logged
+# live (alongside the new _SIDE_EASE_GAIN throttle cut, see below): rgap
+# closed from 8.8 m to 4.4 m over 16 straight ticks with the nudge active
+# the whole time and made contact anyway. The gain, deliberately left alone
+# above, is the other half of "widen the warning, then confirm gain doesn't
+# need touching too" — that confirmation came back negative, so this is the
+# next single-variable step, not a combined change.
+# 0.22 → 0.45 (2026-08-06): 0.22 changed NOTHING live — same crash, same
+# step, damage 294 vs 295, tpos trajectory nearly identical. Root cause:
+# `steer /= (1 + speed * _STEER_SPEED_K)` divides every steer term by ~1.35
+# at 175 km/h, so at rgap=4.4 m (well inside _AVOID_DIST) the post-atten
+# contribution only went from ~0.076 to ~0.112 — a ~0.036 nudge on a [-1,1]
+# scale, invisible next to the pursuit/centre terms holding the racing line.
+# For the avoid term to actually read as a real steering input (~0.25, the
+# same ceiling the centre/hold-line term clamps to) at that speed and gap
+# needs gain ≈0.25*1.35/(1-4.4/14) ≈ 0.49 — 0.45 targets that order of
+# magnitude. This is deliberately the "sharper swerve at speed" risk flagged
+# above and not yet tested at all — validate for oversteer/instability at
+# high speed, not just whether it stops the graze.
+# 0.45 validated live (2026-08-06): the dist~150 m straight-line graze that
+# crashed identically at 0.15 and 0.22 (damage ~294-295 both times) did NOT
+# recur at 0.45 — lgap bottomed at 3.5 m and recovered to 49.8 m, damage 0.
+# No sign of the oversteer/instability this jump was flagged as risking.
+#
+# But a SEPARATE contact showed up later the same race (dist~3807, step 3675,
+# damage 0->331, contained — no further growth) while cornering (why=map-trust
+# going in). This is not a "gain still too small" case: `avoid *= fade` below
+# means steer authority here is capped by cornering demand regardless of gain.
+# Measured through that incident: open_angle(=|pursuit|) was 0.01 at the first
+# close tick, only reaching 0.19+ (fade=0) a few ticks AFTER contact — so
+# avoid ran at roughly 40-90% strength (fade 0.4-0.9) through the whole
+# approach, not zero, and that reduced-but-nonzero authority plus losing the
+# wheel to cornering the rest of the time still wasn't enough. See
+# _AVOID_FADE_FLOOR below for the fix aimed at this category.
+# 0.45 → 0.22 (2026-08-06): 0.45 also turned out to be the reason a same-tick
+# left/right gap flip became a real steer-sign reversal mid-overtake (see
+# _AVOID_SLEW below — that's the actual fix for the reversal). With the slew
+# limiter now in place regardless of gain, trying the lower, less oversteer-
+# prone value again to see whether 0.22 + the slew limiter (and everything
+# else fixed since the original 0.22 test: reverse cap, stabilize latch,
+# side-ease, fade floor, blind-mode avoidance) is enough on its own, without
+# needing 0.45's sharper-swerve risk.
 _AVOID_DIST  = 14.0                 # m: side gap closer than this triggers a nudge
-_AVOID_GAIN  = 0.15                 # steer authority at zero gap (~centre-term scale)
+_AVOID_GAIN  = 0.22                 # steer authority at zero gap (~centre-term scale)
 _AVOID_LEFT  = range(9, 18)         # ~-90° to -10°: opponent ahead-left/alongside/just behind
 _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongside/just behind
                                      # (index 18, dead ahead, arbitrarily assigned here — the
                                      # point is the split, not which side owns the boundary)
+
+# 2026-08-06: `avoid *= fade` (see compute_control) shares the same cornering
+# fade as `centre` (the racing-line hold), on the reasoning that neither
+# should fight the driver for the wheel mid-corner. That's right for `centre`
+# — it's about racing line, and the corner's own geometry is better
+# information than a guessed hold-line setpoint. It's wrong for `avoid` —
+# its only job is not getting hit, which does not stop mattering because a
+# corner is happening. Logged live: a car alongside mid-corner (dist~3807,
+# see _AVOID_GAIN history above) took damage while avoid ran at a reduced
+# 40-90% (fade 0.4-0.9) and got no floor once fade fell further as the
+# corner deepened. This floor gives `avoid` — and only `avoid`, `centre` is
+# untouched — a guaranteed minimum so a car alongside is never completely
+# defenseless just because a corner is also happening.
+_AVOID_FADE_FLOOR = 0.3             # min fraction of avoid's authority kept
+                                     # even at fade=0 (full corner)
+
+# 2026-08-06: raising _AVOID_GAIN to 0.45 (see history above) turned a
+# pre-existing wrinkle into a real problem. left_gap/right_gap are recomputed
+# fresh every tick with no memory, and mid-overtake it's normal for which
+# side reads "closer" to flip as the two cars' relative angle sweeps past —
+# logged live: lgap=164.7/rgap=9.0 (right close) at one tick, lgap=9.1/
+# rgap=200.0 (left close) the very next. At the old gain that flip was too
+# small to feel; at 0.45 it's a real steer-sign reversal in a single 20 ms
+# tick, right in the middle of a fast pass — likely what set off the
+# wrong-way spin logged a few ticks later. `centre` already has exactly this
+# problem solved via `_line_lp`/`_LINE_SLEW` (slew the setpoint, never dart);
+# `avoid` gets the same treatment here rather than clawing gain back.
+_AVOID_SLEW = 0.05                  # max avoid change per 20 ms tick — full
+                                     # swing (~2x gain) takes ~0.35-0.4 s,
+                                     # so a same-tick side flip becomes a
+                                     # fast correction, not a reversal
+_avoid_lp   = 0.0                   # module state: slewed avoid value
+
+# Side-avoidance throttle ease: the steer nudge above is the only reaction to
+# a car alongside — accel/brake never see left_gap/right_gap at all — so a
+# tight side gap that isn't closing on its own just gets held, nose-to-nose,
+# for as long as the opponent stays there. Logged live: a crash where ogap
+# sat at 4.3-4.7 m (well inside _AVOID_DIST) for dozens of consecutive ticks
+# at acc=1.00 the whole time — the car never actually tried to open the gap,
+# just nudged its heading a few degrees while pinned alongside — until contact
+# built up to real damage. This eases target_speed (not a hard brake) so the
+# car can actually fall back or ease off rather than just steering while
+# still glued to the opponent's pace. Deliberately NOT applied while
+# `launching` — the launch's widened _START_AVOID_DIST already means most of
+# the grid reads "close" for the first stretch, and that startup avoidance
+# tuning is separately validated; don't perturb it here.
+_SIDE_EASE_GAIN = 0.3                # fraction of target_speed shed at zero side gap
 
 # Start-of-race caution: the whole grid launches together into a narrowing
 # racing line (see quickrace.xml's 2-row grid), so the first stretch sees far
@@ -706,11 +795,13 @@ _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongs
 # and take a little heat off the throttle, only while dist_raced is small —
 # this fades back to normal full-send racing well before the first braking
 # zone on any real track, so it costs no meaningful lap time.
-# 150 → 100 (2026-08-06): back to 100 on purpose — this is now a repro knob,
-# not a tuning value.  Shrinking the launch window makes the post-crash
-# stuck/no-recovery bug trigger reliably instead of intermittently, so it
-# can actually be debugged.  Revert to 150 once that bug is fixed.
-_START_CAUTION_DIST = 100.0         # m: dist_raced below this = still launching
+# 150 → 100 → 150 (2026-08-06): 100 was a deliberate repro knob, not a
+# tuning value — shrinking the launch window made the post-crash
+# stuck/no-recovery bug trigger reliably instead of intermittently so it
+# could actually be debugged. That bug is now fixed (_TA_REV_MAX_KMH,
+# _stabilize_bled, and the avoidance work below — see commit history),
+# so this reverts to the known-good 150 as planned.
+_START_CAUTION_DIST = 150.0         # m: dist_raced below this = still launching
 _START_AVOID_DIST   = 25.0          # m: replaces _AVOID_DIST during the launch
 _START_AVOID_GAIN   = 0.35          # replaces _AVOID_GAIN during the launch
 _START_ACCEL_CAP    = 0.75          # caps accel during the launch — still a
@@ -983,7 +1074,7 @@ def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
     global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
     global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
-    global _stabilize_bled
+    global _stabilize_bled, _avoid_lp
     _stuck_frames = _reverse_frames = 0
     _recovering = _turnaround = False
     _ta_fwd = _ta_jam = _ta_rev = 0
@@ -993,6 +1084,7 @@ def _reset_driver_state() -> None:
     _stuck_progress_frames = 0
     _stabilizing = False
     _stabilize_bled = False
+    _avoid_lp = 0.0
 
 
 def _recovery_steer(angle: float, tpos: float) -> float:
@@ -1142,7 +1234,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     dist_raced = state.get("dist_raced", 1e9)   # missing/huge = never "launching"
     _dbg["dist"] = dist_from_start
 
-    global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp
+    global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp, _avoid_lp
     global _stuck_progress_dist, _stuck_progress_frames, _stabilizing, _stabilize_bled
 
     # --- stabilize latch: once entered (see the two triggers below), STAYS
@@ -1257,12 +1349,32 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     #   barrier : no centring in the middle band; only push back near the edge,
     #             so the car is free to use the track width (racing line)
     #   damping : small counter to a sideways slide (speed_y)
+    opps      = state.get("opponents", [])
+    left_gap  = min((opps[i] for i in _AVOID_LEFT  if i < len(opps)), default=200.0)
+    right_gap = min((opps[i] for i in _AVOID_RIGHT if i < len(opps)), default=200.0)
     pursuit = _pursuit_target(track)
     if pursuit is None:
         # Nominally on track yet no usable beams — sensor glitch.  Fall back to
         # the angle/centre controller at a modest pace rather than flooring it
         # blind with steer 0.
-        steer = clamp(angle - clamp(tpos, -2.0, 2.0) * 0.5 - speed_y * _STEER_DAMP, -1.0, 1.0)
+        #
+        # 2026-08-06: this branch used to skip side-avoidance entirely — logged
+        # live: a car alongside (lgap=6.9 m, well inside _AVOID_DIST) hit this
+        # exact branch for 5 straight ticks right before contact (tpos frozen
+        # at -1.00, lgap frozen at 6.9 the whole time — neither escaping nor
+        # closing further, just stuck). Every avoidance fix so far
+        # (_AVOID_GAIN, _AVOID_FADE_FLOOR) lives in the normal branch below and
+        # none of them ran during those 5 ticks. No fade multiplier here —
+        # fade needs `pursuit`, which is exactly what's missing — a car flying
+        # blind on sensors still shouldn't be defenceless against a car
+        # alongside.
+        avoid_blind = 0.0
+        if left_gap < _AVOID_DIST:
+            avoid_blind -= _AVOID_GAIN * (1.0 - left_gap / _AVOID_DIST)
+        if right_gap < _AVOID_DIST:
+            avoid_blind += _AVOID_GAIN * (1.0 - right_gap / _AVOID_DIST)
+        steer = clamp(angle - clamp(tpos, -2.0, 2.0) * 0.5 - speed_y * _STEER_DAMP + avoid_blind,
+                      -1.0, 1.0)
         accel = 0.4 if speed < 60.0 else 0.0
         brake = 0.3 if speed > 80.0 else 0.0
         _dbg["mode"] = "blind"
@@ -1271,9 +1383,6 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     edge    = max(0.0, abs(tpos) - _EDGE_FREE)
     barrier = -math.copysign(edge * _EDGE_GAIN, tpos)
     aim     = math.copysign(max(0.0, abs(pursuit) - _PP_FREE), pursuit)
-    opps      = state.get("opponents", [])
-    left_gap  = min((opps[i] for i in _AVOID_LEFT  if i < len(opps)), default=200.0)
-    right_gap = min((opps[i] for i in _AVOID_RIGHT if i < len(opps)), default=200.0)
     front_gap = min((opps[i] for i in _FRONT_CONE  if i < len(opps)), default=200.0)
     # A+ racing line: hold-line setpoint.  0 (centre) on open road, but on
     # the approach to a mapped corner the map moves it to the OUTSIDE edge
@@ -1308,7 +1417,14 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         avoid -= avoid_gain * (1.0 - left_gap / avoid_dist)
     if right_gap < avoid_dist:
         avoid += avoid_gain * (1.0 - right_gap / avoid_dist)
-    avoid  *= fade   # back off once a real corner needs the wheel
+    # centre defers fully to cornering (fade); avoid never fully switches
+    # off — collision risk doesn't stop mattering mid-corner (see
+    # _AVOID_FADE_FLOOR above for the live incident this covers).
+    avoid  *= max(fade, _AVOID_FADE_FLOOR)
+    # Slew toward the raw value — a same-tick left/right flip becomes a fast
+    # correction instead of an instant full-reversal dart (see _AVOID_SLEW).
+    _avoid_lp += clamp(avoid - _avoid_lp, -_AVOID_SLEW, _AVOID_SLEW)
+    avoid = _avoid_lp
     steer   = aim * _PP_GAIN + centre + barrier + avoid - speed_y * _STEER_DAMP
     steer  /= (1.0 + max(speed, 0.0) * _STEER_SPEED_K)
     # The alignment damper is deliberately OUTSIDE the speed attenuation: the
@@ -1344,6 +1460,13 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         target_speed = min(params.max_speed,
                            dist_limit / (1.0 + _CORNER_SHARPNESS * sharp))
         _dbg["why"]  = "corner-sight"
+
+    # --- side-avoidance throttle ease: pair the steer nudge with real separation ---
+    if not launching:
+        side_gap = min(left_gap, right_gap)
+        if side_gap < _AVOID_DIST:
+            target_speed *= 1.0 - _SIDE_EASE_GAIN * (1.0 - side_gap / _AVOID_DIST)
+            _dbg["why"] = "side-close"
 
     # --- front-opponent follow cap: brake ONLY when genuinely boxed in ---
     # A tight gap ahead is not by itself a reason to brake — if either side is
