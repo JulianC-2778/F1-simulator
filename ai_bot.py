@@ -916,6 +916,15 @@ _TA_REV_MAX_FRAMES  = 120           # hard cap on one continuous reverse leg (2.
                                     # independent backstop: however well the reverse is
                                     # going, force a forward leg after 2.4 s so no
                                     # single reverse attempt can travel far.
+_TA_REV_MAX_KMH     = 25.0          # reverse speed cap for the turn-rev leg — it had
+                                    # none, so accel=0.5 held for the full 2.4 s window
+                                    # let a freely-reversing car build to 60+ km/h;
+                                    # logged live: that carried track_pos across the
+                                    # entire track width (-0.68 to +1.06) and into a
+                                    # second collision (damage 765 -> 1526) that then
+                                    # needed a long stabilize crawl to undo. A slow,
+                                    # controlled reverse is the point of a three-point
+                                    # turn, not distance covered.
 
 # Extreme-excursion stabilize gate (checked at the very top of compute_control,
 # ahead of BOTH the stuck-jam burst and the wrong-way turnaround): a violent
@@ -965,12 +974,16 @@ _stuck_progress_dist   = None   # module state: dist_from_start when the current
 _stuck_progress_frames = 0      # module state: frames elapsed in that window
 _stabilizing = False   # module state: latched in the stabilize action (either
                        # trigger) until track_pos/angle are genuinely safe again
+_stabilize_bled = False   # module state: has this stabilize episode already
+                          # braked off the post-impact speed once? Re-armed
+                          # alongside _stabilizing on each fresh entry.
 
 
 def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
     global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
     global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
+    global _stabilize_bled
     _stuck_frames = _reverse_frames = 0
     _recovering = _turnaround = False
     _ta_fwd = _ta_jam = _ta_rev = 0
@@ -979,6 +992,7 @@ def _reset_driver_state() -> None:
     _stuck_progress_dist = None
     _stuck_progress_frames = 0
     _stabilizing = False
+    _stabilize_bled = False
 
 
 def _recovery_steer(angle: float, tpos: float) -> float:
@@ -992,13 +1006,21 @@ def _stabilize_action(speed: float, angle: float, tpos: float, gear: int,
                        speed_y: float) -> str:
     """Shared control for the extreme-excursion and no-progress stabilize gates.
 
-    Brake to a stop if still carrying real speed; once slow, creep back toward
-    the centre line — forward if roughly facing the right way (reusing the
-    plain off-track re-entry steer formula, the faster way back), reverse only
-    if facing badly wrong (forward would just dig the hole deeper).
+    Brake to a stop if still carrying real speed from the impact — checked
+    only once per episode via _stabilize_bled, not every tick; without that
+    latch this re-triggered the instant the creep below got the car back
+    above _EXTREME_STOP_SPEED, capping the whole recovery crawl at ~10 km/h
+    (logged live: speed pinned at 9.0-9.7 km/h for 6+ seconds). Once bled,
+    creep back toward the centre line — forward if roughly facing the right
+    way (reusing the plain off-track re-entry steer formula, the faster way
+    back), reverse only if facing badly wrong (forward would just dig the
+    hole deeper).
     """
-    if abs(speed) > _EXTREME_STOP_SPEED:
-        return format_scr_control(accel=0.0, brake=0.9, gear=max(gear, 1), steer=0.0)
+    global _stabilize_bled
+    if not _stabilize_bled:
+        if abs(speed) > _EXTREME_STOP_SPEED:
+            return format_scr_control(accel=0.0, brake=0.9, gear=max(gear, 1), steer=0.0)
+        _stabilize_bled = True
     if abs(angle) > _WRONG_WAY:
         return format_scr_control(accel=0.5, brake=0.0, gear=-1,
                                   steer=_recovery_steer(angle, tpos))
@@ -1060,7 +1082,11 @@ def _recovery_control(state: dict[str, Any]) -> str:
                 _ta_jam = _ta_rev = 0
                 _ta_fwd = _TA_FWD_FRAMES
             _dbg["mode"] = "turn-rev"
-            return format_scr_control(accel=0.5, brake=0.0, gear=-1,
+            if abs(speed) > _TA_REV_MAX_KMH:
+                rev_accel, rev_brake = 0.0, 0.5
+            else:
+                rev_accel, rev_brake = 0.5, 0.0
+            return format_scr_control(accel=rev_accel, brake=rev_brake, gear=-1,
                                       steer=clamp(-angle * 0.8 + tpos * 0.3, -1.0, 1.0))
 
     # --- facing roughly the right way: drive back to the centre line ---
@@ -1117,7 +1143,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     _dbg["dist"] = dist_from_start
 
     global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp
-    global _stuck_progress_dist, _stuck_progress_frames, _stabilizing
+    global _stuck_progress_dist, _stuck_progress_frames, _stabilizing, _stabilize_bled
 
     # --- stabilize latch: once entered (see the two triggers below), STAYS
     # active until the car is genuinely back under control — not just "moved
@@ -1152,6 +1178,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # position gets this extreme.
     if abs(tpos) > _EXTREME_TPOS:
         _stabilizing = True
+        _stabilize_bled = False
         _dbg["mode"] = "stabilize"
         return _stabilize_action(speed, angle, tpos, gear, speed_y)
 
@@ -1174,6 +1201,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
             _stuck_progress_frames += 1
             if _stuck_progress_frames >= _NO_PROGRESS_FRAMES:
                 _stabilizing = True
+                _stabilize_bled = False
                 _dbg["mode"] = "stabilize"
                 return _stabilize_action(speed, angle, tpos, gear, speed_y)
 
