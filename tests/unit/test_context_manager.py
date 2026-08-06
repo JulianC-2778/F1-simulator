@@ -27,7 +27,15 @@ class FormatCarStateTests(unittest.TestCase):
 
     def test_reports_no_issues_when_problems_list_is_empty(self):
         text = format_car_state({"problems": []})
-        self.assertIn("Detected issues: No issues detected.", text)
+        self.assertIn("Detected issues: None -- car is on track and under control.", text)
+
+    def test_reports_no_issues_when_analyzer_reports_normal(self):
+        # race_analyzer.analyze_car_state() returns ["normal"], not [], when
+        # nothing is wrong -- this must render the same as an empty list,
+        # not literally the word "normal" (which the model misread as an
+        # issue name and once caused it to claim the car was off-track).
+        text = format_car_state({"problems": ["normal"]})
+        self.assertIn("Detected issues: None -- car is on track and under control.", text)
 
 
 class FormatEngineerPromptTests(unittest.TestCase):
