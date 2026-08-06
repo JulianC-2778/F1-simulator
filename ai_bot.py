@@ -1232,6 +1232,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     wheel_vels = state.get("wheel_spin_vel", [])
     dist_from_start = state.get("dist_from_start", -1.0)   # -1 = not in packet
     dist_raced = state.get("dist_raced", 1e9)   # missing/huge = never "launching"
+    _dbg["angle"] = angle
     _dbg["dist"] = dist_from_start
 
     global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp, _avoid_lp
@@ -2088,7 +2089,21 @@ def run_bot(
                 elif close_hold > 0:
                     close_hold -= 1
 
-                if verbose and (step % 100 == 0 or close_hold > 0):
+                # 2026-08-07: same coarseness problem as the close-encounter case
+                # above, but for stuck/recovery episodes with no opponent nearby —
+                # a live incident sat in mode=stabilize for 46+ s (dist~3900-4200,
+                # the known Forza blind-corner landmine) swinging tpos between -6
+                # and +4 and taking damage 0->1826, but the 100-step cadence only
+                # gave ~23 samples across the whole thing — not enough to tell
+                # whether the car was genuinely spinning (angle crossing ±90°
+                # repeatedly, as the gear +1/-1 flips implied) or wedged against
+                # static geometry (sight pinned at 0.1 the entire time is the
+                # actual anomaly, but 2 s resolution can't confirm it). Any
+                # non-"race" mode now gets the same per-step logging as a close
+                # pass, so the next occurrence is fully captured.
+                stuck_mode = _dbg.get("mode", "race") != "race"
+
+                if verbose and (step % 100 == 0 or close_hold > 0 or stuck_mode):
                     speed = state.get("speed_x", 0.0)
                     gear  = state.get("gear",    0)
                     fuel  = state.get("fuel",    0.0)
@@ -2099,6 +2114,8 @@ def run_bot(
                         f"  step={step:6d}  {speed:6.1f} km/h  "
                         f"dist={_dbg.get('dist', -1.0):6.0f}  "
                         f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}  "
+                        f"angle={_dbg.get('angle', 0.0):+.3f}  "
+                        f"steer={_dbg.get('cmd_steer', 0.0):+.3f}  "
                         f"strategy={current_strategy}  "
                         f"tgt={_dbg.get('target', 0.0):5.1f}  "
                         f"why={_dbg.get('why', '?'):12s}  "

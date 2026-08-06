@@ -75,6 +75,32 @@ _A_BRAKE    = 19.0    # m/s^2: braking deceleration used by the backward
                       # 19.0 is the last tier verified clean over a full lap.)
 _V_CAP_KMH  = 330.0   # km/h: profile ceiling (straights are "no limit")
 
+# 2026-08-07: the dist≈3800-3950 landmine referenced in the _A_LAT/_A_BRAKE
+# history above turns out not to be one blind corner — it is a left-right-left
+# CHICANE (three direction-reversing arcs, radius tightening to R≈44-52 m,
+# packed into ~250 m of track, confirmed by parsing forza.xml directly). Each
+# 2 m sample only ever asks "is THIS radius safe at this speed" — it has no
+# idea the car just committed to the opposite lock 40 m ago and needs to
+# unweight/reload the tyres the other way before this radius even applies,
+# which is why the backward braking pass (tuned purely against straight-line
+# entry speed) still let the car in for a 4th on-track failure at this exact
+# spot even at the "safe" 16.5/19.0 tier — this time a 46 s stuck/spin loop
+# instead of an immediate crash, logged live with damage climbing 0->1826.
+# This is the "fix that specific corner's map profile" the _A_LAT comment
+# above says is the real fix, rather than lowering A_LAT/A_BRAKE further and
+# paying for it on every OTHER corner on the track.
+_CHICANE_GAP_MAX = 30.0     # m: straight shorter than this still links two
+                            # opposite-direction corners into one chicane
+_CHICANE_DERATE  = 0.85     # multiplies the corner speed limit for every
+                            # segment in a detected reversal — first cut, a
+                            # round number in line with the magnitude of the
+                            # A_LAT/A_BRAKE tiers above; NOT yet validated
+                            # on-track (this file's own tests only check the
+                            # limit drops, not by how much) — needs multiple
+                            # clean laps through this exact chicane before
+                            # trusting the number itself, same standard the
+                            # A_LAT/A_BRAKE history above holds itself to.
+
 
 def _corner_limit_ms(radius: float) -> float:
     """Cornering speed limit (m/s) for a radius, downforce included."""
@@ -194,11 +220,43 @@ class TrackModel:
                 boosts[k] = boost
             b = e
 
+        # --- chicane derating: direction reversals cost more than a single
+        # corner of the same radius (see _CHICANE_DERATE above). Reuses the
+        # same same-direction-run grouping as the straightening pass above,
+        # but for OPPOSITE-direction neighbours: if two corner groups face
+        # opposite ways with no more than _CHICANE_GAP_MAX of straight
+        # between them, derate every segment in BOTH groups — a chicane is
+        # driven as one linked slow event, not corner-by-corner.
+        derate = [1.0] * len(segments)
+        groups: list[tuple[int, int, str]] = []   # (start_idx, end_idx, kind)
+        b = 0
+        while b < len(segments):
+            e = b + 1
+            while e < len(segments) and segments[e].kind == segments[b].kind:
+                e += 1
+            groups.append((b, e, segments[b].kind))
+            b = e
+        prev_corner: tuple[int, int, str] | None = None
+        gap_since = 0.0
+        for start, end, kind in groups:
+            if kind == "str":
+                gap_since += sum(segments[k].length for k in range(start, end))
+                continue
+            if (prev_corner is not None and prev_corner[2] != kind
+                    and gap_since <= _CHICANE_GAP_MAX):
+                for k in range(prev_corner[0], prev_corner[1]):
+                    derate[k] = _CHICANE_DERATE
+                for k in range(start, end):
+                    derate[k] = _CHICANE_DERATE
+            prev_corner = (start, end, kind)
+            gap_since = 0.0
+
         # --- sample corner radius every ds metres along the lap ---
         n = max(1, int(self.lap_length / ds))
         radius = [0.0] * n   # 0 = straight (true geometric radius, for reports)
         lim_r  = [0.0] * n   # radius + straightening boost (for speed limits)
         sign   = [0]   * n   # +1 left, -1 right
+        samp_derate = [1.0] * n
         si, seg_start = 0, 0.0
         for i in range(n):
             s_mid = (i + 0.5) * ds
@@ -212,10 +270,12 @@ class TrackModel:
                 radius[i] = seg.radius + (seg.end_radius - seg.radius) * t
                 lim_r[i]  = radius[i] + boosts[si]
                 sign[i]   = 1 if seg.kind == "lft" else -1
+                samp_derate[i] = derate[si]
 
         # --- corner limits, then backward braking pass (two laps for wrap) ---
         cap = _V_CAP_KMH / 3.6
-        v = [_corner_limit_ms(r) if r > 0.0 else cap for r in lim_r]
+        v = [(_corner_limit_ms(r) * samp_derate[i]) if r > 0.0 else cap
+             for i, r in enumerate(lim_r)]
         for i in range(2 * n - 1, -1, -1):
             j, nxt = i % n, (i + 1) % n
             v[j] = min(v[j], math.sqrt(v[nxt] ** 2 + 2.0 * _A_BRAKE * ds))
@@ -501,6 +561,44 @@ def _run_tests() -> None:
     split_lim = ts.limit_kmh(500.0 + half)
     assert 80.0 < split_lim < 140.0, f"FAIL split 90° corner limit: {split_lim:.0f} km/h"
     assert split_lim < kink_lim - 80.0, "FAIL merge: split corner rated like a kink"
+
+    # chicane derating (2026-08-07): three same-radius corners, but the
+    # middle one reverses direction (left-right-left) with no straight
+    # between any of them — must rate LOWER than the same radius taken as an
+    # isolated single corner, and the reversal's derate must reach both
+    # sides of the flip, not just the corner it's centred on.
+    r = 50.0
+    arc = 60.0 * math.radians(30.0)
+    solo = TrackModel([Segment("str", 500.0, 0.0, 0.0),
+                       Segment("lft", arc, r, r),
+                       Segment("str", 500.0, 0.0, 0.0)],
+                      width=12.0, name="solo-corner")
+    solo_lim = solo.limit_kmh(500.0 + arc / 2.0)
+    chic = TrackModel([Segment("str", 500.0, 0.0, 0.0),
+                       Segment("lft", arc, r, r),
+                       Segment("rgt", arc, r, r),
+                       Segment("lft", arc, r, r),
+                       Segment("str", 500.0, 0.0, 0.0)],
+                      width=12.0, name="chicane")
+    chic_lim_mid   = chic.limit_kmh(500.0 + arc + arc / 2.0)   # the rgt, centre
+    chic_lim_first = chic.limit_kmh(500.0 + arc / 2.0)          # the first lft
+    assert chic_lim_mid < solo_lim * 0.95, \
+        f"FAIL chicane centre must rate below the same radius alone: {chic_lim_mid:.0f} vs {solo_lim:.0f}"
+    assert chic_lim_first < solo_lim * 0.95, \
+        f"FAIL chicane derate must reach the FIRST corner too, not just the reversal point: {chic_lim_first:.0f} vs {solo_lim:.0f}"
+
+    # no false positive: two same-direction corners (not a reversal) must
+    # NOT be derated even with a short gap between them.
+    same_dir = TrackModel([Segment("str", 500.0, 0.0, 0.0),
+                           Segment("lft", arc, r, r),
+                           Segment("str", 10.0, 0.0, 0.0),
+                           Segment("lft", arc, r, r),
+                           Segment("str", 500.0, 0.0, 0.0)],
+                          width=12.0, name="same-dir")
+    same_dir_lim = same_dir.limit_kmh(500.0 + arc / 2.0)
+    assert abs(same_dir_lim - solo_lim) < 5.0, \
+        f"FAIL same-direction corners with a short gap must not be treated as a chicane: {same_dir_lim:.0f} vs {solo_lim:.0f}"
+    print("TrackModel chicane derating ... OK")
 
     # monotone: closer to the corner → lower limit
     assert tm.limit_kmh(560.0) < tm.limit_kmh(480.0) < tm.limit_kmh(300.0), "FAIL monotone braking"
