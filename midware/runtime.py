@@ -261,7 +261,13 @@ process_registry = ProcessRegistry()
 process_registry.register(
     "ai_bot",
     "AI Driver Bot (ai_bot.py --bot --granite)",
-    [sys.executable, "ai_bot.py", "--bot", "--granite"],
+    # -u: stdout is a pipe (not a TTY) once spawned as a subprocess, so
+    # CPython defaults to full block buffering instead of line buffering --
+    # print() output would sit in ai_bot.py's own internal buffer and never
+    # reach ManagedProcess._pump_output()/log_path until the buffer filled
+    # or the process exited, making the live dashboard log (and this file)
+    # show nothing until the race was already over.
+    [sys.executable, "-u", "ai_bot.py", "--bot", "--granite"],
     ROOT_DIR,
 )
 
@@ -1433,12 +1439,33 @@ async def request_bot_strategy(body: dict):
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
+    # 2026-08-08: with no decision criteria at all, Granite had nothing to
+    # reason from except a wall of raw sensor floats plus current_strategy
+    # sitting right there in the input — the path of least resistance is to
+    # just echo current_strategy back. Verified live: 130/130 successful
+    # completions, 0 errors, 100% NORMAL over a 5-minute healthy-car race
+    # (damage 0, fuel ~93 L) that should have picked ATTACK. The fix is an
+    # explicit guide keyed off scalar fields already in sensor_state (damage,
+    # fuel) — not the raw opponents/track arrays, which are too much to ask
+    # an 8B model to parse reliably in 160 output tokens. Thresholds are
+    # deliberately a proactive judgement call in the space safety_filter
+    # doesn't hard-code (safety_filter still has the final word: it forces
+    # PIT under 5 L, forces DEFEND above 9500 damage, downgrades ATTACK back
+    # to NORMAL above 8000 damage or under 15 L, and forces BLOCK on a close
+    # rear threat regardless of what Granite says here — see ai_bot.py).
     prompt = (
         "You are a TORCS race strategist. Return JSON only with strategy and reason. "
         "strategy must be ATTACK, NORMAL, DEFEND, SAVE_FUEL, or PIT. "
         # Without an explicit cap Granite writes a full paragraph of reasoning,
         # which ran past max_tokens and truncated the JSON mid-string.
         "reason must be a single phrase of at most 8 words.\n"
+        "Re-evaluate from scratch every time — do not just repeat current_strategy out of habit.\n"
+        "Guide (a downstream safety layer already forces PIT/DEFEND/BLOCK in "
+        "emergencies, so pick the best proactive choice for the state below):\n"
+        "- ATTACK: damage under 4000 and fuel over 20 — push the pace for a better position.\n"
+        "- DEFEND: damage between 4000 and 9000 — protect the car, avoid further risk.\n"
+        "- SAVE_FUEL: fuel under 20 but above 5 — conserve for the rest of the race.\n"
+        "- NORMAL: none of the above clearly applies — steady pace.\n"
         + json.dumps(request.model_dump(mode="json"), ensure_ascii=True)
     )
     try:
