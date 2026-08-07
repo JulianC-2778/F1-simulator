@@ -7,27 +7,82 @@ Runs as a standalone FastAPI server on port 8881, returning WAV audio from text 
 
 ## Prerequisites
 
-- Python 3.10+
-- The midware virtual environment at `~/F1-simulator/midware/.venv`
+- **Python 3.10–3.12.** `kokoro` declares `Requires-Python <3.13`, so it
+  cannot be installed into a 3.13+ interpreter at all — pip will report
+  "No matching distribution found for kokoro" and list only the ancient
+  0.7.x releases as candidates.
 - Internet access for the first-time model download (~350 MB)
 
 ---
 
 ## Setup Steps
 
-### 1. Activate the virtual environment
+### 1. Get a Python 3.10–3.12 environment
+
+The TTS server is a standalone process on port 8881 — it does **not** need
+to share midware's virtualenv, which is convenient because midware may be
+running on a newer Python than kokoro supports.
+
+If a suitable interpreter already exists, a plain `python3.12 -m venv
+.venv-tts` is fine. If the machine only has 3.13+ (the WSL box used for
+work package C only had python3.14, with no `sudo` and no `python3.12` in
+apt), use `uv`, which installs a standalone CPython without root:
 
 ```bash
-source ~/F1-simulator/midware/.venv/bin/activate
+curl -LsSf https://astral.sh/uv/install.sh | sh   # installs to ~/.local/bin
+cd ~/F1-simulator
+~/.local/bin/uv venv --python 3.12 .venv-tts
 ```
+
+`.venv-tts/` is already covered by git (uv writes its own `.gitignore`).
 
 ### 2. Install dependencies
 
+Install torch first, choosing the build to match your hardware — see
+"GPU acceleration" below before picking, since GPU is ~10× faster and
+`tts_server.py` uses it automatically when torch can see it:
+
 ```bash
-pip install kokoro soundfile huggingface_hub
+UV="$HOME/.local/bin/uv"          # or just use .venv-tts/bin/pip
+
+# With an NVIDIA GPU (see the driver caveat below for why cu118/2.7.1):
+$UV pip install --python .venv-tts/bin/python \
+  --index-url https://download.pytorch.org/whl/cu118 "torch==2.7.1+cu118"
+
+# No GPU — CPU-only build, avoids pulling several GB of unused CUDA libs:
+$UV pip install --python .venv-tts/bin/python \
+  --index-url https://download.pytorch.org/whl/cpu torch
+
+# Then, either way:
+$UV pip install --python .venv-tts/bin/python \
+  kokoro soundfile huggingface_hub numpy fastapi uvicorn pydantic
 ```
 
-`fastapi`, `uvicorn`, `numpy` are already installed from the midware setup.
+### 2b. Install the spaCy English model (easy to miss)
+
+kokoro's G2P frontend (`misaki`) calls `spacy.load("en_core_web_sm")`,
+which is **not** a dependency of any of the packages above. Without it the
+server dies during startup with:
+
+```
+OSError: [E050] Can't find model 'en_core_web_sm'.
+ERROR:    Application startup failed. Exiting.
+```
+
+misaki tries to self-install it on that first failure and prints
+"Download and installation successful" — **do not trust that message**. If
+`uv` is on PATH, spaCy's downloader shells out to `uv pip install` without
+a `--python` flag and lands the model in a different environment; the next
+startup fails identically. Install the wheel explicitly instead:
+
+```bash
+$UV pip install --python .venv-tts/bin/python \
+  "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+.venv-tts/bin/python -c "import spacy; spacy.load('en_core_web_sm'); print('spacy model OK')"
+```
+
+(Match the wheel's major.minor to the installed spaCy — 3.8.x model for
+spaCy 3.8.x.)
 
 ### 3. Download the model and voice files
 
@@ -59,14 +114,24 @@ To download more voices, add lines with other voice names. Full voice list: `GET
 
 ```bash
 cd ~/F1-simulator
-python tts_server.py
+.venv-tts/bin/python tts_server.py
 ```
 
-Expected output:
+Expected output (model load takes ~10 s on CPU):
 ```
-[INFO] Kokoro model loaded.
-[INFO] TTS server ready → http://localhost:8881
+[INFO] Kokoro model loaded on cpu.
+[INFO] TTS server ready → http://127.0.0.1:8881
+INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8881 (Press CTRL+C to quit)
+```
+
+To run it detached from a WSL shell that will be closed, `nohup … &` is
+**not** enough — WSL tears the whole session down and takes the server with
+it. Use `setsid`:
+
+```bash
+cd ~/F1-simulator
+setsid nohup .venv-tts/bin/python tts_server.py > /tmp/tts_server.log 2>&1 < /dev/null &
 ```
 
 ---
@@ -160,7 +225,7 @@ Open three terminals:
 | Terminal | Command | Port |
 |----------|---------|------|
 | 1 — Midware | `cd ~/F1-simulator && source .venv/bin/activate && python3 -m midware.app` | 8880 |
-| 2 — TTS | `cd ~/F1-simulator && source midware/.venv/bin/activate && python tts_server.py` | 8881 |
+| 2 — TTS | `cd ~/F1-simulator && .venv-tts/bin/python tts_server.py` | 8881 |
 | 3 — TORCS | `~/F1-simulator/BUILD/bin/torcs` | — |
 
 Open `http://127.0.0.1:8880` in a browser to see commentary captions and hear
@@ -171,10 +236,71 @@ want that too.
 
 ---
 
+## GPU acceleration (worth doing — ~10× faster)
+
+`tts_server.py` already picks the device automatically
+([tts_server.py:77](../tts_server.py#L77)) — there is nothing to configure.
+The only question is whether the installed torch build can see the GPU.
+
+Measured on the WSL box used for work package C (GTX 1650, 4 GB), same
+66-character commentary line producing 4.2 s of audio:
+
+| torch build | synthesis wall time | note |
+|---|---:|---|
+| `2.13.0+cpu` | **2.07 s** | RTF ≈ 0.5 — audible lag |
+| `2.7.1+cu118` | **0.21–0.27 s** | RTF ≈ 0.05 |
+
+### Old-driver caveat (how the cu118 pin came about)
+
+That box's NVIDIA driver is **517.00 (2022), which caps out at CUDA 11.7**.
+Current torch releases only ship cu126/cu128+ wheels, all of which need a
+525+ driver and fail with "CUDA driver version is insufficient". Two ways
+out:
+
+1. **Pin to CUDA 11.8 torch** (what was done — no driver change, no admin
+   rights). CUDA 11.x minor-version compatibility lets a cu118 build run on
+   an 11.7 driver, verified working. cu118 wheels for cp312 stop at
+   **torch 2.7.1**, so that is the ceiling:
+   ```bash
+   $UV pip install --python .venv-tts/bin/python \
+     --index-url https://download.pytorch.org/whl/cu118 "torch==2.7.1+cu118"
+   .venv-tts/bin/python -c "import torch; print(torch.cuda.is_available())"
+   ```
+2. **Update the Windows NVIDIA driver** (WSL uses the host driver, not a
+   Linux one — do *not* install a Linux driver inside WSL). Turing cards
+   like the 1650 are still supported by current branches; afterwards plain
+   `pip install torch` works and the version pin can be dropped.
+
+### Two things this changes for the latency test
+
+- **The first synthesis after startup costs ~8.9 s** (CUDA context + kernel
+  warmup), against ~0.22 s for every call after it. `tts_server.py` does not
+  warm up at startup, so a work-package-C run must either fire one throwaway
+  `POST /tts` before collecting data, or expect the first t5 sample to be a
+  ~9 s outlier. Do not silently drop it — warm up beforehand instead.
+- **VRAM sits at ~3.1 GB of 4 GB** with the model resident (~2.1 GB above
+  the idle desktop baseline). That leaves under 1 GB of headroom, so if
+  TORCS is ever given real GPU acceleration on the same card, check for
+  contention.
+
+`tts_server.py` returns the whole WAV in one response, so playback cannot
+start until synthesis finishes: t5 ≈ t3 + synthesis time. On GPU that is a
+~0.2 s offset rather than the ~2 s it would be on CPU.
+
+---
+
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'kokoro'`**
-→ venv not activated. Run `source ~/F1-simulator/midware/.venv/bin/activate` first.
+→ Wrong interpreter. Use `.venv-tts/bin/python`, not midware's venv or the
+system python.
+
+**`ERROR: Could not find a version that satisfies the requirement kokoro`**
+→ Your Python is 3.13 or newer. See Prerequisites — kokoro requires <3.13.
+
+**`OSError: [E050] Can't find model 'en_core_web_sm'`**
+→ See step 2b; install the model wheel explicitly with an explicit
+`--python` pointing at `.venv-tts`.
 
 **`FileNotFoundError: kokoro-v1_0.pth`**
 → Model not downloaded. Re-run Step 3.

@@ -1,0 +1,11 @@
+session_id,event_id,request_id,t0_telemetry_received,t1_event_detected,t2_first_token,t3_ai_done,t4_caption_displayed,t5_tts_started,failed,failure_reason
+S1,event_012,d6d17360-54c0-4a52-985f-774db0635415,22608.342626,22608.815350,22608.924331,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_013,7e14fedd-ace0-441f-aeee-6dd9998af32f,22609.836764,22610.335288,22610.456662,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_014,c30f1fcb-05f5-4675-b7ba-b230121ff16c,22610.854546,22611.343152,22611.627417,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_015,834e9cd6-ccb6-45df-9b2b-f97d2a7d3c12,22611.876855,22612.360631,,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_016,c40e6eb8-3ccd-4798-838c-a85c12b7e7b0,22612.892330,22613.378328,22613.678518,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_019,e7dd539a-c294-4b7f-a62a-ec4822115249,22623.003522,22623.514150,22623.633657,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_026,21a0bf5e-b357-4f3d-bb8e-202f08ee953c,22651.386472,22651.842070,22651.975133,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_027,069279e1-cec3-4d3f-a814-f424ec525ef4,22652.382070,22652.853232,22653.470390,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_030,66f05b59-1e15-470d-9ba1-57d340273b27,22660.950231,22661.449673,22661.583185,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"
+S1,event_031,bdae70e3-cb49-47e0-8ba3-274f7185be8a,22661.952957,22662.460841,22662.691405,,,,false,"preempted by a higher/equal priority event (interrupt mode, by design)"

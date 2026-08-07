@@ -1,0 +1,54 @@
+{"session_id": "S1", "request_id": "0760c883-aa5d-49dd-94f1-8be103a16c9d", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22555.627689939, "duplicate": false}
+{"session_id": "S1", "request_id": "0760c883-aa5d-49dd-94f1-8be103a16c9d", "event_type": "", "stage": "t5_tts_started", "timestamp": 22555.627987539}
+{"session_id": "S1", "request_id": "b81f84c7-23e5-4ba0-9f75-10bb9ab0acae", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22563.91803583, "duplicate": false}
+{"session_id": "S1", "request_id": "b81f84c7-23e5-4ba0-9f75-10bb9ab0acae", "event_type": "", "stage": "t5_tts_started", "timestamp": 22563.91822673}
+{"session_id": "S1", "request_id": "5f85d13c-3283-4c4d-ae6f-8e03c11a7439", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22571.149716936, "duplicate": false}
+{"session_id": "S1", "request_id": "5f85d13c-3283-4c4d-ae6f-8e03c11a7439", "event_type": "", "stage": "t5_tts_started", "timestamp": 22571.149894236}
+{"session_id": "S1", "request_id": "2ef8a82a-7281-4300-8813-6ced27ac5495", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22574.214577615, "duplicate": false}
+{"session_id": "S1", "request_id": "2ef8a82a-7281-4300-8813-6ced27ac5495", "event_type": "", "stage": "t5_tts_started", "timestamp": 22574.216071915}
+{"session_id": "S1", "request_id": "0ebf2db2-0423-4fa5-8f70-c439761e28c9", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22577.45032285, "duplicate": false}
+{"session_id": "S1", "request_id": "0ebf2db2-0423-4fa5-8f70-c439761e28c9", "event_type": "", "stage": "t5_tts_started", "timestamp": 22577.45048415}
+{"session_id": "S1", "request_id": "503238d7-9c27-448a-bf66-824761e74b2c", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22579.874220702, "duplicate": false}
+{"session_id": "S1", "request_id": "503238d7-9c27-448a-bf66-824761e74b2c", "event_type": "", "stage": "t5_tts_started", "timestamp": 22579.874482202}
+{"session_id": "S1", "request_id": "1759dc3e-ae49-4bba-bdcf-08411e422dd2", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22581.840450763, "duplicate": false}
+{"session_id": "S1", "request_id": "1759dc3e-ae49-4bba-bdcf-08411e422dd2", "event_type": "", "stage": "t5_tts_started", "timestamp": 22581.840765063}
+{"session_id": "S1", "request_id": "f8d0bea1-d47b-4fc0-a16e-9fdcb5c195e5", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22584.647362962, "duplicate": false}
+{"session_id": "S1", "request_id": "f8d0bea1-d47b-4fc0-a16e-9fdcb5c195e5", "event_type": "", "stage": "t5_tts_started", "timestamp": 22584.647520962}
+{"session_id": "S1", "request_id": "10d0148d-c382-44d4-ab30-4d1f20f4b3a9", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22593.332407584, "duplicate": false}
+{"session_id": "S1", "request_id": "10d0148d-c382-44d4-ab30-4d1f20f4b3a9", "event_type": "", "stage": "t5_tts_started", "timestamp": 22593.332680084}
+{"session_id": "S1", "request_id": "4a562142-cede-48dc-8073-9d2d75455a44", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22598.029828111, "duplicate": false}
+{"session_id": "S1", "request_id": "4a562142-cede-48dc-8073-9d2d75455a44", "event_type": "", "stage": "t5_tts_started", "timestamp": 22598.030336911}
+{"session_id": "S1", "request_id": "d9eeb88a-7adc-4c1d-b925-453936cc84d3", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22603.923462132, "duplicate": false}
+{"session_id": "S1", "request_id": "d9eeb88a-7adc-4c1d-b925-453936cc84d3", "event_type": "", "stage": "t5_tts_started", "timestamp": 22603.923624932}
+{"session_id": "S1", "request_id": "6e762e2c-8e6e-4f20-bcb7-6033bc3d2e53", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22617.054780182, "duplicate": false}
+{"session_id": "S1", "request_id": "6e762e2c-8e6e-4f20-bcb7-6033bc3d2e53", "event_type": "", "stage": "t5_tts_started", "timestamp": 22617.055014682}
+{"session_id": "S1", "request_id": "2e45934a-37e4-47ac-9e69-b7b489653970", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22622.344552001, "duplicate": false}
+{"session_id": "S1", "request_id": "2e45934a-37e4-47ac-9e69-b7b489653970", "event_type": "", "stage": "t5_tts_started", "timestamp": 22622.344869301}
+{"session_id": "S1", "request_id": "c79633a4-16ff-4e33-a6b2-2d208e22f524", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22625.861048302, "duplicate": false}
+{"session_id": "S1", "request_id": "c79633a4-16ff-4e33-a6b2-2d208e22f524", "event_type": "", "stage": "t5_tts_started", "timestamp": 22625.861230602}
+{"session_id": "S1", "request_id": "30a1f74b-4c1d-41ee-941e-65f7921178f7", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22634.859889314, "duplicate": false}
+{"session_id": "S1", "request_id": "30a1f74b-4c1d-41ee-941e-65f7921178f7", "event_type": "", "stage": "t5_tts_started", "timestamp": 22634.860130314}
+{"session_id": "S1", "request_id": "c0f8a7ec-0f2a-464a-b4df-52d45bd49a59", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22637.48776462, "duplicate": false}
+{"session_id": "S1", "request_id": "c0f8a7ec-0f2a-464a-b4df-52d45bd49a59", "event_type": "", "stage": "t5_tts_started", "timestamp": 22637.48793452}
+{"session_id": "S1", "request_id": "17cae57e-5c4f-4ca9-863f-a320b3537473", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22640.189074032, "duplicate": false}
+{"session_id": "S1", "request_id": "17cae57e-5c4f-4ca9-863f-a320b3537473", "event_type": "", "stage": "t5_tts_started", "timestamp": 22640.189560532}
+{"session_id": "S1", "request_id": "7789e3fc-81a1-4b4e-a8d7-25f696f207da", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22643.383477348, "duplicate": false}
+{"session_id": "S1", "request_id": "7789e3fc-81a1-4b4e-a8d7-25f696f207da", "event_type": "", "stage": "t5_tts_started", "timestamp": 22643.383673748}
+{"session_id": "S1", "request_id": "f003ab3a-9e9b-499b-98ae-5ac866650f80", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22648.519354481, "duplicate": false}
+{"session_id": "S1", "request_id": "f003ab3a-9e9b-499b-98ae-5ac866650f80", "event_type": "", "stage": "t5_tts_started", "timestamp": 22648.519542981}
+{"session_id": "S1", "request_id": "487e39ef-dc92-4953-aac1-e0ef7dd2209f", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22656.40040609, "duplicate": false}
+{"session_id": "S1", "request_id": "487e39ef-dc92-4953-aac1-e0ef7dd2209f", "event_type": "", "stage": "t5_tts_started", "timestamp": 22656.40065399}
+{"session_id": "S1", "request_id": "762a945a-ac64-4414-a5ee-db9ab9b1c36f", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22658.624156857, "duplicate": false}
+{"session_id": "S1", "request_id": "762a945a-ac64-4414-a5ee-db9ab9b1c36f", "event_type": "", "stage": "t5_tts_started", "timestamp": 22658.624330557}
+{"session_id": "S1", "request_id": "2e97f13e-9db4-42db-b2c6-511ddd48d604", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22666.004981813, "duplicate": false}
+{"session_id": "S1", "request_id": "2e97f13e-9db4-42db-b2c6-511ddd48d604", "event_type": "", "stage": "t5_tts_started", "timestamp": 22666.005163413}
+{"session_id": "S1", "request_id": "52b2feca-8145-450a-83b0-776275b881e5", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22672.065757586, "duplicate": false}
+{"session_id": "S1", "request_id": "52b2feca-8145-450a-83b0-776275b881e5", "event_type": "", "stage": "t5_tts_started", "timestamp": 22672.066262586}
+{"session_id": "S1", "request_id": "80c3a11f-11b1-456b-974d-20d336ea6f42", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22677.627947043, "duplicate": false}
+{"session_id": "S1", "request_id": "80c3a11f-11b1-456b-974d-20d336ea6f42", "event_type": "", "stage": "t5_tts_started", "timestamp": 22677.628129743}
+{"session_id": "S1", "request_id": "d8fcf5c8-d99d-455b-a22d-96f7f2d7e573", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22683.899042101, "duplicate": false}
+{"session_id": "S1", "request_id": "d8fcf5c8-d99d-455b-a22d-96f7f2d7e573", "event_type": "", "stage": "t5_tts_started", "timestamp": 22683.899298201}
+{"session_id": "S1", "request_id": "d058acc9-f841-4a85-b5b0-b15d94acf303", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22694.404188792, "duplicate": false}
+{"session_id": "S1", "request_id": "d058acc9-f841-4a85-b5b0-b15d94acf303", "event_type": "", "stage": "t5_tts_started", "timestamp": 22694.404429592}
+{"session_id": "S1", "request_id": "859ab0d6-31bc-4d8e-a7a1-2899a29bf92a", "event_type": "", "stage": "t4_caption_displayed", "timestamp": 22704.431047272, "duplicate": false}
+{"session_id": "S1", "request_id": "859ab0d6-31bc-4d8e-a7a1-2899a29bf92a", "event_type": "", "stage": "t5_tts_started", "timestamp": 22704.433844072}

@@ -1,0 +1,2 @@
+session_id,event_id,request_id,t0_telemetry_received,t1_event_detected,t2_first_token,t3_ai_done,t4_caption_displayed,t5_tts_started,failed,failure_reason
+S01,contact_001,00000000-0000-0000-0000-000000000000,1000.000000,1000.480000,1000.520000,1001.700000,1001.712000,1001.715000,false,

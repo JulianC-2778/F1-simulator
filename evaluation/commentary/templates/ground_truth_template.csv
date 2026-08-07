@@ -1,0 +1,2 @@
+session,event_id,event_type,start_time_s,end_time_s,description,annotator
+S01,GT0001,contact,10.000,10.500,Example row - replace with real annotations,A1

@@ -152,6 +152,104 @@ _prefetch_task: asyncio.Task | None = None
 # Opt-in t0-t5 latency capture for work package C -- disabled unless
 # COMMENTARY_LATENCY_LOG is set in the environment; see midware/latency_log.py.
 latency_log = LatencyLog()
+
+
+def _frame_t0_monotonic(frame: dict | None) -> float | None:
+    """The arrival time of `frame`, expressed on the `time.monotonic()` clock
+    that latency_log stamps every other stage with.
+
+    telemetry.py stamps each frame with `_received_at = time.time()` on the UDP
+    receive path, but monotonic and wall clocks share no origin, so t1 - t0
+    across the two is nonsense. Converting here costs one pair of clock reads
+    per detected event (~once a second at most) instead of one per frame.
+
+    Returns None if the frame carries no usable stamp, in which case the caller
+    logs no t0 row at all -- a missing t0 is counted as a capture failure by
+    analyse_latency.py, which is the honest outcome; a fabricated one is not.
+    """
+    received_at = frame.get("_received_at") if frame else None
+    if received_at is None:
+        return None
+    try:
+        return time.monotonic() - (time.time() - float(received_at))
+    except (TypeError, ValueError):
+        return None
+
+
+# Arrival stamp (`_received_at`) of the newest frame the PREVIOUS detection
+# cycle looked at. Must be advanced once per cycle whether or not that cycle
+# reported an event -- advancing it only on detection would let it fall
+# arbitrarily far behind during quiet stretches and turn the "oldest unseen
+# frame" below into "oldest frame since the last event", inflating detection
+# latency without bound. Only touched by _auto_commentary_loop (a single
+# task), so no lock is needed.
+_last_seen_frame_received_at: float | None = None
+
+
+def _oldest_unseen_frame(frames: list[dict] | None) -> dict | None:
+    """The earliest frame this detection cycle had not already looked at, and
+    advance the cycle cutoff. Call exactly once per cycle, before any early
+    `continue`, so the cutoff tracks polls rather than detections.
+
+    CommentaryEngine evaluates state deltas against `frames[-1]` only, so an
+    event that physically happened between two polls first becomes visible at
+    the later one. This frame is therefore the earliest point at which the
+    event could have entered the middleware -- the conservative anchor for t0.
+    """
+    global _last_seen_frame_received_at
+
+    cutoff = _last_seen_frame_received_at
+    oldest_unseen = None
+    for frame in frames or ():
+        received_at = frame.get("_received_at")
+        if received_at is None:
+            continue
+        if cutoff is None or received_at > cutoff:
+            oldest_unseen = frame
+            break
+
+    if frames:
+        newest_received_at = frames[-1].get("_received_at")
+        if newest_received_at is not None:
+            _last_seen_frame_received_at = float(newest_received_at)
+
+    return oldest_unseen
+
+
+def _record_detection(request_id: str, frames: list[dict] | None, oldest_unseen: dict | None) -> None:
+    """Log the detection stages for one event: t0, t1, and a diagnostic t0b.
+
+    There are two defensible readings of the contract's t0 ("the event's
+    telemetry reaches the middleware"), and they differ by an order of
+    magnitude, so both are recorded and the choice is made downstream in
+    build_latency_csv.py rather than baked in here:
+
+      t0_telemetry_received  Arrival of `oldest_unseen`, the earliest frame
+          that could have carried the event. t1 - t0 therefore includes the
+          detection loop's polling wait (`await asyncio.sleep(0.5)`), which is
+          real, user-perceived delay: a collision landing just after a poll
+          waits most of a second to be narrated. Conservative upper bound, and
+          the honest default.
+
+      t0b_newest_frame  Arrival of `frames[-1]`, the frame CommentaryEngine
+          actually treats as `latest`. At 30-60 frames/s this is at most ~33 ms
+          old, so t1 - t0b measures middleware processing cost alone and hides
+          the polling wait entirely. Useful as a lower bound; misleading if
+          presented as end-to-end detection latency.
+
+    Neither is logged if the frames carry no usable `_received_at`; a missing
+    t0 counts as a capture failure in analyse_latency.py, which is preferable
+    to inventing one.
+    """
+    newest = frames[-1] if frames else None
+
+    t0 = _frame_t0_monotonic(oldest_unseen if oldest_unseen is not None else newest)
+    if t0 is not None:
+        latency_log.record(request_id, "t0_telemetry_received", timestamp=t0)
+    t0b = _frame_t0_monotonic(newest)
+    if t0b is not None:
+        latency_log.record(request_id, "t0b_newest_frame", timestamp=t0b)
+    latency_log.record(request_id, "t1_event_detected")
 runtime_manager = FeatureGate(feature_specs())
 model_broker = ModelBroker(max_queue_size=16, max_concurrency=1)
 bot_status_service = BotStatusService()
@@ -666,6 +764,10 @@ async def _auto_commentary_loop():
 
         try:
             frames = telemetry_store.recent_frames(cfg.window_seconds)
+            # Must run every cycle, before the `continue` below, so the cutoff
+            # it maintains tracks polls rather than detections -- see
+            # _oldest_unseen_frame.
+            oldest_unseen = _oldest_unseen_frame(frames)
             decision = commentary_engine.next_decision(frames, r)
             if decision is None:
                 continue
@@ -679,7 +781,7 @@ async def _auto_commentary_loop():
                     continue
 
                 request_id = str(uuid.uuid4())
-                latency_log.record(request_id, "t1_event_detected")
+                _record_detection(request_id, frames, oldest_unseen)
                 await broadcast({"type": "event_detected", "event": decision.event, "payload": decision.payload})
                 _commentary_priority = new_priority
                 _playback_busy = True
@@ -695,7 +797,7 @@ async def _auto_commentary_loop():
                     continue
 
             request_id = str(uuid.uuid4())
-            latency_log.record(request_id, "t1_event_detected")
+            _record_detection(request_id, frames, oldest_unseen)
 
             await broadcast({"type": "event_detected", "event": decision.event, "payload": decision.payload})
             _commentary_priority = new_priority

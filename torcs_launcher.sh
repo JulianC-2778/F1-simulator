@@ -9,8 +9,15 @@
 set -u
 
 export DISPLAY=:0
-export LIBGL_ALWAYS_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
+# Software rendering by default -- llvmpipe is the configuration this project
+# has been driven on, and it is immune to the WSLg black-screen failure above.
+# It costs all CPU cores, though, so on a machine with working GPU passthrough
+# (/dev/dxg present and dri/d3d12_dri.so installed) it is worth trying
+#     GALLIUM_DRIVER=d3d12 LIBGL_ALWAYS_SOFTWARE=0 bash torcs_launcher.sh
+# which hands OpenGL to the host GPU. Both are overridable from the
+# environment; unset means the safe default.
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 TORCS_HOME="${TORCS_HOME:-$SCRIPT_DIR}"

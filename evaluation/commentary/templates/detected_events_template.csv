@@ -1,0 +1,2 @@
+session,detection_id,event_type,detection_time_s,priority,source
+S01,DT0001,contact,10.200,5,commentary_engine

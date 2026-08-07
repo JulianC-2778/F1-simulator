@@ -1,5 +1,15 @@
 # AI Live Commentary Testing — Session Handoff (Work Package C, latency)
 
+> **SUPERSEDED for work package C — read `docs/commentary_test_handoff_2.md`
+> instead.** Sections 0–3 below (project background, work packages A and B,
+> the bug history, the file-naming rules) are still accurate and worth reading.
+> Section 4 is not: the measurement tooling it describes as missing now exists,
+> its instruction to use a frame's `sim_time` as t0 is wrong (`sim_time` is
+> TORCS simulation time, a different clock from the monotonic one the latency
+> log uses), and this machine reaches Granite over an SSH tunnel to an ACRC
+> GPU node rather than LM Studio on the LAN. Section 5's Kokoro instructions
+> have been rewritten in `docs/tts-setup.md`.
+
 > Read this whole document before doing anything. It exists so a fresh
 > Claude session on a different machine can pick up exactly where the
 > previous session left off, without re-deriving context or repeating
