@@ -14,6 +14,37 @@
 
 ---
 
+## 0.-1. Update (2026-08-08, a third machine): both open items below fixed
+
+Read this before the rest of section 0 — it's now stale in two places:
+
+- **The `.gitignore` trap was NOT actually fixed on the machine that wrote
+  this document** (jay's `real_experiment_*` files for work package C got
+  in via a force-add, not a `.gitignore` change — the blanket `*.csv` rule
+  was still live). Verified and fixed for real in commit
+  `c833f54` (removed the blanket rule; `/player_logs/` already covers the
+  actual runtime-dump case). Work package B's `real_experiment_ground_truth
+  _20260806.csv` / `real_experiment_detected_events_20260806.csv` (138
+  ground-truth events, referenced in the original handoff's section 3) are
+  now committed too — they were sitting untracked on yet another machine
+  until this fix.
+- **Section 3's context-budget defect is fixed**, commit `5a4d9b9`:
+  `ContextConfig.safety_margin_tokens` (default 256) is now subtracted in
+  `build_messages()`, so the prompt budget no longer fills to the exact
+  edge of the model's context limit. Regression test in
+  `tests/unit/test_context_manager.py::ContextManagerSafetyMarginTests`,
+  written first and confirmed failing pre-fix. Full suite green at 149
+  passed (140 baseline + 9 new) before this, 143/143 in `tests/unit`
+  standalone after also installing `requirements-tts.txt` (which was
+  simply never installed on this machine, unrelated to the defect).
+  **Work package D can now proceed** — the previous blocker ("a 30-minute
+  endurance run is precisely the condition that triggers it") is gone,
+  though a real endurance run should still confirm this rather than take
+  it on faith.
+
+Section 4 (collect run 3) is still open and unaffected by the above other
+than "the fix mentioned as a prerequisite is now done."
+
 ## 0. Read this first: the work is NOT committed
 
 Every code change and every result described here was left **uncommitted** on
