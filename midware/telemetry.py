@@ -193,6 +193,14 @@ class TelemetryStore:
                 self._ranking_snapshots.clear()
                 self._latest_frame = None
                 self._latest_rankings = None
+                # A new session starts its own sim_time back near zero, so the
+                # previous session's progress baseline must not carry over --
+                # otherwise "is telemetry advancing" stays stuck true (stale)
+                # until the new session's sim_time climbs back past the old
+                # session's leftover value, sometimes for the rest of a short
+                # race. See tests/unit/test_telemetry_store.py.
+                self._last_progress_sim_time = None
+                self._last_progress_at = None
 
             latest_time = telemetry_time(telemetry) if telemetry else self._latest_sim_time_locked()
             if telemetry:

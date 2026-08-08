@@ -1,2 +1,3 @@
 run_id,duration_s,events_detected,commentary_requests,successful_outputs,model_failures,duplicate_user_visible_displays,unhandled_exceptions,reconnect_recovery_time_s,cpu_avg_pct,cpu_peak_pct,mem_initial_mb,mem_final_mb,mem_peak_mb,outputs_total,outputs_over_45_words
+R01,1802.0,316,316,214,0,0,0,15.9,1.9,5.2,90.3,102.0,102.7,214,0
 R02,1802.0,249,249,188,0,0,0,,5.9,12.6,92.1,92.9,92.9,188,0
