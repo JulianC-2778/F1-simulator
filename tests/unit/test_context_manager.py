@@ -61,6 +61,7 @@ class ContextManagerBudgetTests(unittest.TestCase):
         config = ContextConfig(
             max_context_tokens=16,
             max_response_tokens=10,
+            safety_margin_tokens=0,  # exact-arithmetic tests below don't exercise the margin
             trim_strategy=trim_strategy,
             commentator_persona="sys",  # 3 ASCII chars -> 1 token
         )
@@ -88,6 +89,48 @@ class ContextManagerBudgetTests(unittest.TestCase):
         cm = self._manager("oldest_first")
         cm.clear_history()
         self.assertEqual([m.content for m in cm.history], ["pin-00"])
+
+
+class ContextManagerSafetyMarginTests(unittest.TestCase):
+    """Regression test for a real defect found during work package C: with
+    the production defaults (max_context_tokens=4096, max_response_tokens=512),
+    build_messages() filled the budget with zero headroom
+    (4096 - 512 = 3584, used exactly). estimate_tokens() is a heuristic (1
+    token ~= 4 ASCII chars), not a real tokenizer, so any underestimate of
+    even a single token overflowed the model's actual hard context limit
+    and the request failed outright -- observed after ~15-20 minutes of a
+    long-lived commentary session once history grew large enough to
+    saturate the budget. See docs/commentary_test_handoff_2.md section 3.
+    """
+
+    def test_default_config_leaves_a_real_safety_margin(self):
+        self.assertGreater(ContextConfig().safety_margin_tokens, 0)
+
+    def test_build_messages_never_fills_the_budget_to_the_exact_edge(self):
+        # Saturate history with enough long messages that, pre-fix, trimming
+        # would fill right up to max_context_tokens - max_response_tokens
+        # with no room to spare -- exactly the condition that triggered the
+        # real 400 error against the served model.
+        config = ContextConfig()  # production defaults
+        cm = ContextManager(config)
+        filler = "x" * 400  # ASCII, estimate_tokens() -> 100 tokens/message
+        for _ in range(60):  # 6000 tokens of history, far more than the budget
+            cm.add_user(filler)
+            cm.add_assistant(filler)
+
+        messages = cm.build_messages()
+        from midware.context_manager import estimate_tokens
+        total_prompt_tokens = sum(estimate_tokens(m["content"]) for m in messages)
+
+        # The real failure mode was total_prompt_tokens + max_response_tokens
+        # landing exactly on max_context_tokens (zero headroom). This must
+        # now leave a real, non-trivial margin -- not just "not negative".
+        headroom = config.max_context_tokens - config.max_response_tokens - total_prompt_tokens
+        self.assertGreaterEqual(
+            headroom, config.safety_margin_tokens,
+            f"only {headroom} tokens of headroom, expected at least "
+            f"safety_margin_tokens={config.safety_margin_tokens}",
+        )
 
 
 if __name__ == "__main__":

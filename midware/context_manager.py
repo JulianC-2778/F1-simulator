@@ -149,6 +149,11 @@ class ContextConfig:
     # ---- 窗口大小 ----
     max_context_tokens: int = 4096   # 发送给 AI 的总 token 上限
     max_response_tokens: int = 512   # 留给 AI 回复的 token 数
+    # estimate_tokens() 是启发式估算（非真实分词器），长会话历史攒够大时，
+    # 哪怕只低估 1 个 token 也会让实际 prompt 超出模型真实上限，导致请求
+    # 直接被拒（真实复现过，见 docs/commentary_test_handoff_2.md 第 3 节）。
+    # 预留这部分余量，不参与裁剪，专门用来吸收估算误差。
+    safety_margin_tokens: int = 256
 
     # ---- 裁剪策略（对应 ST 的 "Context Trim Strategy"）----
     trim_strategy: Literal["oldest_first", "newest_first"] = "oldest_first"
@@ -216,7 +221,11 @@ class ContextManager:
         返回符合 OpenAI Chat Completions 格式的 messages 列表。
         对应 ST 的 "Build Prompt" 步骤。
         """
-        budget = self.config.max_context_tokens - self.config.max_response_tokens
+        budget = (
+            self.config.max_context_tokens
+            - self.config.max_response_tokens
+            - self.config.safety_margin_tokens
+        )
 
         # 1. System prompt（固定占用，不裁剪）
         system_msg = Message(role="system", content=self.config.commentator_persona)
@@ -359,9 +368,11 @@ class ContextManager:
             "budget_remaining": (
                 self.config.max_context_tokens
                 - self.config.max_response_tokens
+                - self.config.safety_margin_tokens
                 - system_tokens
                 - total
             ),
             "max_context_tokens": self.config.max_context_tokens,
             "max_response_tokens": self.config.max_response_tokens,
+            "safety_margin_tokens": self.config.safety_margin_tokens,
         }
