@@ -1,0 +1,9 @@
+session,detection_id,event_type,detection_time_s,priority,source
+S01,DET0001,contact,42.750,5,commentary_engine
+S01,DET0002,off_track,60.200,5,commentary_engine
+S01,DET0003,lap_complete,90.400,4,commentary_engine
+S01,DET0004,battle,143.000,4,commentary_engine
+S01,DET0005,battle,200.000,4,commentary_engine
+S02,DET0006,contact,20.350,5,commentary_engine
+S02,DET0007,pace_surge,36.900,3,commentary_engine
+S02,DET0008,lap_complete,88.900,4,commentary_engine
