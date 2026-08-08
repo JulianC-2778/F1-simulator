@@ -328,6 +328,17 @@ class TestHighFrequencyEvents(CommentaryRuntimeTestCase):
     cooldown window, so a fresh cooldown-cleared event routinely arrives
     while the previous one is still generating."""
 
+    def setUp(self):
+        super().setUp()
+        # This test is specifically about interrupt mode's cancel-and-replace
+        # behaviour, not whichever mode CommentaryConfig defaults to -- pin it
+        # explicitly (commentary_engine is a module-level singleton, see
+        # CommentaryRuntimeTestCase's docstring, so this must be undone too).
+        runtime.commentary_engine.config.interrupt_mode = "interrupt"
+
+    def tearDown(self):
+        runtime.commentary_engine.config.interrupt_mode = CommentaryConfig().interrupt_mode
+
     def test_rapid_events_are_superseded_not_queued(self):
         calls_started = []
         calls_completed = []

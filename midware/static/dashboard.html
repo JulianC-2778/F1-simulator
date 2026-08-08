@@ -697,8 +697,8 @@
           <div class="field">
             <label>New event vs. current playback</label>
             <select id="cmInterruptMode">
-              <option value="interrupt">Interrupt immediately</option>
               <option value="queue">Queue — finish current sentence first</option>
+              <option value="interrupt">Interrupt immediately</option>
             </select>
           </div>
           <button id="cmApplyBtn" style="width:100%">Apply</button>
@@ -1699,7 +1699,7 @@ async function cmLoadConfig() {
     cmBuildFieldGrid();
     if (cfg.commentary) {
       $("cmMode").value = cfg.commentary.mode || "hybrid";
-      $("cmInterruptMode").value = cfg.commentary.interrupt_mode || "interrupt";
+      $("cmInterruptMode").value = cfg.commentary.interrupt_mode || "queue";
       $("cmInterval").value = cfg.commentary.baseline_interval ?? 10;
       $("cmWindow").value = cfg.commentary.window_seconds ?? 6;
       $("cmCooldown").value = cfg.commentary.event_cooldown ?? 1;

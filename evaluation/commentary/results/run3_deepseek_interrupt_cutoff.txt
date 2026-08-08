@@ -1,0 +1,18 @@
+Cutoff for evaluation/commentary/results/real_experiment_latency_raw_20260808_run3_deepseek.jsonl
+
+Everything with a t1_event_detected (or any stage) timestamp >= 7154.950310
+(time.monotonic() on this machine, recorded right after switching
+interrupt_mode from "queue" back to "interrupt" and clearing commentary
+history) belongs to the clean interrupt-mode collection. Rows before that
+cutoff were collected while interrupt_mode was accidentally left on "queue"
+(the dashboard's Playback mode dropdown), which skips t0/t1 recording for
+any event that arrives while the system is busy (see
+midware/runtime.py::_queue_event / _start_prefetch) -- 26 of the first 44
+requests in this file have t2/t3 but no t0/t1 because of this. Discard
+everything before the cutoff when building the final latency CSV; do not
+try to salvage or backfill it.
+
+The paired display-latency (t4/t5) capture for the clean portion is a
+separate file: real_experiment_display_raw_20260808_run3b_deepseek_interrupt.jsonl
+(capture_display_latency.py was restarted at the same time as the cutoff,
+so it needs no filtering of its own).
