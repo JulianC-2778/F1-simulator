@@ -1,0 +1,10 @@
+session,event_id,event_type,start_time_s,end_time_s,description,annotator
+S01,GT0001,contact,42.300,42.800,collision with opponent car2 into turn 3,A1
+S01,GT0002,off_track,58.100,58.900,ran wide over the right kerb,A1
+S01,GT0003,lap_complete,90.400,90.400,completed lap 1,A1
+S01,GT0004,position_change,102.150,102.150,overtook car3 into the hairpin,A1
+S01,GT0005,battle,140.000,146.500,side by side with car1 for three corners,A1
+S02,GT0006,contact,20.000,20.400,clipped the wall exiting turn 1,A1
+S02,GT0007,pace_surge,35.700,36.200,big acceleration out of the last corner,A1
+S02,GT0008,lap_complete,88.900,88.900,completed lap 1,A1
+S02,GT0009,off_track,101.250,101.900,two wheels on the grass,A1

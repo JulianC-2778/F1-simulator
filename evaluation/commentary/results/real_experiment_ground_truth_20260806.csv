@@ -1,0 +1,139 @@
+session,event_id,event_type,start_time_s,end_time_s,description,annotator
+S01,GT0001,pace_surge,20.348,20.348,acceleration burst 42.5 to 283.3 km/h,operator_review
+S01,GT0002,contact,26.354,26.354,damage jumped by 56.0,operator_review
+S01,GT0003,contact,27.806,27.806,damage jumped by 111.0,operator_review
+S01,GT0004,position_change,29.324,29.324,dropped to P4,operator_review
+S01,GT0005,pace_surge,44.928,44.928,acceleration burst 5.9 to 223.3 km/h,operator_review
+S01,GT0006,pace_surge,49.428,49.428,acceleration burst 227.8 to 255.8 km/h,operator_review
+S01,GT0007,off_track,51.948,51.948,ran wide over the right edge,operator_review
+S01,GT0008,contact,52.908,52.908,damage jumped by 98.0,operator_review
+S01,GT0009,contact,57.948,57.948,damage jumped by 28.0,operator_review
+S01,GT0010,position_change,61.968,61.968,dropped to P5,operator_review
+S01,GT0011,pace_surge,69.488,69.488,acceleration burst 88.7 to 120.5 km/h,operator_review
+S01,GT0012,off_track,81.566,81.566,ran wide over the right edge,operator_review
+S01,GT0013,off_track,93.050,93.050,ran wide over the right edge,operator_review
+S01,GT0014,contact,97.604,97.604,damage jumped by 39.0,operator_review
+S01,GT0015,contact,98.594,98.594,damage jumped by 326.0,operator_review
+S01,GT0016,off_track,103.082,103.082,ran wide over the left edge,operator_review
+S01,GT0017,contact,116.678,116.678,damage jumped by 5213.0 (very large hit),operator_review
+S01,GT0018,contact,117.668,117.668,damage jumped by 184.0,operator_review
+S01,GT0019,contact,118.658,118.658,damage jumped by 236.0,operator_review
+S01,GT0020,contact,119.648,119.648,damage jumped by 397.0,operator_review
+S02,GT0021,pace_surge,164.448,164.448,acceleration burst 35.7 to 76.9 km/h,operator_review
+S02,GT0022,off_track,170.448,170.448,ran wide over the right edge,operator_review
+S02,GT0023,lap_complete,175.008,175.008,completed lap 1,operator_review
+S02,GT0024,pace_surge,176.508,176.508,acceleration burst 99.6 to 223.3 km/h,operator_review
+S02,GT0025,pace_surge,188.028,188.028,acceleration burst 226.2 to 267.6 km/h,operator_review
+S02,GT0026,pace_surge,204.588,204.588,acceleration burst 151.1 to 215.4 km/h,operator_review
+S02,GT0027,pace_surge,211.128,211.128,acceleration burst 183.0 to 217.2 km/h,operator_review
+S02,GT0028,off_track,214.668,214.668,ran wide over the left edge,operator_review
+S02,GT0029,off_track,216.648,216.648,ran wide over the right edge,operator_review
+S02,GT0030,pace_surge,228.228,228.228,acceleration burst 26.7 to 88.0 km/h,operator_review
+S02,GT0031,pace_surge,230.748,230.748,acceleration burst 110.6 to 149.3 km/h,operator_review
+S02,GT0032,pace_surge,240.288,240.288,acceleration burst 122.7 to 202.7 km/h,operator_review
+S02,GT0033,contact,250.308,250.308,damage jumped by 38.0,operator_review
+S02,GT0034,contact,257.868,257.868,damage jumped by 70.0,operator_review
+S02,GT0035,pace_surge,279.468,279.468,acceleration burst 73.7 to 257.2 km/h,operator_review
+S02,GT0036,lap_complete,300.708,300.708,completed lap 2,operator_review
+S03,GT0037,contact,42.588,42.588,damage jumped by 42.0,operator_review
+S03,GT0038,pace_surge,44.148,44.148,acceleration burst 126.2 to 280.1 km/h,operator_review
+S03,GT0039,contact,54.168,54.168,damage jumped by 65.0,operator_review
+S03,GT0040,position_change,55.188,55.188,dropped to P6,operator_review
+S03,GT0041,position_change,59.688,59.688,dropped to P7,operator_review
+S03,GT0042,position_change,68.762,68.762,dropped to P8,operator_review
+S03,GT0043,pace_surge,74.240,74.240,acceleration burst 81.3 to 243.0 km/h,operator_review
+S03,GT0044,position_change,75.230,75.230,moved up to P7,operator_review
+S03,GT0045,position_change,76.748,76.748,moved up to P6,operator_review
+S03,GT0046,contact,79.784,79.784,damage jumped by 14.0,operator_review
+S03,GT0047,contact,86.846,86.846,damage jumped by 18.0,operator_review
+S03,GT0048,contact,88.826,88.826,damage jumped by 30.0,operator_review
+S03,GT0049,contact,94.832,94.832,damage jumped by 15.0,operator_review
+S03,GT0050,pace_surge,102.884,102.884,acceleration burst 200.7 to 248.4 km/h,operator_review
+S03,GT0051,pace_surge,117.470,117.470,acceleration burst 154.7 to 220.1 km/h,operator_review
+S03,GT0052,position_change,127.040,127.040,dropped to P7,operator_review
+S03,GT0053,pace_surge,137.088,137.088,acceleration burst 163.5 to 246.8 km/h,operator_review
+S03,GT0054,battle,146.628,146.628,front gap down to 9.7 m,operator_review
+S03,GT0055,pace_surge,148.128,148.128,acceleration burst 205.5 to 243.1 km/h,operator_review
+S03,GT0056,pace_surge,164.208,164.208,acceleration burst 196.0 to 264.4 km/h,operator_review
+S03,GT0057,battle,166.728,166.728,front gap down to 4.5 m,operator_review
+S03,GT0058,contact,167.748,167.748,damage jumped by 389.0,operator_review
+S03,GT0059,contact,169.728,169.728,damage jumped by 84.0,operator_review
+S03,GT0060,contact,171.228,171.228,damage jumped by 51.0,operator_review
+S03,GT0061,lap_complete,186.828,186.828,completed lap 3,operator_review
+S04,GT0062,pace_surge,5.638,5.638,acceleration burst 32.5 to 71.1 km/h,operator_review
+S04,GT0063,pace_surge,21.668,21.668,acceleration burst 84.9 to 250.5 km/h,operator_review
+S04,GT0064,position_change,23.186,23.186,moved up to P3,operator_review
+S04,GT0065,position_change,25.694,25.694,dropped to P4,operator_review
+S04,GT0066,pace_surge,37.248,37.248,acceleration burst 162.3 to 256.4 km/h,operator_review
+S04,GT0067,pace_surge,50.328,50.328,acceleration burst 224.2 to 270.3 km/h,operator_review
+S04,GT0068,position_change,68.894,68.894,dropped to P6,operator_review
+S04,GT0069,position_change,69.884,69.884,moved up to P5,operator_review
+S04,GT0070,pace_surge,75.956,75.956,acceleration burst 167.9 to 252.0 km/h,operator_review
+S04,GT0071,battle,82.952,82.952,front gap down to 8.8 m,operator_review
+S04,GT0072,position_change,85.460,85.460,dropped to P6,operator_review
+S04,GT0073,battle,89.024,89.024,front gap down to 9.9 m,operator_review
+S04,GT0074,battle,90.014,90.014,front gap down to 8.4 m,operator_review
+S04,GT0075,battle,91.004,91.004,front gap down to 7.7 m,operator_review
+S04,GT0076,battle,91.994,91.994,front gap down to 7.3 m,operator_review
+S04,GT0077,battle,93.512,93.512,front gap down to 6.6 m,operator_review
+S04,GT0078,battle,94.502,94.502,front gap down to 6.9 m,operator_review
+S04,GT0079,battle,95.558,95.558,front gap down to 7.4 m,operator_review
+S04,GT0080,battle,97.010,97.010,front gap down to 7.6 m,operator_review
+S04,GT0081,pace_surge,99.056,99.056,acceleration burst 202.0 to 280.5 km/h,operator_review
+S04,GT0082,pace_surge,118.658,118.658,acceleration burst 257.1 to 289.8 km/h,operator_review
+S04,GT0083,pace_surge,136.728,136.728,acceleration burst 243.7 to 290.6 km/h,operator_review
+S04,GT0084,battle,163.848,163.848,front gap down to 8.1 m,operator_review
+S04,GT0085,battle,164.868,164.868,front gap down to 8.7 m,operator_review
+S04,GT0086,battle,165.888,165.888,front gap down to 6.2 m,operator_review
+S05,GT0087,position_change,140.688,140.688,moved up to P7,operator_review
+S05,GT0088,contact,146.688,146.688,damage jumped by 30.0,operator_review
+S05,GT0089,position_change,147.708,147.708,dropped to P8,operator_review
+S05,GT0090,contact,149.208,149.208,damage jumped by 302.0,operator_review
+S05,GT0091,contact,150.228,150.228,damage jumped by 231.0,operator_review
+S05,GT0092,contact,153.228,153.228,damage jumped by 71.0,operator_review
+S05,GT0093,contact,154.248,154.248,damage jumped by 97.0,operator_review
+S05,GT0094,pace_surge,168.348,168.348,acceleration burst 55.0 to 132.8 km/h,operator_review
+S05,GT0095,pace_surge,179.388,179.388,acceleration burst 106.3 to 157.4 km/h,operator_review
+S05,GT0096,battle,182.388,182.388,front gap down to 8.4 m,operator_review
+S05,GT0097,battle,183.408,183.408,front gap down to 8.3 m,operator_review
+S05,GT0098,battle,184.428,184.428,front gap down to 9.0 m,operator_review
+S05,GT0099,pace_surge,185.928,185.928,acceleration burst 149.1 to 173.1 km/h,operator_review
+S05,GT0100,position_change,187.428,187.428,moved up to P8,operator_review
+S05,GT0101,pace_surge,196.488,196.488,acceleration burst 140.5 to 170.0 km/h,operator_review
+S05,GT0102,pace_surge,214.068,214.068,acceleration burst 118.0 to 149.5 km/h,operator_review
+S05,GT0103,off_track,217.608,217.608,ran wide over the left edge,operator_review
+S05,GT0104,contact,222.648,222.648,damage jumped by 1060.0 (very large hit),operator_review
+S05,GT0105,contact,223.608,223.608,damage jumped by 322.0,operator_review
+S05,GT0106,contact,227.628,227.628,damage jumped by 482.0,operator_review
+S05,GT0107,position_change,230.688,230.688,dropped to P9,operator_review
+S05,GT0108,contact,234.708,234.708,damage jumped by 388.0,operator_review
+S05,GT0109,contact,235.668,235.668,damage jumped by 1330.0 (car became airborne),operator_review
+S05,GT0110,contact,236.688,236.688,damage jumped by 189.0,operator_review
+S05,GT0111,contact,237.708,237.708,damage jumped by 243.0,operator_review
+S06,GT0112,contact,4.780,4.780,damage jumped by 10.0,operator_review
+S06,GT0113,contact,7.486,7.486,damage jumped by 545.0,operator_review
+S06,GT0114,contact,16.982,16.982,damage jumped by 133.0,operator_review
+S06,GT0115,contact,18.038,18.038,damage jumped by 111.0,operator_review
+S06,GT0116,contact,20.018,20.018,damage jumped by 404.0,operator_review
+S06,GT0117,contact,21.008,21.008,damage jumped by 680.0,operator_review
+S06,GT0118,position_change,22.526,22.526,dropped to P10,operator_review
+S06,GT0119,contact,48.168,48.168,damage jumped by 130.0,operator_review
+S06,GT0120,contact,61.188,61.188,damage jumped by 19.0,operator_review
+S06,GT0121,contact,76.286,76.286,damage jumped by 1161.0 (very large hit),operator_review
+S06,GT0122,battle,77.738,77.738,front gap down to 9.8 m,operator_review
+S06,GT0123,contact,110.936,110.936,damage jumped by 31.0,operator_review
+S06,GT0124,contact,111.926,111.926,damage jumped by 326.0,operator_review
+S06,GT0125,contact,112.916,112.916,damage jumped by 493.0,operator_review
+S06,GT0126,contact,113.972,113.972,damage jumped by 59.0,operator_review
+S06,GT0127,contact,114.962,114.962,damage jumped by 298.0,operator_review
+S06,GT0128,contact,115.952,115.952,damage jumped by 76.0,operator_review
+S06,GT0129,contact,130.548,130.548,damage jumped by 531.0,operator_review
+S06,GT0130,contact,135.048,135.048,damage jumped by 25.0,operator_review
+S06,GT0131,contact,144.588,144.588,damage jumped by 178.0,operator_review
+S06,GT0132,contact,149.628,149.628,damage jumped by 19.0,operator_review
+S05,GT0133,off_track,146.688,146.688,"inferred: operator recalled ~half of S05's contacts coincided with running off track, but not which specific ones; this timestamp is approximated from the simultaneous contact event it lost the same-cycle priority tie-break to, not independently timed",operator_inferred
+S05,GT0134,off_track,150.228,150.228,"inferred: operator recalled ~half of S05's contacts coincided with running off track, but not which specific ones; this timestamp is approximated from the simultaneous contact event it lost the same-cycle priority tie-break to, not independently timed",operator_inferred
+S05,GT0135,off_track,154.248,154.248,"inferred: operator recalled ~half of S05's contacts coincided with running off track, but not which specific ones; this timestamp is approximated from the simultaneous contact event it lost the same-cycle priority tie-break to, not independently timed",operator_inferred
+S05,GT0136,off_track,223.608,223.608,"inferred: operator recalled ~half of S05's contacts coincided with running off track, but not which specific ones; this timestamp is approximated from the simultaneous contact event it lost the same-cycle priority tie-break to, not independently timed",operator_inferred
+S05,GT0137,off_track,234.708,234.708,"inferred: operator recalled ~half of S05's contacts coincided with running off track, but not which specific ones; this timestamp is approximated from the simultaneous contact event it lost the same-cycle priority tie-break to, not independently timed",operator_inferred
+S05,GT0138,off_track,236.688,236.688,"inferred: operator recalled ~half of S05's contacts coincided with running off track, but not which specific ones; this timestamp is approximated from the simultaneous contact event it lost the same-cycle priority tie-break to, not independently timed",operator_inferred

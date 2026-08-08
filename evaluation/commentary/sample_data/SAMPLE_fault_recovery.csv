@@ -1,0 +1,9 @@
+trial_id,fault_id,fault_injected_at_s,service_restored_at_s,first_success_after_restore_at_s,recovered,crashed,notes
+T01,RT-01,60.0,90.0,91.4,true,false,granite process killed then restarted
+T02,RT-01,300.0,330.0,331.8,true,false,granite process killed then restarted
+T03,RT-01,600.0,630.0,632.1,true,false,granite process killed then restarted
+T04,RT-03,60.0,65.0,65.9,true,false,overlay websocket disconnected
+T05,RT-03,200.0,205.0,206.2,true,false,overlay websocket disconnected
+T06,RT-03,340.0,,,false,true,"middleware crashed on reconnect, needed manual restart"
+T07,RT-07,60.0,,,true,false,"invalid telemetry frame injected, no restoration needed, no crash"
+T08,RT-07,180.0,,,true,false,"invalid telemetry frame injected, no restoration needed, no crash"

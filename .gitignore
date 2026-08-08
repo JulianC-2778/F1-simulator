@@ -45,7 +45,6 @@ src/tools/package/specfiles/*.spec
 /player_logs/
 *.log
 *.pid
-*.csv
 *.dump
 *.core
 core

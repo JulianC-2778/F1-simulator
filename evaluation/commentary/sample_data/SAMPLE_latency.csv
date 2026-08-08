@@ -1,0 +1,7 @@
+session_id,event_id,request_id,t0_telemetry_received,t1_event_detected,t2_first_token,t3_ai_done,t4_caption_displayed,t5_tts_started,failed,failure_reason
+S01,GT0001,REQ0001,42.300,42.712,44.201,46.850,46.920,,false,
+S01,GT0003,REQ0002,90.400,90.650,92.100,94.400,94.480,94.500,false,
+S01,GT0005,REQ0003,140.000,140.380,141.900,144.200,144.260,,false,
+S02,GT0006,REQ0004,20.000,20.290,,,,,true,granite_timeout
+S02,GT0007,REQ0005,35.700,36.050,37.400,39.900,39.970,,false,
+S02,GT0008,REQ0006,88.900,89.120,90.600,92.750,92.820,92.840,false,
