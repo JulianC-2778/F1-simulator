@@ -838,6 +838,12 @@
         </div>
         <div class="panel panel-pad">
           <div class="section-title">Conversation</div>
+          <div class="field"><label>Answer style</label>
+            <select id="engStyleSelect">
+              <option value="professional">Professional (up to 3-4 sentences)</option>
+              <option value="concise">Concise (one line per question)</option>
+            </select>
+          </div>
           <button class="secondary" id="engClearBtn" style="width:100%">Clear history</button>
           <div id="engStats" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">-- / -- tokens</div>
         </div>
@@ -2133,12 +2139,26 @@ $("engClearBtn").addEventListener("click", async () => {
   engLoadStats();
 });
 
+$("engStyleSelect").addEventListener("change", async () => {
+  // Switching style clears history server-side (see /api/engineer/style),
+  // so the feed is reset here too to match -- otherwise old-style answers
+  // would sit on screen even though the model no longer has them in context.
+  await fetch("/api/engineer/style", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ style: $("engStyleSelect").value }),
+  });
+  $("engFeed").innerHTML = '<div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div>';
+  engLoadStats();
+});
+
 async function engLoadStats() {
   try {
     const r = await fetch("/api/engineer/history");
     const data = await r.json();
     const s = data.stats || {};
     $("engStats").textContent = `${(s.history_tokens || 0) + (s.system_tokens || 0)} / ${s.max_context_tokens || "--"} tokens`;
+    if (data.style) $("engStyleSelect").value = data.style;
   } catch (e) { /* ignore */ }
 }
 

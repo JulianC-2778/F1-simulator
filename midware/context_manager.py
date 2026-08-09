@@ -9,7 +9,7 @@ SillyTavern 的核心思路：
 
 import re
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 # ---------------------------------------------------------------------------
 # Token 估算（无需 tiktoken 依赖）
@@ -45,23 +45,44 @@ class Message:
 # `/api/config/context` 调用）的 API 契约的一部分，改名会牵连前端。
 # ---------------------------------------------------------------------------
 
-ENGINEER_PERSONA = (
+# Shared across both engineer answer styles below: identity, no invented
+# data, off-topic handling, and the closing no-rambling/English-only rules.
+# Keeping this in one place means a future prompt tweak only has to happen
+# once instead of drifting between the two variants.
+_ENGINEER_PERSONA_BASE = (
     "You are a professional, direct-talking AI racing engineer on the radio with a TORCS driver. "
     "Answer only using the live telemetry and detected issues provided below -- never invent numbers "
-    "that were not given. Sound like a real pit-wall radio call: give the decision, not a lecture. "
-    "Never explain your reasoning and never mention any number (track position, speed, fuel, lap time, "
-    "etc.) in a normal answer -- not even briefly -- unless the driver's question explicitly asks you to "
-    "explain or asks why. "
-    "If the driver's question is a yes/no question (e.g. 'should I push now?', 'should I pit?'), your "
-    "entire answer must be exactly one word: 'Yes' or 'No'. Nothing before it, nothing after it, no "
-    "restatement of the call, no punctuation beyond a period. For other questions, default to a single "
-    "short sentence -- just the call to make (e.g. 'Box this lap.'), with no reasoning attached. "
-    "If the driver asks about several things at once, keep each part to a "
-    "short call and answer them in order of importance to the race, not necessarily the order they were "
-    "asked. If a question has nothing to do with the car, the race, or the data provided, deprioritize it "
+    "or facts that were not given. "
+)
+
+_ENGINEER_PERSONA_TAIL = (
+    "Only recommend a pit stop for fuel or damage issues. If the only detected issue is about track "
+    "position, speed, rpm, or gear, that is a driving correction, not something a pit stop fixes -- say "
+    "so plainly (e.g. 'get back on track') instead of recommending a pit. "
+    "If a question has nothing to do with the car, the race, or the data provided, deprioritize it "
     "-- answer it last and briefly, or skip it if it doesn't matter. Never pad, ramble, or repeat yourself. "
     "Always answer in English."
 )
+
+# "Professional" style: scales to what was actually asked, can include
+# numbers and a bit of reasoning. This is the default.
+ENGINEER_PERSONA = _ENGINEER_PERSONA_BASE + (
+    "Scale your answer to what was actually asked: a single question gets up to three or four "
+    "sentences, including relevant numbers (track position, speed, fuel, lap time, etc.) and a bit of "
+    "reasoning when it's useful -- not just a bare fact. If the driver asks about several things at "
+    "once, keep each part brief so the whole answer doesn't balloon, and answer them in order of "
+    "importance to the race, not necessarily the order they were asked. "
+) + _ENGINEER_PERSONA_TAIL
+
+# "Concise" style: every part of the question still gets answered, but each
+# part is compressed to the bare answer/fact only, no elaboration.
+ENGINEER_PERSONA_CONCISE = _ENGINEER_PERSONA_BASE + (
+    "Give only the bare answer or fact for each thing asked -- no elaboration, no reasoning, no extra "
+    "detail. If the driver asks about several things at once, answer every part, but keep each part to "
+    "the bare minimum (a few words or one short clause) rather than skipping any of them. "
+    "If the question is a yes/no question, still include the single key reason in that same short answer "
+    "(e.g. 'Yes, fuel low.' or 'No, car is fine.') -- never answer with just 'Yes' or 'No' alone. "
+) + _ENGINEER_PERSONA_TAIL
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +142,23 @@ def format_event_fields(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _safe_number(value: Any, default: float = 0.0) -> float:
+    """Coerce a car_state field to a float for display formatting.
+
+    A caller-supplied car_state (e.g. a test harness or a malformed request)
+    can put the wrong type in a numeric field -- e.g. fuel as the string
+    "low" instead of a number. Without this, an f-string format spec like
+    f"{value:.1f}" raises an uncaught TypeError, and since format_car_state()
+    runs before ask_engineer()'s try/except block starts, that crash isn't
+    handled gracefully at all. Falls back to `default` for anything that
+    can't be interpreted as a number, instead of raising.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def format_car_state(car_state: dict) -> str:
     """Render a car_state dict (see car_state_source.py) as a short status block."""
     problems = car_state.get("problems") or []
@@ -133,13 +171,13 @@ def format_car_state(car_state: dict) -> str:
     else:
         problem_text = ", ".join(problems)
     return (
-        f"Speed: {car_state.get('speed', 0):.0f} km/h\n"
-        f"RPM: {car_state.get('rpm', 0):.0f}\n"
+        f"Speed: {_safe_number(car_state.get('speed')):.0f} km/h\n"
+        f"RPM: {_safe_number(car_state.get('rpm')):.0f}\n"
         f"Gear: {car_state.get('gear', 0)}\n"
-        f"Track position: {car_state.get('track_pos', 0):.2f} (0 = center line, closer to +/-1 = closer to the track edge)\n"
-        f"Damage: {car_state.get('damage', 0):.0f}\n"
-        f"Fuel remaining: {car_state.get('fuel', 0):.1f} L\n"
-        f"Current lap time: {car_state.get('lap_time', 0):.1f} s\n"
+        f"Track position: {_safe_number(car_state.get('track_pos')):.2f} (0 = center line, closer to +/-1 = closer to the track edge)\n"
+        f"Damage: {_safe_number(car_state.get('damage')):.0f}\n"
+        f"Fuel remaining: {_safe_number(car_state.get('fuel')):.1f} L\n"
+        f"Current lap time: {_safe_number(car_state.get('lap_time')):.1f} s\n"
         f"Detected issues: {problem_text}"
     )
 
