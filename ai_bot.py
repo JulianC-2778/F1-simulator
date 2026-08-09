@@ -117,16 +117,47 @@ _FIELD_MAP: dict[str, str] = {
     "yaw":           "yaw",
     "speedGlobalX":  "speed_global_x",
     "speedGlobalY":  "speed_global_y",
+    "pitEntry":      "pit_entry",
+    "pitStart":      "pit_start",
+    "pitEnd":        "pit_end",
+    "pitExit":       "pit_exit",
+    "pitSpeedLimit": "pit_speed_limit",
+    "pitSide":       "pit_side",
+    "pitBoxOffset":  "pit_box_offset",
+    "inPitStop":     "in_pit_stop",
+    "trackLength":   "track_length",
+    "remainingLaps": "remaining_laps",
+    "lapsBehindLeader": "laps_behind_leader",
+    "segWidth":      "seg_width",
 }
 
 _ARRAY_FIELDS: frozenset[str] = frozenset({"opponents", "track", "wheelSpinVel", "focus"})
-_INT_FIELDS:   frozenset[str] = frozenset({"gear", "racePos"})
+_INT_FIELDS:   frozenset[str] = frozenset({"gear", "racePos", "inPitStop", "remainingLaps", "lapsBehindLeader", "pitSide"})
 
 _ARRAY_LENGTHS: dict[str, int] = {
     "opponents": 36, "track": 19, "wheelSpinVel": 4, "focus": 5,
 }
 _ARRAY_DEFAULTS: dict[str, float] = {
     "opponents": 200.0, "track": -1.0, "wheelSpinVel": 0.0, "focus": -1.0,
+}
+
+# Per-field float defaults used when a field is absent from the packet (e.g.
+# a scr_server build predating the pit-lane fields).  -1 means "no pit lane
+# data" for the distance fields, so callers can tell that apart from a
+# legitimate distance-from-start of 0.
+_FLOAT_DEFAULTS: dict[str, float] = {
+    "pitEntry": -1.0, "pitStart": -1.0, "pitEnd": -1.0, "pitExit": -1.0,
+    "pitSpeedLimit": 0.0, "trackLength": -1.0,
+    "pitBoxOffset": 0.0, "segWidth": -1.0,
+}
+
+# Same idea for int fields: a missing remainingLaps/lapsBehindLeader (older
+# scr_server build) must default to -1 ("lap-count data unavailable"), never
+# 0 -- 0 could be misread as "0 laps left" and force PIT logic that depends
+# on it into a false trigger.  pitSide likewise: -1 means "no pit data",
+# never a value that collides with the real TR_RGT(1)/TR_LFT(2) codes.
+_INT_DEFAULTS: dict[str, int] = {
+    "remainingLaps": -1, "lapsBehindLeader": 0, "pitSide": -1,
 }
 
 _REQUIRED_KEYS: frozenset[str] = frozenset({"speedX", "fuel", "gear", "track"})
@@ -167,9 +198,9 @@ def parse_scr_state(message: str) -> dict[str, Any] | None:
                 values.extend([fill] * (expected - len(values)))
             state[py_name] = values[:expected]
         elif scr_name in _INT_FIELDS:
-            state[py_name] = parse_int(raw_value, 0)
+            state[py_name] = parse_int(raw_value, _INT_DEFAULTS.get(scr_name, 0))
         else:
-            state[py_name] = parse_float(raw_value, 0.0)
+            state[py_name] = parse_float(raw_value, _FLOAT_DEFAULTS.get(scr_name, 0.0))
 
     return state
 
@@ -187,6 +218,7 @@ def format_scr_control(
     clutch: float = 0.0,
     focus:  int   = 0,
     meta:   int   = 0,
+    pit_request: bool = False,
 ) -> str:
     """Encode a control action into the TORCS SCR wire format.
 
@@ -199,10 +231,11 @@ def format_scr_control(
     focus  = int(clamp(float(focus), -90.0, 90.0))
     gear   = int(gear)
     meta   = 1 if meta else 0
+    pit_req = 1 if pit_request else 0
     # Single choke point for every control we emit — capture it for the drive
     # log so a stuck car can be diagnosed from what was actually COMMANDED.
     _dbg.update(cmd_accel=accel, cmd_brake=brake, cmd_gear=gear, cmd_steer=steer,
-                cmd_clutch=clutch)
+                cmd_clutch=clutch, cmd_pit_request=pit_req)
     return (
         f"(accel {accel:.3f})"
         f"(brake {brake:.3f})"
@@ -211,6 +244,7 @@ def format_scr_control(
         f"(clutch {clutch:.3f})"
         f"(focus {focus})"
         f"(meta {meta})"
+        f"(pitRequest {pit_req})"
     )
 
 
@@ -594,6 +628,11 @@ SAVE_FUEL = "SAVE_FUEL"
 PIT       = "PIT"
 BLOCK     = "BLOCK"   # position-defence — see _GRANITE_STRATEGIES below
 
+# TEMP (pit-system testing, 2026-08-09): SAVE_FUEL disabled so low fuel always
+# resolves to PIT instead of Granite hedging with economical driving first.
+# Flip back to True to restore normal behaviour.
+_SAVE_FUEL_ENABLED = False
+
 # Strategies Granite is allowed to freely choose. BLOCK is deliberately
 # excluded: it is a deterministic, per-frame reflex (triggered in
 # safety_filter from the raw rear-gap sensor, same as PIT-on-fuel and
@@ -601,7 +640,9 @@ BLOCK     = "BLOCK"   # position-defence — see _GRANITE_STRATEGIES below
 # poll is far too slow to react to a car that is already closing in behind.
 # If Granite's JSON ever says "BLOCK" anyway (hallucination), it must be
 # rejected like any other invalid strategy, not honoured.
-_GRANITE_STRATEGIES: frozenset[str] = frozenset({ATTACK, NORMAL, DEFEND, SAVE_FUEL, PIT})
+_GRANITE_STRATEGIES: frozenset[str] = frozenset(
+    {ATTACK, NORMAL, DEFEND, PIT} | ({SAVE_FUEL} if _SAVE_FUEL_ENABLED else set())
+)
 
 # All strategies compute_control()/safety_filter() understand, Granite-chosen
 # or system-only.
@@ -1406,6 +1447,66 @@ _stabilize_bled = False   # module state: has this stabilize episode already
                           # braked off the post-impact speed once? Re-armed
                           # alongside _stabilizing on each fresh entry.
 
+# 2026-08-09: stabilize's own no-progress watchdog.  _stabilize_action's
+# wrong-way branch (see below) always reverses, with no escape if reverse
+# itself is blocked (wedged nose-first into a wall after a spin) -- logged
+# live: a car sat at track_pos +1.09, angle +136°, sight 0.1 m, commanding
+# accel=0.5/gear=-1 every tick for minutes without moving. The plain
+# _stuck_progress_dist/_frames watchdog above can't catch this: it only runs
+# BEFORE compute_control's `if _stabilizing: return _stabilize_action(...)`
+# gate, so once latched into stabilize it never executes again -- stabilize
+# had no watchdog of its own. This one runs INSIDE the latch, using the same
+# _NO_PROGRESS_DIST/_FRAMES tuning, and hands off to _recovery_control's
+# three-point-turn (_turnaround) escape -- which DOES alternate reverse and
+# forward legs -- instead of repeating a reverse that isn't working.
+_stabilize_stuck_dist   = None   # module state: dist_from_start when the current
+                                  # stabilize-progress window started (None = not watching)
+_stabilize_stuck_frames = 0      # module state: frames elapsed in that window
+
+# Pit lane docking (bt parity — see pit.cpp/strategy.cpp).  _pit_docking
+# latches once the car actually enters the physical pit lane range while
+# strategy is PIT, and stays latched until it exits that range regardless of
+# later strategy changes — mirrors real pit rules: once you're in the lane
+# you finish the stop, you don't swerve back onto the racing line mid-lane.
+# _pit_serviced latches once the engine reports inPitStop=1 at least once
+# during the current visit (i.e. the stop was actually captured and the
+# refuel/repair applied), so the car resumes toward pit_exit afterwards
+# instead of re-braking to a stop it has already completed.
+_pit_docking  = False   # module state: committed to the current pit lane visit
+_pit_serviced = False   # module state: already captured + serviced this visit
+
+# Fuel-per-lap tracking (bt parity — see SimpleStrategy.update(), strategy.cpp).
+# bt measures actual fuel burned over the last completed lap and uses that
+# (once available) instead of the pre-race estimate; we do the same, keyed
+# off last_lap_time changing rather than bt's track-segment-id proximity
+# check (SCR gives no segment id) — same "a new lap just completed" signal
+# run_bot()'s own [lap] A/B gauge already uses (see run_bot()), but tracked
+# independently here since that's local state for a different statistic.
+_FUEL_PER_METER      = 0.0008   # L/m: bt's pre-race estimate (strategy.cpp)
+_fuel_last_lap_time  = 0.0      # module state: last_lap_time value last seen
+_fuel_at_lap_start   = None     # module state: fuel reading at current lap's start
+_fuel_per_lap_est    = 0.0      # module state: measured fuel-per-lap, 0 = no data yet
+
+
+def _update_fuel_model(state: dict[str, Any]) -> None:
+    """Update the measured fuel-per-lap estimate from the latest tick.
+
+    Call once per tick, before anything (safety_filter, the Granite prompt)
+    reads state["fuel_per_lap"].  Pure bookkeeping — never changes driving
+    behaviour by itself.
+    """
+    global _fuel_last_lap_time, _fuel_at_lap_start, _fuel_per_lap_est
+    fuel = state.get("fuel", 0.0)
+    if _fuel_at_lap_start is None:
+        _fuel_at_lap_start = fuel
+    llt = state.get("last_lap_time", 0.0)
+    if llt > 0.0 and abs(llt - _fuel_last_lap_time) > 1e-3:
+        burned = _fuel_at_lap_start - fuel
+        if burned > 0.0:
+            _fuel_per_lap_est = burned
+        _fuel_at_lap_start  = fuel
+        _fuel_last_lap_time = llt
+
 
 def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
@@ -1413,6 +1514,9 @@ def _reset_driver_state() -> None:
     global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
     global _stabilize_bled, _avoid_lp, _front_gap_prev, _close_rate_lp, _launch_clutch_timer
     global _standoff_timer, _side_gap_prev, _side_close_rate_lp, _tpos_prev
+    global _pit_docking, _pit_serviced
+    global _fuel_last_lap_time, _fuel_at_lap_start, _fuel_per_lap_est
+    global _stabilize_stuck_dist, _stabilize_stuck_frames
     _stuck_frames = 0
     _bursting = False
     _burst_frames = 0
@@ -1432,6 +1536,13 @@ def _reset_driver_state() -> None:
     _side_gap_prev = None
     _side_close_rate_lp = 0.0
     _tpos_prev = None
+    _pit_docking = False
+    _pit_serviced = False
+    _fuel_last_lap_time = 0.0
+    _fuel_at_lap_start = None
+    _fuel_per_lap_est = 0.0
+    _stabilize_stuck_dist = None
+    _stabilize_stuck_frames = 0
 
 
 def _recovery_steer(angle: float, tpos: float) -> float:
@@ -1561,6 +1672,224 @@ def _pursuit_target(track: list[float]) -> float | None:
     return num / den if den > 0.0 else None
 
 
+# ---------------------------------------------------------------------------
+# Pit lane docking (bt parity — see pit.cpp/strategy.cpp for the mechanism
+# this is adapted from).  bt reads pit geometry straight off tTrack/tCarElt;
+# we get the same numbers over the wire (scr_server.cpp exposes them once
+# per race, see newrace()) since the SCR protocol otherwise never told the
+# client where the pits even are.
+# ---------------------------------------------------------------------------
+
+def _pit_spline_coord(x: float, entry: float, track_length: float) -> float:
+    """Distance travelled past pit_entry, wrapped into [0, track_length).
+
+    Mirrors bt's Pit::toSplineCoord (pit.cpp) — the pit lane commonly
+    straddles the start/finish line (pitEntry near the end of the lap,
+    pitStart near its beginning: true on wheel-1's own track file), so raw
+    lgfromstart values can't be compared directly without unwrapping
+    relative to a fixed reference first.
+    """
+    if track_length <= 0.0:
+        return x - entry
+    return (x - entry) % track_length
+
+
+def _pit_ease(x: float, a: float, b: float) -> float:
+    """Smoothstep 0..1 from a to b; snaps to 1 for a degenerate/zero-length
+    span (b <= a) rather than dividing by ~0. Same "ease in / hold / ease
+    out" shape bt gets from its 7-point cubic Spline (pit.cpp) — the literal
+    spline class isn't what matters here, the shape is."""
+    if b <= a:
+        return 1.0
+    frac = clamp((x - a) / (b - a), 0.0, 1.0)
+    return 0.5 - 0.5 * math.cos(math.pi * frac)
+
+
+def _pit_target_tpos(s_now: float, s_lead: float, s_start: float, s_end: float,
+                      s_exit: float, box_tpos: float) -> float:
+    """Target lateral track_pos through the pit lane: ease from the racing
+    line (0) onto the box's offset over [s_lead, s_start], hold it over
+    [s_start, s_end], ease back to the racing line over [s_end, s_exit].
+
+    2026-08-10: s_lead used to be hardcoded to 0.0 (the ease only started at
+    pit_entry itself), which on Forza left just the 58 m [pit_entry,
+    pit_start] gap to swing ~1.8 track_pos units (~8 m) onto the box offset
+    -- verified live: not enough room, the car stopped ~8 m short of the
+    box, never satisfying the engine's lateral capture check. Passing a
+    negative s_lead (see _PIT_APPROACH_DIST in compute_control) starts the
+    ease that much earlier, before the car has even reached pit_entry."""
+    if s_now <= s_start:
+        return box_tpos * _pit_ease(s_now, s_lead, s_start)
+    if s_now <= s_end:
+        return box_tpos
+    return box_tpos * (1.0 - _pit_ease(s_now, s_end, s_exit))
+
+
+_PIT_EDGE_TPOS = 0.75   # track_pos units: fallback aim if seg_width data is missing
+                        # (older scr_server build) -- just lean toward the pit side
+                        # rather than not moving at all. Not used when the precise
+                        # conversion below has real data.
+_PIT_LOOKAHEAD_M = 8.0  # metres: how far down the pit spline _pit_control aims its
+                        # steering target (bt parity: PIT_LOOKAHEAD=6.0 in driver.cpp,
+                        # see the 2026-08-10 comment on _pit_control's steer computation).
+_PIT_ALIGN_TPOS  = 0.05   # track_pos units: lateral error tracked for the pit_aligned debug
+                          # field only (see below) — no longer gates the speed target.
+_PIT_ALIGN_ANGLE = 0.05   # rad (~3 deg): heading error, same debug-only role as above.
+_PIT_CREEP_KMH   = 8.0    # km/h: minimum speed kept only during the APPROACH ease
+                          # (pit_entry..pit_start, see the s_now <= s_start branch below).
+                          # 2026-08-09: originally this floor also applied inside the stop
+                          # zone itself, gated on an "aligned" check, to avoid a car getting
+                          # stuck mid-turn with no speed left to correct itself — verified
+                          # live: a car sat for 6000+ ticks at track_pos+0.76/angle+136
+                          # degrees wide of the box, never converging.
+                          # 2026-08-10: turned out that "fix" was itself the bigger bug —
+                          # re-reading bt (driver.cpp filterBPit) shows it does NOT hold any
+                          # creep floor in the stop zone; it brake-distance-computes to a
+                          # full stop and, once at/past the pit location, holds brake=1.0
+                          # unconditionally regardless of alignment (pit.cpp: "Stop in the
+                          # pit"). Our 8 km/h floor sat ABOVE the engine's own capture gate
+                          # (car->_speed_x < 1.0 m/s ≈ 3.6 km/h, raceengine.cpp ReManage), so
+                          # gating the drop to 0 on alignment meant a car that never
+                          # converged laterally would cruise the entire [s_start, s_end] zone
+                          # at 8 km/h and sail through uncaptured every single time — a
+                          # strictly worse failure than the stuck-mid-turn case it was meant
+                          # to fix. The stop zone now always targets 0 (see below); this
+                          # constant's only remaining job is the pre-stop approach ease.
+
+def _pit_control(state: dict[str, Any], s_now: float, s_lead: float, s_start: float,
+                  s_end: float, s_exit: float, released: bool) -> str:
+    """Drive through the pit lane box: hold the pit speed limit, ease onto
+    the box's lateral offset, brake to a stop inside [s_start, s_end] (bt:
+    filterBPit / getSpeedLimitBrake, driver.cpp), then — once ``released``
+    (the engine has already captured and serviced this stop) — resume to
+    the pit speed limit and drive out to pit_exit."""
+    speed    = state.get("speed_x", 0.0)
+    speed_y  = state.get("speed_y", 0.0) / 3.6
+    angle    = state.get("angle", 0.0)
+    tpos     = state.get("track_pos", 0.0)
+    gear     = state.get("gear", 1)
+    wheels   = state.get("wheel_spin_vel", [])
+    limit_kmh = max(state.get("pit_speed_limit", 60.0), 10.0)
+
+    # pit_box_offset arrives in raw metres (bt parity, pit.cpp: its Spline
+    # is built entirely from car->_pit->pos.toMiddle, never normalized).
+    # 2026-08-09: this legitimately reads several metres past the normal
+    # +-1 track_pos range on real tracks (e.g. ~19 m on forza, whose pit
+    # apron is a 15 m widening of an 11 m base track) -- NOT a bad value,
+    # the pit lane really is that far off centreline. Converting with the
+    # LIVE current-segment width (seg_width) keeps it in exactly the frame
+    # track_pos itself is normalized by (2*toMiddle/seg->width, see
+    # dist_to_middle in scr_server.cpp), so a large target here is expected
+    # and correct, not a sign of a unit mismatch.
+    seg_width = state.get("seg_width", -1.0)
+    box_m     = state.get("pit_box_offset", 0.0)
+    if seg_width > 0.0:
+        box_tpos = box_m / (seg_width / 2.0)
+    else:
+        # Fallback for a scr_server build predating pitBoxOffset/segWidth:
+        # just lean toward the pit side (track_pos "+ left, - right",
+        # tTrkLocPos.toMiddle convention; pitSide TR_RGT=1 / TR_LFT=2).
+        pit_side = state.get("pit_side", -1)
+        box_tpos = -_PIT_EDGE_TPOS if pit_side == 1 else (
+            _PIT_EDGE_TPOS if pit_side == 2 else 0.0)
+
+    target_tpos = _pit_target_tpos(s_now, s_lead, s_start, s_end, s_exit, box_tpos)
+    aligned  = (abs(tpos - target_tpos) < _PIT_ALIGN_TPOS
+                and abs(angle) < _PIT_ALIGN_ANGLE)
+    # TEMP DEBUG (2026-08-10): TORCS's own pit-capture gate (raceengine.cpp
+    # ReManage) requires BOTH fabs(car->_speed_x) < 1.0 m/s (~3.6 km/h --
+    # note that's native m/s, stricter than our _PIT_CREEP_KMH=8.0 creep
+    # speed) AND the car laterally inside the box width, simultaneously,
+    # while pitRequest is set. Neither of those two conditions is visible
+    # from the driving log today, which makes "the car passed through pit
+    # lane but was never actually serviced" impossible to diagnose from the
+    # log alone. Surfacing both here so a live run can show which one (if
+    # either) is failing.
+    _dbg["pit_target_tpos"] = target_tpos
+    _dbg["pit_tpos_err"]    = tpos - target_tpos
+    _dbg["pit_aligned"]     = int(aligned)
+    _dbg["pit_speed_ok"]    = int(speed < 3.6)   # km/h; TORCS's own gate is 1.0 m/s
+    if s_now <= s_start:
+        # 2026-08-09: bleed speed down to creep pace over the WHOLE approach
+        # (pit_entry..pit_start), not just inside the stop zone -- bt
+        # spreads its braking over whatever distance is actually available
+        # (brakedist() physics, driver.cpp), so it's already slow well
+        # before the box. Verified live: entering the stop zone still near
+        # the pit speed limit left too little of [s_start, s_end] to both
+        # bleed off speed AND swing tpos onto a target several track-widths
+        # away (see pit_box_offset above) -- the car blew straight through
+        # the whole zone at ~47 km/h, never converging, and gave up once
+        # s_now passed s_end. Arriving at s_start already near creep speed
+        # leaves the full zone for lateral convergence instead.
+        # 2026-08-10: ease now starts at s_lead (approach lead-in), not 0.0,
+        # for the same reason _pit_target_tpos's ease was extended -- more
+        # distance to shed speed, on top of more distance to converge.
+        ease = _pit_ease(s_now, s_lead, s_start)
+        target_speed = limit_kmh + (_PIT_CREEP_KMH - limit_kmh) * ease
+    elif not released:
+        # 2026-08-10 (bt parity, driver.cpp filterBPit): bt never holds a
+        # minimum creep speed in the stop zone -- it brake-distance-computes
+        # toward a full stop and, once at/past the pit location, holds
+        # brake=1.0 unconditionally regardless of current speed or lateral
+        # alignment (see pit.cpp / filterBPit's "Stop in the pit" branch).
+        # Our old _PIT_CREEP_KMH floor (8 km/h) sat ABOVE the engine's own
+        # capture gate (car->_speed_x < 1.0 m/s =~ 3.6 km/h, checked in
+        # raceengine.cpp ReManage) -- gating the drop to 0 on `aligned` meant
+        # a car that never converged laterally would cruise the whole
+        # [s_start, s_end] zone at 8 km/h and sail through uncaptured every
+        # time. Target 0 unconditionally for the whole zone (dropped the
+        # `s_now <= s_end` upper bound too, so an overshoot keeps braking
+        # instead of giving up) so the car actually comes to rest instead of
+        # perpetually creeping through.
+        target_speed = 0.0
+    else:
+        target_speed = limit_kmh
+
+    # 2026-08-10 (bt-parity concept, driver.cpp getTargetPoint/PIT_LOOKAHEAD):
+    # bt never steers off the instantaneous position error -- it aims at a
+    # point _PIT_LOOKAHEAD_M ahead on the pit spline and steers toward THAT.
+    # bt can't be ported literally (it reads tTrackSeg/Spline objects our
+    # SCR client never receives), so this rebuilds the same idea from what we
+    # do have: track_pos, angle, and _pit_target_tpos itself.
+    #
+    # The previous law (angle - (tpos-target)*0.5) fought itself: `angle`
+    # pulled toward 0 (straight relative to the track) while the tpos term
+    # pulled toward the offset target -- but reaching a lateral offset
+    # *requires* a nonzero angle, so the two terms partially cancelled.
+    # Verified live: net steer stayed under 0.05 while perr grew from -0.61
+    # to -0.74 over ~2000 steps, creeping forward without ever converging.
+    #
+    # Aiming at a lookahead point removes the conflict: compute the target
+    # offset _PIT_LOOKAHEAD_M further down the pit spline, convert the
+    # resulting lateral gap to metres (via seg_width, same frame box_tpos
+    # above is already converted into), and steer to close the heading gap
+    # between that aim direction and the car's actual heading. Once the car
+    # is already pointed correctly to converge, this naturally settles near
+    # 0 instead of being cancelled by a competing "hold angle 0" objective.
+    target_tpos_ahead = _pit_target_tpos(s_now + _PIT_LOOKAHEAD_M, s_lead, s_start,
+                                          s_end, s_exit, box_tpos)
+    lateral_gap_tpos = target_tpos_ahead - tpos
+    half_width = (seg_width / 2.0) if seg_width > 0.0 else 5.5   # 5.5 m: half of an 11 m track, same fallback scale as _PIT_EDGE_TPOS
+    lateral_gap_m = lateral_gap_tpos * half_width
+    aim_angle = math.atan2(lateral_gap_m, _PIT_LOOKAHEAD_M)
+    steer = clamp((aim_angle - angle) * _PARAMS[PIT].steer_gain - speed_y * _STEER_DAMP,
+                  -1.0, 1.0)
+
+    excess = speed - target_speed
+    if excess <= 0.3:
+        accel = clamp((target_speed - speed) / _ACCEL_BAND, 0.0, 0.4)
+        brake = 0.0
+    else:
+        accel = 0.0
+        brake = clamp(excess / limit_kmh * _BRAKE_RESPONSE, 0.0, 1.0)
+    brake = _apply_abs(brake, speed, wheels)
+    accel = _apply_tcl(accel, speed, wheels)
+    fwd_gear = 1 if speed < 30.0 else _gear_from_speed(max(gear, 1), speed)
+
+    return format_scr_control(accel=accel, brake=brake, gear=fwd_gear, steer=steer,
+                              pit_request=not released)
+
+
 def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     """Translate a strategy + live sensor state into a concrete SCR control string.
 
@@ -1587,6 +1916,8 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     global _stuck_progress_dist, _stuck_progress_frames, _stabilizing, _stabilize_bled
     global _front_gap_prev, _close_rate_lp, _launch_clutch_timer, _standoff_timer
     global _side_gap_prev, _side_close_rate_lp
+    global _pit_docking, _pit_serviced
+    global _stabilize_stuck_dist, _stabilize_stuck_frames, _turnaround, _ta_fwd, _ta_jam, _ta_rev
 
     # --- stabilize latch: once entered (see the two triggers below), STAYS
     # active until the car is genuinely back under control — not just "moved
@@ -1603,8 +1934,128 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         if abs(tpos) <= _RECOVER_EXIT_TPOS and abs(angle) <= _RECOVER_EXIT_ANGLE:
             _stabilizing = False   # genuinely fine now — fall through to normal driving
         else:
+            # Stabilize's own no-progress watchdog: _stabilize_action's
+            # wrong-way branch always reverses, with no escape if reverse
+            # itself is blocked (nose wedged into a wall after a spin) —
+            # logged live: track_pos +1.09, angle +136°, sight 0.1 m,
+            # accel=0.5/gear=-1 every tick for minutes without moving. The
+            # plain _stuck_progress_dist/_frames watchdog above can't catch
+            # this — it only runs BEFORE this `if _stabilizing:` gate, so
+            # once latched it never executes again. Same _NO_PROGRESS_DIST/
+            # _FRAMES tuning, but scoped to this latch; escalates to
+            # _recovery_control's three-point-turn (_turnaround), which DOES
+            # alternate reverse and forward legs, instead of repeating a
+            # reverse that provably isn't working.
+            if (_stabilize_stuck_dist is None
+                    or abs(dist_from_start - _stabilize_stuck_dist) >= _NO_PROGRESS_DIST):
+                _stabilize_stuck_dist, _stabilize_stuck_frames = dist_from_start, 0
+            else:
+                _stabilize_stuck_frames += 1
+                if _stabilize_stuck_frames >= _NO_PROGRESS_FRAMES:
+                    _stabilizing = False
+                    _stabilize_stuck_dist, _stabilize_stuck_frames = None, 0
+                    _turnaround = True
+                    _ta_fwd = _ta_jam = _ta_rev = 0
+                    _dbg["mode"] = "stabilize-handoff"
+                    return _recovery_control(state)
             _dbg["mode"] = "stabilize"
             return _stabilize_action(speed, angle, tpos, gear, speed_y)
+
+    # --- pit lane docking (bt parity — see pit.cpp) ---
+    # 2026-08-09: MUST run before every crash-recovery gate below, not
+    # after (where this used to sit) — actually reaching the assigned pit
+    # box can require track_pos several widths past the normal +-1 range
+    # (verified live: forza's pit apron sits ~19 m off centreline, track_pos
+    # ~3.45 at 11 m base width; nothing wrong with that number, see
+    # _pit_control's pit_box_offset comment). With this dispatch AFTER the
+    # extreme-excursion (_EXTREME_TPOS=2.5) and off-track recovery gates,
+    # every one of them fired first and yanked control away the moment the
+    # car actually started heading for the box, mistaking the deliberate
+    # excursion for a crash — the docking code never even got a chance to
+    # run. Running it first means those gates simply never see the car
+    # while it is intentionally out there; a genuine crash still gets
+    # caught by the stabilize latch just above, which is checked before
+    # this and takes priority regardless of what pit-docking was doing.
+    #
+    # Physical presence in the pit-lane distance range must NOT by itself
+    # trigger docking: most tracks route the pit lane alongside a section of
+    # the main straight, so a normally-racing car passes through this same
+    # distFromStart range every lap. Only strategy == PIT (or an
+    # already-committed visit, see _pit_docking below) engages it — matches
+    # bt's own getPitOffset()/filterBPit() gating on getPitstop(), not just
+    # isBetween() alone (pit.cpp).
+    pit_entry = state.get("pit_entry", -1.0)
+    if pit_entry >= 0.0:
+        track_len = state.get("track_length", -1.0)
+        raw_s   = _pit_spline_coord(dist_from_start, pit_entry, track_len)
+        # 2026-08-10: fold the last _PIT_APPROACH_DIST metres of the lap
+        # (i.e. just BEFORE pit_entry) into negative "lead-in" coordinates,
+        # so the same ease/steer math that already handles [pit_entry,
+        # pit_exit] also covers the approach before entry. Verified live:
+        # with only [pit_entry, pit_start] (58 m on Forza) to both shed
+        # speed AND swing ~1.8 track_pos units (~8 m) onto the box offset,
+        # the car ran out of room and stopped ~8 m off to the side, missing
+        # the engine's lateral capture window entirely (pinps stuck at 0).
+        # This extends that budget to _PIT_APPROACH_DIST + s_start (~200 m),
+        # matching how far out safety_filter already commits to PIT (see
+        # _near_pit_lane), so the lane change starts the moment the car
+        # actually starts slowing down instead of waiting until it's
+        # nearly out of room.
+        if track_len > 0.0 and raw_s > track_len - _PIT_APPROACH_DIST:
+            s_now = raw_s - track_len   # negative: metres still to go before entry
+        else:
+            s_now = raw_s
+        s_lead  = -_PIT_APPROACH_DIST
+        s_start = _pit_spline_coord(state.get("pit_start", pit_entry), pit_entry, track_len)
+        s_end   = _pit_spline_coord(state.get("pit_end",   pit_entry), pit_entry, track_len)
+        s_exit  = _pit_spline_coord(state.get("pit_exit",  pit_entry), pit_entry, track_len)
+        in_lane      = s_now <= s_exit          # lead-in window through the pit lane proper
+        in_pit_range = 0.0 <= s_now <= s_exit   # bt's isBetween(): raw [pit_entry, pit_exit] ONLY,
+                                                 # excludes the lead-in (s_now < 0 there)
+        # TEMP DEBUG (2026-08-10): set every frame pit geometry is known, not
+        # just while the in_lane branch below is taken -- these used to only
+        # update inside that branch, so the log froze at whatever they last
+        # read (often just once, near the start of the race) instead of
+        # showing live distance-to-pit, making "is the car ever actually
+        # getting close" impossible to answer from the log alone.
+        _dbg["pit_s"]      = s_now
+        _dbg["pit_s0"]     = s_start
+        _dbg["pit_s1"]     = s_end
+        _dbg["pit_exit"]   = s_exit
+        _dbg["pit_side"]   = state.get("pit_side", -1)
+        _dbg["pit_inps"]   = state.get("in_pit_stop", 0)
+        _dbg["pit_inlane"] = int(in_lane)
+        _dbg["pit_inrange"] = int(in_pit_range)
+        if _pit_docking:
+            if in_lane:
+                if state.get("in_pit_stop", 0):
+                    _pit_serviced = True
+                _dbg["mode"] = "pit"
+                return _pit_control(state, s_now, s_lead, s_start, s_end, s_exit, _pit_serviced)
+            else:
+                _pit_docking = False
+                _pit_serviced = False
+        elif strategy == PIT and in_lane and not in_pit_range:
+            # bt parity (pit.cpp Pit::setPitstop): a pit commitment can only
+            # be newly ARMED while the car is outside the raw [pit_entry,
+            # pit_exit] range -- bt's setPitstop() is a no-op if isBetween()
+            # is already true when called. Verified live: a standing start
+            # whose grid position happens to read as already past pit_start
+            # (common -- the pit lane commonly runs alongside the front
+            # straight where the grid also sits) got its target speed
+            # latched to 0 on step 1, before the car ever moved, because the
+            # old code armed docking from raw in-lane presence alone with no
+            # regard for whether this was a fresh approach or just where the
+            # car happened to already be. Restricting arming to the lead-in
+            # (s_now < 0, i.e. genuinely approaching from outside) or to an
+            # already-latched visit (handled above) closes that hole while
+            # leaving the normal approach path (which always passes through
+            # the lead-in first) completely unaffected.
+            _pit_docking = True
+            if state.get("in_pit_stop", 0):
+                _pit_serviced = True
+            _dbg["mode"] = "pit"
+            return _pit_control(state, s_now, s_lead, s_start, s_end, s_exit, _pit_serviced)
 
     # --- extreme excursion: stabilize before either recovery subsystem can
     # compete for control ---
@@ -1622,6 +2073,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     if abs(tpos) > _EXTREME_TPOS:
         _stabilizing = True
         _stabilize_bled = False
+        _stabilize_stuck_dist, _stabilize_stuck_frames = None, 0
         _dbg["mode"] = "stabilize"
         return _stabilize_action(speed, angle, tpos, gear, speed_y)
 
@@ -1634,7 +2086,18 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # escaping.  So: whenever the previous tick wasn't plain racing, watch
     # dist_from_start — no real progress within _NO_PROGRESS_FRAMES escalates
     # into the stabilize latch above, regardless of track_pos.
-    if _dbg.get("mode") == "race" or dist_from_start < 0.0:
+    #
+    # 2026-08-09: also exempt _pit_docking — this watchdog can't tell
+    # "wedged, going nowhere" apart from "correctly stopped dead still in
+    # the pit box, waiting for the service to finish" (see _pit_control,
+    # which deliberately targets speed 0 and holds there while inPitStop is
+    # set). Without this it decided a properly-executing pit stop was a
+    # stuck car after 4 s, yanked control into stabilize, and fought the
+    # pit-lane code for it every time _pit_docking tried to resume —
+    # verified live: strategy=PIT, track_pos sitting at the pit box's own
+    # offset (0.76, nowhere near the _EXTREME_TPOS=2.5 gate above), stuck
+    # alternating stabilize/pit for thousands of ticks.
+    if _dbg.get("mode") == "race" or _pit_docking or dist_from_start < 0.0:
         _stuck_progress_dist, _stuck_progress_frames = None, 0
     else:
         if (_stuck_progress_dist is None
@@ -1651,7 +2114,12 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # --- stuck / crash recovery (works on OR off track, takes priority) ---
     # "jammed" = crawling AND something is right in front, or we're pinned at the
     # edge.  The front/edge gate is what prevents a false reverse on a clear
-    # standing start or in the pit lane (slow, but open road ahead).
+    # standing start or in the pit lane (slow, but open road ahead). Also
+    # exempt _pit_docking outright (2026-08-09, see the no-progress watchdog
+    # comment above) — a car nose up to the pit box boundary or another
+    # parked car can read a short front distance while correctly stopped
+    # for service, which would otherwise misread as jammed and reverse out
+    # of the box mid-stop.
     front      = track[9] if len(track) > 9 else 200.0
     jam_signal = front < _STUCK_WALL or abs(tpos) > 0.9
     if _bursting:
@@ -1668,7 +2136,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
             return format_scr_control(accel=0.5, brake=0.0, gear=-1,
                                       steer=_recovery_steer(angle, tpos))
     else:
-        jammed_now = abs(speed) < _STUCK_SPEED and jam_signal
+        jammed_now = abs(speed) < _STUCK_SPEED and jam_signal and not _pit_docking
         if jammed_now:
             _stuck_frames += 1
         else:
@@ -2107,11 +2575,8 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # TCL: prevent rear-wheel spin on acceleration (snakeoil.py)
     accel = _apply_tcl(accel, speed, wheel_vels)
 
-    # PIT: once we've slowed to a crawl, ask TORCS for the pit stop
-    meta = 1 if (strategy == PIT and speed < 10.0) else 0
-
     return format_scr_control(accel=accel, brake=brake, gear=gear, steer=steer,
-                              clutch=clutch, meta=meta)
+                              clutch=clutch)
 
 
 # ---------------------------------------------------------------------------
@@ -2119,10 +2584,61 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
 # ---------------------------------------------------------------------------
 
 # Thresholds — centralised here so they're easy to tune without touching logic.
-_FUEL_PIT      = 5.0    # litres: force PIT regardless of Granite's choice
+_FUEL_PIT      = 10.0   # litres: force PIT regardless of Granite's choice
+                         # TEMP (pit-system testing, 2026-08-09): raised from
+                         # 5.0 so any fuel < 10 L schedules a pit stop
+                         # immediately instead of waiting until nearly empty.
 _FUEL_CAUTION  = 15.0   # litres: downgrade ATTACK → NORMAL (running low)
 _DMG_NO_ATTACK = 8000   # damage points: disallow ATTACK (car degraded)
 _DMG_DEFEND    = 9500   # damage points: force DEFEND even if Granite says NORMAL
+
+# TEMP (pit-system testing, 2026-08-09): fuel caution no longer downgrades
+# ATTACK → NORMAL. Combined with the proximity gate below, the car now
+# commits to ATTACK everywhere except right at the pit lane. Flip back to
+# True to restore the old "back off once fuel is merely low" behaviour.
+_FUEL_CAUTION_ENABLED = False
+
+# TEMP (pit-system testing, 2026-08-09): PIT is only committed to once this
+# close to pit_entry — compute_control's own pit-lane docking (see
+# _pit_control) only ever engages once the car has physically reached
+# pit_entry anyway, so forcing PIT strategy a lap early just made the car
+# crawl the whole lap at _PARAMS[PIT]'s 50 km/h cap for nothing. 150 m gives
+# the car room to brake down from ATTACK's ~330 km/h target before reaching
+# the pit-lane speed limit.
+_PIT_APPROACH_DIST = 150.0   # metres
+
+
+def _near_pit_lane(state: dict[str, Any]) -> bool:
+    """True once the car is within _PIT_APPROACH_DIST of crossing pit_entry,
+    OR already inside the pit lane (entry..exit).
+
+    2026-08-10 BUG FIX: the first version of this check computed "distance
+    remaining until pit_entry" as (pit_entry - dist_from_start) % track_len.
+    That reads near 0 while approaching, correctly gating PIT on — but the
+    INSTANT the car crosses pit_entry, dist_from_start passes pit_entry and
+    the same expression wraps all the way around to ~track_length (it starts
+    measuring distance to *next lap's* entry instead). Verified live: strategy
+    flipped PIT → NORMAL at the exact step the car crossed into the lane
+    (pit_s went from ~5779 to ~38 on a 5850 m lap, strategy dropped in the
+    same tick), which meant compute_control's docking dispatch (gated on
+    `strategy == PIT` at the moment `in_lane` first becomes true) never even
+    latched `_pit_docking` — the car sailed straight through. Reusing
+    _pit_spline_coord (the same wrapped coordinate compute_control's own
+    in_lane check uses) instead of a separate "distance to go" computation
+    makes this agree with compute_control by construction: once inside
+    [entry, exit] it's unconditionally "near" (s_now <= s_exit), and outside
+    that it's "near" only within the approach window.
+    """
+    pit_entry       = state.get("pit_entry", -1.0)
+    dist_from_start = state.get("dist_from_start", -1.0)
+    track_len       = state.get("track_length", -1.0)
+    if pit_entry < 0.0 or dist_from_start < 0.0 or track_len <= 0.0:
+        return False
+    s_now  = _pit_spline_coord(dist_from_start, pit_entry, track_len)
+    s_exit = _pit_spline_coord(state.get("pit_exit", pit_entry), pit_entry, track_len)
+    if s_now <= s_exit:
+        return True   # already inside the lane (entry..exit)
+    return (track_len - s_now) <= _PIT_APPROACH_DIST   # approaching from behind
 
 
 def _rear_gap(opponents: list[float]) -> float:
@@ -2159,9 +2675,32 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
     if strategy not in _GRANITE_STRATEGIES:
         return NORMAL
 
-    # Priority 2 — almost out of fuel → pit now, no argument
-    if fuel < _FUEL_PIT:
+    # Priority 2 — almost out of fuel → pit, but only once actually close
+    # enough to commit (_PIT_APPROACH_DIST) — see its comment above for why.
+    # Two independent fuel-critical triggers, OR'd — this only ever fires
+    # EARLIER than the old flat floor alone, never later (no regression):
+    #   (a) absolute floor, unchanged from before;
+    #   (b) bt's dynamic check (SimpleStrategy::needPitstop, strategy.cpp):
+    #       not enough fuel for a 1.5-lap margin AND not enough to finish
+    #       the race at the measured (or, before lap 1 completes,
+    #       track-length-estimated) burn rate.  cmpfuel/laps_left come from
+    #       the fuel-per-lap model updated once per tick in run_bot() —
+    #       0.0/-1 here means "no data yet", which disables (b) and leaves
+    #       (a) as the only guard, same as before this feature existed.
+    fuel_critical = fuel < _FUEL_PIT
+    if not fuel_critical:
+        cmpfuel   = state.get("fuel_per_lap", 0.0) or state.get("expected_fuel_per_lap", 0.0)
+        laps_left = state.get("laps_left", -1)
+        if cmpfuel > 0.0 and laps_left >= 0:
+            fuel_critical = fuel < 1.5 * cmpfuel and fuel < laps_left * cmpfuel
+    near_pit = _near_pit_lane(state)
+    if near_pit and (fuel_critical or strategy == PIT):
         return PIT
+    if strategy == PIT:
+        # Granite (or the fuel-critical check above) wants to pit, but the
+        # car isn't close enough yet — keep racing instead of crawling a
+        # lap early at _PARAMS[PIT]'s pace for no reason.
+        strategy = ATTACK
 
     # Priority 3 — car is critically damaged → protect what's left
     if damage >= _DMG_DEFEND:
@@ -2172,7 +2711,7 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
         return NORMAL
 
     # Priority 5 — fuel running low → conserve, don't attack
-    if fuel < _FUEL_CAUTION and strategy == ATTACK:
+    if _FUEL_CAUTION_ENABLED and fuel < _FUEL_CAUTION and strategy == ATTACK:
         return NORMAL
 
     # Priority 6 — a car is closing in fast from directly behind and we're
@@ -2245,19 +2784,28 @@ You are a race strategist for a TORCS simulation. \
 Given live sensor data, choose one driving strategy and explain in one sentence why.
 
 Respond with JSON only — no markdown, no extra text:
-{"strategy": "<one of ATTACK|NORMAL|DEFEND|SAVE_FUEL|PIT>", "reason": "<one sentence>"}
+{"strategy": "<one of ATTACK|NORMAL|DEFEND""" + ("|SAVE_FUEL" if _SAVE_FUEL_ENABLED else "") + """|PIT>", "reason": "<one sentence>"}
 
 Strategy guide (a separate safety system already downgrades ATTACK automatically
-when fuel or damage get risky, so you do not need to hedge — default to ATTACK
+when damage gets risky, so you do not need to hedge — default to ATTACK
 whenever nothing below rules it out):
-- ATTACK:    default choice — push hard whenever fuel is above ~15 L and damage
-             is below ~8000, even with other cars nearby; only avoid it when an
-             opponent is close directly behind you (use DEFEND instead)
+- ATTACK:    default choice — push hard regardless of fuel level (a separate
+             system takes over for the pit-lane approach automatically, you
+             don't need to save fuel by picking anything else) as long as
+             damage is below ~8000, even with other cars nearby; only avoid
+             it when an opponent is close directly behind you (use DEFEND
+             instead)
 - NORMAL:    only pick this if ATTACK does not clearly apply and nothing forces
-             DEFEND/SAVE_FUEL/PIT either
-- DEFEND:    cautious, use when damaged or opponent close behind
-- SAVE_FUEL: economical, use when fuel < 20 L and many laps remain
-- PIT:       slow down for pit stop, use when fuel < 5 L or damage critical"""
+             DEFEND""" + ("/SAVE_FUEL" if _SAVE_FUEL_ENABLED else "") + """/PIT either
+- DEFEND:    cautious, use when damaged or opponent close behind""" + ("""
+- SAVE_FUEL: economical, use when fuel_L is only a few laps_left worth of
+             fuel_per_lap_L (getting tight, but not yet PIT-critical) —
+             laps_left/fuel_per_lap_L of -1/0 means no data yet, ignore them""" if _SAVE_FUEL_ENABLED else "") + """
+- PIT:       fine to say once fuel < 10 L, but only takes effect once you're
+             already near the pit lane — a separate hard safety rule forces
+             it exactly when needed (both for low fuel and critical damage)
+             and holds ATTACK otherwise, so you do not need to worry about
+             getting the timing exactly right"""
 
 
 def _build_strategy_prompt(state: dict[str, Any]) -> str:
@@ -2276,6 +2824,9 @@ def _build_strategy_prompt(state: dict[str, Any]) -> str:
         "gear":              state.get("gear",            1),
         "race_pos":          state.get("race_pos",        1),
         "dist_raced_m":round(state.get("dist_raced",   0.0), 0),
+        "fuel_per_lap_L": round(
+            state.get("fuel_per_lap") or state.get("expected_fuel_per_lap", 0.0), 2),
+        "laps_left":   state.get("laps_left", -1),
         "track":       track_summary,
         "opponents":   opp_summary,
     }
@@ -2610,6 +3161,22 @@ def run_bot(
                           f"track loaded?  Map disabled, sensors only.")
                     set_track_model(None)
 
+                # --- fuel-per-lap model: feeds both Granite's SAVE_FUEL
+                # judgment and safety_filter's PIT rule the same numbers,
+                # computed once here so they can never disagree (see
+                # _update_fuel_model / bt's SimpleStrategy.update()).
+                _update_fuel_model(state)
+                track_len = state.get("track_length", -1.0)
+                state["fuel_per_lap"] = _fuel_per_lap_est
+                state["expected_fuel_per_lap"] = (
+                    track_len * _FUEL_PER_METER if track_len > 0.0 else 0.0
+                )
+                remaining = state.get("remaining_laps", -1)
+                state["laps_left"] = (
+                    max(remaining - state.get("laps_behind_leader", 0), 0)
+                    if remaining >= 0 else -1
+                )
+
                 # --- Step 7: Granite strategy update (non-blocking) ---
                 if strategist is not None:
                     raw_strategy, _reason = strategist.tick(state)
@@ -2697,6 +3264,16 @@ def run_bot(
                     print(
                         f"  step={step:6d}  {speed:6.1f} km/h  "
                         f"dist={_dbg.get('dist', -1.0):6.0f}  "
+                        f"ps={_dbg.get('pit_s', -1.0):6.1f}  "        # TEMP DEBUG
+                        f"ps0={_dbg.get('pit_s0', -1.0):6.1f}  "      # TEMP DEBUG
+                        f"ps1={_dbg.get('pit_s1', -1.0):6.1f}  "      # TEMP DEBUG
+                        f"pside={_dbg.get('pit_side', -1)}  "         # TEMP DEBUG
+                        f"pinps={_dbg.get('pit_inps', 0)}  "          # TEMP DEBUG
+                        f"pinlane={_dbg.get('pit_inlane', 0)}  "      # TEMP DEBUG
+                        f"ptgt={_dbg.get('pit_target_tpos', 0.0):+.2f}  "   # TEMP DEBUG
+                        f"perr={_dbg.get('pit_tpos_err', 0.0):+.2f}  "      # TEMP DEBUG
+                        f"palign={_dbg.get('pit_aligned', -1)}  "          # TEMP DEBUG
+                        f"pspdok={_dbg.get('pit_speed_ok', -1)}  "         # TEMP DEBUG
                         f"gear={gear}  fuel={fuel:.1f} L  tpos={tpos:+.2f}  "
                         f"angle={_dbg.get('angle', 0.0):+.3f}  "
                         f"steer={_dbg.get('cmd_steer', 0.0):+.3f}  "
@@ -2756,6 +3333,9 @@ def _run_tests() -> None:
         f"(z 0.33)(focus {focus_})(x 241.0)(y 88.0)"
         f"(roll 0.0)(pitch 0.01)(yaw 1.57)"
         f"(speedGlobalX 120.1)(speedGlobalY 88.3)"
+        f"(pitEntry 50.0)(pitStart 100.0)(pitEnd 150.0)(pitExit 200.0)"
+        f"(pitSpeedLimit 60.0)(pitSide 1)(pitBoxOffset -19.0)(inPitStop 0)"
+        f"(trackLength 2000.0)(remainingLaps 2)(lapsBehindLeader 0)(segWidth 11.0)"
     )
 
     # ---- parse_scr_state ------------------------------------------------
@@ -2771,6 +3351,18 @@ def _run_tests() -> None:
     assert len(state["focus"]) == 5,                f"FAIL: focus length={len(state['focus'])}"
     assert state["opponents"][0] == 200.0,          f"FAIL: opponents[0]={state['opponents'][0]}"
     assert state["focus"][0] == -1.0,               f"FAIL: focus[0]={state['focus'][0]}"
+    assert state["pit_entry"] == 50.0,              f"FAIL: pit_entry={state['pit_entry']}"
+    assert state["pit_start"] == 100.0,             f"FAIL: pit_start={state['pit_start']}"
+    assert state["pit_end"] == 150.0,               f"FAIL: pit_end={state['pit_end']}"
+    assert state["pit_exit"] == 200.0,              f"FAIL: pit_exit={state['pit_exit']}"
+    assert state["pit_speed_limit"] == 60.0,        f"FAIL: pit_speed_limit={state['pit_speed_limit']}"
+    assert state["pit_side"] == 1,                  f"FAIL: pit_side={state['pit_side']}"
+    assert state["pit_box_offset"] == -19.0,        f"FAIL: pit_box_offset={state['pit_box_offset']}"
+    assert state["in_pit_stop"] == 0,               f"FAIL: in_pit_stop={state['in_pit_stop']}"
+    assert state["track_length"] == 2000.0,         f"FAIL: track_length={state['track_length']}"
+    assert state["remaining_laps"] == 2,            f"FAIL: remaining_laps={state['remaining_laps']}"
+    assert state["laps_behind_leader"] == 0,        f"FAIL: laps_behind_leader={state['laps_behind_leader']}"
+    assert state["seg_width"] == 11.0,              f"FAIL: seg_width={state['seg_width']}"
     print("parse_scr_state  ... OK")
 
     assert parse_scr_state("") is None,             "FAIL: empty string should return None"
@@ -2787,6 +3379,18 @@ def _run_tests() -> None:
     assert ps is not None,               "FAIL: partial packet returned None"
     assert len(ps["opponents"]) == 36,   "FAIL: short opponents not padded to 36"
     assert ps["opponents"][35] == 200.0, "FAIL: padding value wrong"
+    # A packet from a scr_server build predating the pit-lane fields (or this
+    # `partial` packet, which simply omits them) must default to "no pit
+    # lane data" (-1), never a value that could be mistaken for a real
+    # distance-from-start of 0.
+    assert ps["pit_entry"] == -1.0,      f"FAIL: missing pit_entry should default to -1: {ps['pit_entry']}"
+    assert ps["in_pit_stop"] == 0,       f"FAIL: missing in_pit_stop should default to 0: {ps['in_pit_stop']}"
+    assert ps["remaining_laps"] == -1,   \
+        f"FAIL: missing remaining_laps should default to -1, not 0 (0 would misread as 'no laps left'): {ps['remaining_laps']}"
+    assert ps["pit_side"] == -1,         \
+        f"FAIL: missing pit_side should default to -1, not a value that collides with TR_RGT(1)/TR_LFT(2): {ps['pit_side']}"
+    assert ps["seg_width"] == -1.0,      \
+        f"FAIL: missing seg_width should default to -1, not 0 (0 would divide-by-zero in the pit box conversion): {ps['seg_width']}"
     print("parse_scr_state  (edge cases) ... OK")
 
     # ---- format_scr_control --------------------------------------------
@@ -2798,6 +3402,7 @@ def _run_tests() -> None:
     assert "(clutch 0.000)" in ctrl
     assert "(focus 0)"     in ctrl
     assert "(meta 0)"      in ctrl
+    assert "(pitRequest 0)" in ctrl
     print(f"format_scr_control ... OK  →  {ctrl}")
 
     over = format_scr_control(accel=2.0, brake=-1.0, steer=5.0, focus=200)
@@ -2806,6 +3411,10 @@ def _run_tests() -> None:
     assert "(steer 1.000)" in over
     assert "(focus 90)"    in over
     print("format_scr_control (clamping) ... OK")
+
+    pit_ctrl = format_scr_control(accel=0.0, brake=1.0, pit_request=True)
+    assert "(pitRequest 1)" in pit_ctrl, f"FAIL: pit_request=True should emit pitRequest 1: {pit_ctrl}"
+    print("format_scr_control (pit_request) ... OK")
 
     # ---- _simple_autopilot --------------------------------------------
     track_vals = [150.0] * 9 + [180.0] + [150.0] * 9
@@ -3004,6 +3613,28 @@ def _run_tests() -> None:
     print(f"compute_control flung off-track → stabilize (regression) ... OK  →  {cc_flung}")
     _reset_driver_state()
 
+    # 2026-08-09: stabilize's own no-progress watchdog. Simulate genuinely
+    # wedged: extreme excursion triggers stabilize, then the car sits dead
+    # stopped, badly wrong-way, with distFromStart frozen (not just slow
+    # progress — literally unchanged tick to tick, the live symptom) for
+    # longer than _NO_PROGRESS_FRAMES. Must hand off to the three-point-turn
+    # escape (_turnaround) instead of repeating the same reverse forever.
+    _reset_driver_state()
+    compute_control({**cs, "track_pos": 3.0, "speed_x": 50.0, "angle": 0.2,
+                      "dist_from_start": 4795.0}, ATTACK)
+    cs_wedged = {**cs, "track_pos": 1.09, "speed_x": 0.0, "angle": 2.37,
+                 "dist_from_start": 4795.0}
+    cc_wedge = ""
+    for _ in range(_NO_PROGRESS_FRAMES + 10):
+        cc_wedge = compute_control(cs_wedged, ATTACK)
+        if _dbg.get("mode") != "stabilize":
+            break   # escaped the latch — no need to keep ticking
+    assert _dbg.get("mode") != "stabilize", \
+        f"FAIL: wedged stabilize should have handed off by now, still stuck in: {_dbg.get('mode')}"
+    assert _turnaround, "FAIL: handoff must set _turnaround so the next ticks alternate legs"
+    print(f"compute_control stabilize wedged → turnaround handoff (regression) ... OK  →  {cc_wedge}")
+    _reset_driver_state()
+
     # off-track + slow + facing forward → forward crawl in 1st, shallow-angle steer
     _reset_driver_state()
     cs_crawl = {**cs, "track_pos": 1.5, "speed_x": 2.0, "angle": 0.0}
@@ -3153,11 +3784,177 @@ def _run_tests() -> None:
     _reset_driver_state()
     print("compute_control track-hold throttle cut (bt-inspired) ... OK")
 
-    # PIT + speed < 10 → meta=1
+    # PIT strategy on a track with no pit-lane data (synthetic `cs` has none)
+    # must never touch `meta` — meta=1 means RACE RESTART to scr_server
+    # (CarControl::META_RESTART), not "pit please". The old code reused meta
+    # as a fake pit signal and would have restarted the race the moment PIT
+    # strategy slowed the car below 10 km/h; this is the regression test.
+    _reset_driver_state()
     cs_pit = {**cs, "speed_x": 5.0, "rpm": 800.0, "gear": 1}
     cc_pit = compute_control(cs_pit, PIT)
-    assert "(meta 1)" in cc_pit, f"FAIL PIT meta: {cc_pit}"
-    print(f"compute_control PIT       ... OK  →  {cc_pit}")
+    assert "(meta 1)" not in cc_pit, f"FAIL: PIT must never send meta=1 (race restart): {cc_pit}"
+    print(f"compute_control PIT (no pit-lane data) ... OK  →  {cc_pit}")
+
+    # ---- pit lane docking (bt parity — see pit.cpp) ----------------------
+    _reset_driver_state()
+    # Realistic scale (forza): 11 m base track, pit box ~19 m off centreline
+    # -> target track_pos ~3.45, several widths past the normal +-1 range.
+    # NOT a bug (see the 2026-08-09 comment on pit_box_offset in
+    # _pit_control) -- the tests below are written against that real target.
+    _TEST_PIT_TARGET = -19.0 / (11.0 / 2.0)
+    # dist_from_start=125 -> s_now=75, safely inside (s_start=50, s_end=100)
+    # away from either boundary.
+    pit_cs = {
+        **cs, "track_pos": 0.0, "angle": 0.0, "speed_x": 60.0,
+        "dist_from_start": 125.0, "track_length": 2000.0,
+        "pit_entry": 50.0, "pit_start": 100.0, "pit_end": 150.0,
+        "pit_exit": 200.0, "pit_speed_limit": 60.0, "pit_side": 1,
+        "pit_box_offset": -19.0, "seg_width": 11.0, "in_pit_stop": 0,
+    }
+
+    # 2026-08-10 (bt parity, pit.cpp Pit::setPitstop): docking can now only
+    # be newly ARMED while the car is outside the raw [pit_entry, pit_exit]
+    # range (see compute_control's `in_pit_range` gate) -- pit_cs's
+    # dist_from_start=125 (s_now=75) sits inside that range, so tests that
+    # want to exercise the stop zone need to arm the latch first via one
+    # call from the lead-in, exactly like a real approach would. dist=1950
+    # on this 2000 m track is 100 m before pit_entry (wraps through 0),
+    # comfortably inside the 150 m lead-in window.
+    def _arm_pit_docking():
+        compute_control({**pit_cs, "dist_from_start": 1950.0, "speed_x": 90.0}, PIT)
+
+    _reset_driver_state()
+    _arm_pit_docking()
+    cc_dock = compute_control(pit_cs, PIT)
+    assert "(pitRequest 1)" in cc_dock, f"FAIL: docking must assert pitRequest: {cc_dock}"
+    assert "(brake 0.000)" not in cc_dock, \
+        f"FAIL: must brake toward a stop inside the box: {cc_dock}"
+    print(f"compute_control pit docking (braking)  ... OK  →  {cc_dock}")
+
+    # 2026-08-09: must already be braking toward creep speed DURING the
+    # approach (pit_entry..pit_start), not just once inside the stop zone —
+    # verified live: waiting until the stop zone left too little of it to
+    # both bleed off speed AND swing tpos onto a target several
+    # track-widths away, so the car blew straight through never converging.
+    # dist_from_start=75 -> s_now=25, mid-way through the [0, s_start=50]
+    # approach; at 90 km/h (well above the pit limit) it must already be
+    # braking here, before ever reaching the stop zone. This is itself
+    # inside the lead-in window relative to entry, so no separate arming
+    # call is needed -- strategy==PIT arms it directly on this call.
+    _reset_driver_state()
+    cs_approach = {**pit_cs, "dist_from_start": 75.0, "speed_x": 90.0}
+    cc_approach = compute_control(cs_approach, PIT)
+    assert "(brake 0.000)" not in cc_approach, \
+        f"FAIL: must already be bleeding speed during the approach, not just inside the stop zone: {cc_approach}"
+    print(f"compute_control pit approach deceleration starts before the stop zone (regression) ... OK  →  {cc_approach}")
+    _reset_driver_state()
+
+    # Same distFromStart range, but strategy is NOT PIT: on most tracks the
+    # pit lane runs alongside part of the main straight, so a normally
+    # racing car passes through this same range every lap — must not dock.
+    _reset_driver_state()
+    cc_pass = compute_control({**pit_cs, "speed_x": 200.0}, NORMAL)
+    assert "(pitRequest 1)" not in cc_pass, \
+        f"FAIL: must not dock without PIT strategy: {cc_pass}"
+    print("compute_control pit lane pass-through (no dock without PIT) ... OK")
+
+    # 2026-08-10: strategy IS PIT, but the car is a fresh (unlatched) car
+    # already sitting inside the raw pit-lane range with no prior lead-in --
+    # e.g. a standing start whose grid position happens to read as already
+    # past pit_start. Verified live: the old code armed docking from in-lane
+    # presence alone and latched target_speed=0 before the car ever moved.
+    # Must NOT dock here; only a genuine approach (via the lead-in) or an
+    # already-latched visit may.
+    _reset_driver_state()
+    cc_stuck_start = compute_control(pit_cs, PIT)
+    assert "(pitRequest 1)" not in cc_stuck_start, \
+        f"FAIL: must not spuriously arm docking from a fresh car already inside the pit range: {cc_stuck_start}"
+    assert _dbg.get("mode") != "pit", \
+        f"FAIL: must not spuriously arm docking from a fresh car already inside the pit range: mode={_dbg.get('mode')}"
+    print(f"compute_control pit no spurious arm from inside the range (regression) ... OK  →  {cc_stuck_start}")
+    _reset_driver_state()
+
+    # Once the engine reports inPitStop=1 (the stop was actually captured and
+    # serviced), stop asking and resume toward pit_exit instead of
+    # re-braking to a stop that is already done.
+    _reset_driver_state()
+    _arm_pit_docking()
+    cc_arrive = compute_control({**pit_cs, "speed_x": 0.0, "in_pit_stop": 0}, PIT)
+    assert "(pitRequest 1)" in cc_arrive, f"FAIL: must request pit stop on arrival: {cc_arrive}"
+    cc_serviced = compute_control({**pit_cs, "speed_x": 0.0, "in_pit_stop": 1}, PIT)
+    assert "(pitRequest 0)" in cc_serviced, \
+        f"FAIL: must release pitRequest once serviced: {cc_serviced}"
+    print(f"compute_control pit release after service ... OK  →  {cc_serviced}")
+    _reset_driver_state()
+
+    # 2026-08-10 (bt parity, driver.cpp filterBPit "Stop in the pit"): the
+    # stop-zone target is unconditionally 0 now regardless of lateral/heading
+    # alignment — bt never held a creep-speed floor here, it just
+    # brake-distance-computed toward a full stop. A car above 0 target must
+    # be braking whether or not it's aligned yet; the old version of this
+    # test asserted the opposite (creep while misaligned), which is exactly
+    # the behaviour that let a misaligned car cruise the whole stop zone at
+    # 8 km/h and sail through without ever tripping the engine's own <1 m/s
+    # capture gate — see _PIT_CREEP_KMH's comment above.
+    _reset_driver_state()
+    _arm_pit_docking()
+    cs_misaligned = {**pit_cs, "speed_x": 4.0, "track_pos": _TEST_PIT_TARGET, "angle": 0.5}
+    cc_misaligned = compute_control(cs_misaligned, PIT)
+    assert "(accel 0.000)" in cc_misaligned, \
+        f"FAIL: misaligned car above the stop target should still be braking, not creeping: {cc_misaligned}"
+    print(f"compute_control pit hard stop while misaligned (regression) ... OK  →  {cc_misaligned}")
+    _reset_driver_state()
+
+    # Aligned case: same expectation — confirms alignment no longer changes
+    # the speed target at all, only feeds the pit_aligned debug field.
+    _reset_driver_state()
+    _arm_pit_docking()
+    cs_aligned = {**pit_cs, "speed_x": 4.0, "track_pos": _TEST_PIT_TARGET, "angle": 0.0}
+    cc_aligned = compute_control(cs_aligned, PIT)
+    assert "(accel 0.000)" in cc_aligned, \
+        f"FAIL: aligned car above the true stop target should be braking, not accelerating: {cc_aligned}"
+    print(f"compute_control pit genuine stop once aligned (regression) ... OK  →  {cc_aligned}")
+    _reset_driver_state()
+
+    # 2026-08-09: a car correctly stopped dead in the pit box (waiting on
+    # inPitStop) must NOT be mistaken for a stuck/crashed car — verified
+    # live: the no-progress watchdog and stuck-jam burst check both fired
+    # after a few seconds of a legitimate pit stop, yanking control into
+    # stabilize/burst and fighting the pit-lane code for it indefinitely.
+    # Hold at dead stop in the box for well past _NO_PROGRESS_FRAMES.
+    _reset_driver_state()
+    _arm_pit_docking()
+    cs_dock_wait = {**pit_cs, "speed_x": 0.0, "track_pos": _TEST_PIT_TARGET, "in_pit_stop": 0}
+    cc_dock_wait = ""
+    for _ in range(_NO_PROGRESS_FRAMES + 50):
+        cc_dock_wait = compute_control(cs_dock_wait, PIT)
+    assert "(pitRequest 1)" in cc_dock_wait, \
+        f"FAIL: must keep requesting service the whole time it waits: {cc_dock_wait}"
+    assert _dbg.get("mode") == "pit", \
+        f"FAIL: no-progress watchdog must not hijack a car correctly stopped in the pit box: {_dbg.get('mode')}"
+    print(f"compute_control pit-docking immune to no-progress watchdog (regression) ... OK  →  {cc_dock_wait}")
+    _reset_driver_state()
+
+    # _pit_target_tpos: ease in / hold / ease out shape sanity. s_lead=0.0
+    # here reproduces the pre-2026-08-10 behaviour exactly (ease starting
+    # right at pit_entry, no pre-entry lead-in).
+    assert _pit_target_tpos(0.0, 0.0, 50.0, 100.0, 150.0, -0.6) == 0.0
+    assert abs(_pit_target_tpos(25.0, 0.0, 50.0, 100.0, 150.0, -0.6) - (-0.3)) < 1e-9
+    assert _pit_target_tpos(75.0, 0.0, 50.0, 100.0, 150.0, -0.6) == -0.6
+    assert abs(_pit_target_tpos(125.0, 0.0, 50.0, 100.0, 150.0, -0.6) - (-0.3)) < 1e-9
+    assert abs(_pit_target_tpos(150.0, 0.0, 50.0, 100.0, 150.0, -0.6)) < 1e-9
+    print("_pit_target_tpos shape ... OK")
+
+    # 2026-08-10: with a negative s_lead (pre-entry lead-in), the ease must
+    # already be under way before s_now reaches 0 (pit_entry) -- this is the
+    # whole point of the fix (more distance to converge onto the box offset
+    # than [pit_entry, pit_start] alone provides).
+    assert _pit_target_tpos(-150.0, -150.0, 50.0, 100.0, 150.0, -0.6) == 0.0, \
+        "FAIL: at the start of the lead-in, target should still be the racing line"
+    half = _pit_target_tpos(-100.0, -150.0, 50.0, 100.0, 150.0, -0.6)
+    assert -0.6 < half < 0.0, \
+        f"FAIL: partway through the lead-in, target should already be easing off the racing line: {half}"
+    print("_pit_target_tpos lead-in (regression) ... OK")
 
     # ---- P1: pre-race map lookahead --------------------------------------
     if _TRACK_MODEL_AVAILABLE:
@@ -3673,11 +4470,36 @@ def _run_tests() -> None:
     assert safety_filter("",          base) == NORMAL, "FAIL: empty → NORMAL"
     print("safety_filter unknown/None   ... OK")
 
-    # fuel < 5 → PIT (beats any strategy including ATTACK)
+    # fuel < 5 → PIT (beats any strategy including ATTACK) — the absolute
+    # floor, unchanged from before the bt-style dynamic check existed.
     low_fuel = {**base, "fuel": 3.0}
     assert safety_filter(ATTACK, low_fuel) == PIT, "FAIL: low fuel + ATTACK → PIT"
     assert safety_filter(NORMAL, low_fuel) == PIT, "FAIL: low fuel + NORMAL → PIT"
     print("safety_filter low fuel → PIT ... OK")
+
+    # bt-style dynamic trigger (strategy.cpp: needPitstop) fires EARLIER than
+    # the flat floor: 8 L is well above _FUEL_PIT=5, but at 6 L/lap with 2
+    # laps left, both of bt's conditions hold — 8 < 1.5*6=9 (1.5-lap margin)
+    # and 8 < 2*6=12 (won't finish the race) — so it must PIT anyway.
+    dyn_fuel = {**base, "fuel": 8.0, "fuel_per_lap": 6.0, "laps_left": 2}
+    assert safety_filter(ATTACK, dyn_fuel) == PIT, \
+        f"FAIL: dynamic fuel check should PIT before the flat floor: {safety_filter(ATTACK, dyn_fuel)}"
+    print("safety_filter dynamic fuel (bt-style) → PIT ... OK")
+
+    # Comfortably more than a 1.5-lap margin (20 L at 6 L/lap, 5 laps left)
+    # → neither of bt's conditions holds → must NOT pit.
+    dyn_fuel_ok = {**base, "fuel": 20.0, "fuel_per_lap": 6.0, "laps_left": 5}
+    assert safety_filter(ATTACK, dyn_fuel_ok) == ATTACK, \
+        f"FAIL: enough fuel for the remaining laps must not PIT: {safety_filter(ATTACK, dyn_fuel_ok)}"
+    print("safety_filter dynamic fuel — enough for the race ... OK")
+
+    # No fuel_per_lap/laps_left data yet (defaults) → dynamic check disabled,
+    # falls back to the flat floor only — same as before this feature existed.
+    # fuel=30 (above _FUEL_CAUTION=15 too) isolates this from the unrelated
+    # Priority 5 low-fuel-ATTACK-downgrade rule.
+    assert safety_filter(ATTACK, {**base, "fuel": 30.0}) == ATTACK, \
+        "FAIL: no lap-fuel data should not force PIT above the flat floor"
+    print("safety_filter dynamic fuel — no data falls back to flat floor ... OK")
 
     # damage >= 9500 → DEFEND
     critical_dmg = {**base, "damage": 9600.0}
@@ -3794,6 +4616,7 @@ def _run_tests() -> None:
         "speed_x": 120.0, "fuel": 18.0, "damage": 500.0,
         "track_pos": 0.1, "gear": 4, "race_pos": 3,
         "dist_raced": 1200.0,
+        "fuel_per_lap": 4.5, "laps_left": 3,
         "track":     [200.0] * 19,
         "opponents": [200.0] * 36,
     }
@@ -3802,7 +4625,34 @@ def _run_tests() -> None:
     assert "120.0"  in prompt,     "FAIL: prompt missing speed"
     assert "18.0"   in prompt,     "FAIL: prompt missing fuel"
     assert "strategy" in prompt,   "FAIL: prompt missing JSON schema hint"
-    print("_build_strategy_prompt          ... OK  (prompt contains speed/fuel/strategy)")
+    assert "fuel_per_lap_L" in prompt, "FAIL: prompt missing fuel_per_lap_L"
+    assert "4.5"    in prompt,     "FAIL: prompt missing fuel_per_lap_L value"
+    assert "laps_left" in prompt,  "FAIL: prompt missing laps_left"
+    print("_build_strategy_prompt          ... OK  (prompt contains speed/fuel/strategy/fuel_per_lap/laps_left)")
+
+    # ---- _update_fuel_model (bt-style measured fuel-per-lap) --------------
+    _reset_driver_state()
+    tick1 = {"fuel": 50.0, "last_lap_time": 0.0}
+    _update_fuel_model(tick1)
+    assert _fuel_per_lap_est == 0.0, \
+        f"FAIL: no lap completed yet, estimate should stay 0: {_fuel_per_lap_est}"
+    # Same lap (last_lap_time unchanged) — must not update.
+    tick2 = {"fuel": 45.0, "last_lap_time": 0.0}
+    _update_fuel_model(tick2)
+    assert _fuel_per_lap_est == 0.0, \
+        f"FAIL: last_lap_time unchanged should not update the estimate: {_fuel_per_lap_est}"
+    # Lap boundary crossed (last_lap_time changes) — burned 50-42=8 L over it.
+    tick3 = {"fuel": 42.0, "last_lap_time": 91.5}
+    _update_fuel_model(tick3)
+    assert abs(_fuel_per_lap_est - 8.0) < 1e-9, \
+        f"FAIL: fuel_per_lap_est should be 50-42=8.0: {_fuel_per_lap_est}"
+    # Second lap boundary — burned 42-35=7 L, estimate updates again.
+    tick4 = {"fuel": 35.0, "last_lap_time": 88.0}
+    _update_fuel_model(tick4)
+    assert abs(_fuel_per_lap_est - 7.0) < 1e-9, \
+        f"FAIL: fuel_per_lap_est should update to 42-35=7.0: {_fuel_per_lap_est}"
+    _reset_driver_state()
+    print("_update_fuel_model (bt-style measured fuel-per-lap) ... OK")
 
     print("\nAll tests passed.")
 
