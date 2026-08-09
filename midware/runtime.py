@@ -40,7 +40,7 @@ if str(MIDWARE_DIR) not in sys.path:
 import config
 from telemetry_common import extract_json_object
 from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
-from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
+from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -113,6 +113,15 @@ tts_config: dict[str, Any] = {
 ctx_cfg   = ContextConfig()
 ctx_mgr   = ContextManager(ctx_cfg)
 engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
+
+# -- Engineer answer style ("professional" default, or "concise") -- in-memory
+# only, resets to "professional" on process restart. Switched via
+# POST /api/engineer/style, which also swaps engineer_ctx_mgr's persona and
+# clears history (old-style answers left in history could otherwise pull the
+# model back toward the old style via few-shot imitation of its own past
+# turns, even after the system prompt changes).
+_ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSONA_CONCISE}
+_engineer_style = "professional"
 
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
@@ -1307,11 +1316,17 @@ async def ask_engineer(body: dict):
             task="engineer",
             priority=MODEL_PRIORITIES["engineer"],
             temperature=0.4,
-            # Tight cap by default -- the persona now asks for a bare
-            # "Yes"/"No" or a short call, which needs almost no tokens.
-            # Only widen it when the driver actually asked for reasoning,
-            # so that path still has room to explain itself.
-            max_tokens=60 if _EXPLAIN_REQUEST_RE.search(question) else 12,
+            # Token budget depends on the current answer style: "concise"
+            # only ever needs a bare one-line answer per part asked, so it
+            # stays tight regardless of question type. "professional" scales
+            # up to 3-4 sentences with numbers/reasoning, so it needs a much
+            # larger budget -- widened further when the driver explicitly
+            # asked for reasoning, so that path still has room to explain
+            # itself instead of getting cut off mid-sentence.
+            max_tokens=(
+                40 if _engineer_style == "concise"
+                else (260 if _EXPLAIN_REQUEST_RE.search(question) else 200)
+            ),
             stream=False,
             # 45s was too tight for this local model with the full
             # telemetry-context prompt, especially while TORCS is also
@@ -1347,6 +1362,7 @@ async def get_engineer_history():
             for message in engineer_ctx_mgr.history
         ],
         "stats": engineer_ctx_mgr.stats(),
+        "style": _engineer_style,
     }
 
 
@@ -1354,6 +1370,21 @@ async def get_engineer_history():
 async def clear_engineer_history():
     engineer_ctx_mgr.clear_history()
     return {"ok": True, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.post("/api/engineer/style")
+async def set_engineer_style(body: dict):
+    global _engineer_style
+    style = str(body.get("style") or "").strip().lower()
+    if style not in _ENGINEER_STYLES:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown style {style!r}, expected one of {sorted(_ENGINEER_STYLES)}"},
+            status_code=400,
+        )
+    _engineer_style = style
+    engineer_ctx_mgr.config.commentator_persona = _ENGINEER_STYLES[style]
+    engineer_ctx_mgr.clear_history()
+    return {"ok": True, "style": _engineer_style, "stats": engineer_ctx_mgr.stats()}
 
 
 @app.get("/api/engineer/voice/available")
