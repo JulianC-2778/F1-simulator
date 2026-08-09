@@ -170,16 +170,39 @@ def format_car_state(car_state: dict) -> str:
         problem_text = "None -- car is on track and under control."
     else:
         problem_text = ", ".join(problems)
-    return (
-        f"Speed: {_safe_number(car_state.get('speed')):.0f} km/h\n"
-        f"RPM: {_safe_number(car_state.get('rpm')):.0f}\n"
-        f"Gear: {car_state.get('gear', 0)}\n"
-        f"Track position: {_safe_number(car_state.get('track_pos')):.2f} (0 = center line, closer to +/-1 = closer to the track edge)\n"
-        f"Damage: {_safe_number(car_state.get('damage')):.0f}\n"
-        f"Fuel remaining: {_safe_number(car_state.get('fuel')):.1f} L\n"
-        f"Current lap time: {_safe_number(car_state.get('lap_time')):.1f} s\n"
-        f"Detected issues: {problem_text}"
-    )
+    lines = [
+        f"Speed: {_safe_number(car_state.get('speed')):.0f} km/h",
+        f"RPM: {_safe_number(car_state.get('rpm')):.0f}",
+        f"Gear: {car_state.get('gear', 0)}",
+        f"Track position: {_safe_number(car_state.get('track_pos')):.2f} (0 = center line, closer to +/-1 = closer to the track edge)",
+        f"Damage: {_safe_number(car_state.get('damage')):.0f}",
+        f"Fuel remaining: {_safe_number(car_state.get('fuel')):.1f} L",
+        f"Current lap time: {_safe_number(car_state.get('lap_time')):.1f} s",
+        f"Detected issues: {problem_text}",
+    ]
+
+    # tire_wear_pct / pit_window are optional -- only present when
+    # runtime.py's ask_engineer has run them through tire_strategy.py's
+    # RaceStrategyTracker first. TORCS itself never reports tire wear (see
+    # tire_strategy.py's module docstring), so this is an estimate, and is
+    # labelled as one so the model doesn't present it as a measured value.
+    if "tire_wear_pct" in car_state:
+        lines.append(
+            f"Estimated tire wear: {_safe_number(car_state.get('tire_wear_pct')):.0f}% "
+            "(0 = fresh, 100 = worn out; heuristic estimate, TORCS does not report this directly)"
+        )
+    if "pit_window" in car_state:
+        pit = car_state["pit_window"]
+        laps_left = pit.get("laps_of_fuel_left")
+        laps_left_text = "unknown" if laps_left is None else f"{laps_left:.1f}"
+        reasons_text = ", ".join(pit.get("reasons") or []) or "none"
+        lines.append(
+            f"Pit window analysis: recommend pit = {'yes' if pit.get('recommend_pit') else 'no'}, "
+            f"urgency = {pit.get('urgency', 'low')}, reasons = {reasons_text}, "
+            f"estimated laps of fuel left = {laps_left_text}"
+        )
+
+    return "\n".join(lines)
 
 
 @dataclass
