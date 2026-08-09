@@ -10,7 +10,7 @@ for a real-time racing use case.
 
 import unittest
 
-from midware.runtime import _EXPLAIN_REQUEST_RE, _first_sentence
+from midware.runtime import _EXPLAIN_REQUEST_RE, _first_sentence, _unavailable_data_topic
 
 
 class FirstSentenceTests(unittest.TestCase):
@@ -61,6 +61,40 @@ class ExplainRequestDetectionTests(unittest.TestCase):
         # Guards against the regex silently degrading to a substring match
         # (e.g. "reason" inside "reasoning") if it's ever edited carelessly.
         self.assertIsNone(_EXPLAIN_REQUEST_RE.search("Please describe your reasoning here"))
+
+
+class UnavailableDataTopicDetectionTests(unittest.TestCase):
+    def test_tire_pressure_question_is_flagged(self):
+        self.assertEqual(_unavailable_data_topic("what's my tire pressure?"), "tire pressure")
+
+    def test_british_spelling_tyre_pressure_is_also_flagged(self):
+        self.assertEqual(_unavailable_data_topic("what's my tyre pressure?"), "tire pressure")
+
+    def test_weather_question_is_flagged(self):
+        self.assertEqual(_unavailable_data_topic("is it raining out there?"), "weather or track temperature")
+
+    def test_sector_time_question_is_flagged(self):
+        self.assertEqual(_unavailable_data_topic("how was my sector 2?"), "sector times")
+
+    def test_drs_question_is_flagged(self):
+        self.assertEqual(_unavailable_data_topic("should I use DRS now?"), "DRS/ERS/KERS systems")
+
+    def test_laps_remaining_question_is_flagged(self):
+        self.assertEqual(_unavailable_data_topic("how many laps are left?"), "total race laps remaining")
+
+    def test_match_is_case_insensitive(self):
+        self.assertIsNotNone(_unavailable_data_topic("WHAT'S MY TIRE PRESSURE?"))
+
+    def test_tire_wear_question_is_not_flagged(self):
+        # Real, answerable data (tire_wear_pct is computed by tire_strategy.py)
+        # -- must not collide with the "tire pressure"/"tire temperature" patterns.
+        self.assertIsNone(_unavailable_data_topic("how's my tire wear?"))
+
+    def test_plain_pit_strategy_question_is_not_flagged(self):
+        self.assertIsNone(_unavailable_data_topic("should I pit now?"))
+
+    def test_fuel_question_is_not_flagged(self):
+        self.assertIsNone(_unavailable_data_topic("how much fuel do I have left?"))
 
 
 if __name__ == "__main__":
