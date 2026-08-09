@@ -43,6 +43,7 @@ from telemetry_common import extract_json_object
 from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
 from tire_strategy import RaceStrategyTracker, estimate_pit_window
+from engineer_events import IncidentTracker
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -125,6 +126,7 @@ engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PER
 _ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSONA_CONCISE}
 _engineer_style = "professional"
 engineer_strategy_tracker = RaceStrategyTracker()
+engineer_incident_tracker = IncidentTracker()
 
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
@@ -1318,6 +1320,15 @@ async def ask_engineer(body: dict):
     car_state["pit_window"] = estimate_pit_window(
         car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap
     )
+
+    # engineer_events.py: car_state is only ever "this instant" (see
+    # car_state_source.py), so without this a driver asking "what just
+    # happened to me?" a few seconds after an incident gets nothing --
+    # by the time the question arrives the car may look normal again.
+    engineer_incident_tracker.update(car_state)
+    recent_incidents = engineer_incident_tracker.recent_events
+    if recent_incidents:
+        car_state["recent_incidents"] = recent_incidents
 
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()

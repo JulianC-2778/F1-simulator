@@ -202,6 +202,16 @@ def format_car_state(car_state: dict) -> str:
             f"estimated laps of fuel left = {laps_left_text}"
         )
 
+    # recent_incidents is optional -- only present when runtime.py's
+    # ask_engineer has run car_state through engineer_events.py's
+    # IncidentTracker and it found at least one incident this session.
+    if car_state.get("recent_incidents"):
+        incidents_text = "; ".join(
+            f"{incident.get('detail', '')} ({_safe_number(incident.get('seconds_ago')):.0f}s ago)"
+            for incident in car_state["recent_incidents"]
+        )
+        lines.append(f"Recent incidents this session: {incidents_text}")
+
     return "\n".join(lines)
 
 
