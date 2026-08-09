@@ -1198,9 +1198,30 @@ _BRAKE_STEER_CUT = 0.6
 _STUCK_SPEED    = 5.0     # km/h: below this we *might* be stuck
 _STUCK_WALL     = 8.0     # m: front sensor below this = something right in front
 _STUCK_FRAMES   = 60      # consecutive jammed frames before we decide we're stuck
-_REVERSE_FRAMES = 40      # how long to hold reverse once triggered
 _stuck_frames   = 0       # module state: consecutive jammed frames seen
-_reverse_frames = 0       # module state: reverse-burst frames remaining
+
+# 2026-08-09: bt-style continuous re-check, replacing the old fixed
+# _REVERSE_FRAMES=40 blind burst. bt's Driver::isStuck() (driver.cpp) is
+# re-evaluated every single tick while reversing, and drive() drops straight
+# back to normal driving the instant it goes false — no committed duration.
+# Our old burst reversed for a flat 40 frames (0.8 s) no matter what: a car
+# freed after 3 frames still reversed for the other 37, wasting time at best
+# and backing into a NEW problem (another wall, a car behind) at worst.
+# `_bursting` is now a latch like `_recovering`/`_turnaround` elsewhere in
+# this file: stays true only while the SAME jam signal that triggered it
+# (front blocked or pinned at the edge) is still true, re-checked every tick.
+# Two things bt doesn't need but our proxy does:
+#   - _UNSTUCK_MIN_FRAMES: a single 20 ms tick of reverse can't have moved
+#     far enough for the front sensor to mean anything yet — this isn't a
+#     commitment to reverse regardless of state, just "don't trust a sample
+#     that's one tick old" before allowing the first exit check.
+#   - _UNSTUCK_MAX_FRAMES: safety backstop in case the jam signal never
+#     clears (wedged against something reverse can't back away from) — same
+#     role as the turnaround's _TA_REV_MAX_FRAMES cap below.
+_bursting           = False   # module state: currently reversing out of a jam
+_UNSTUCK_MIN_FRAMES = 10      # frames before the burst is even allowed to exit
+_UNSTUCK_MAX_FRAMES = 150     # hard cap (3 s @ 50 Hz) if the jam never clears
+_burst_frames       = 0       # module state: frames elapsed in the current burst
 
 # Recovery mode: off-track re-entry and wrong-way turn-around.  Track sensors
 # read -1 out there, so this mode drives purely on angle + track_pos.
@@ -1298,11 +1319,13 @@ _stabilize_bled = False   # module state: has this stabilize episode already
 
 def _reset_driver_state() -> None:
     """Reset all module-level driving state (tests / new race)."""
-    global _stuck_frames, _reverse_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
+    global _stuck_frames, _bursting, _burst_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
     global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
     global _stabilize_bled, _avoid_lp, _front_gap_prev, _close_rate_lp, _launch_clutch_timer
     global _standoff_timer, _side_gap_prev, _side_close_rate_lp
-    _stuck_frames = _reverse_frames = 0
+    _stuck_frames = 0
+    _bursting = False
+    _burst_frames = 0
     _recovering = _turnaround = False
     _ta_fwd = _ta_jam = _ta_rev = 0
     _target_lp = None
@@ -1469,7 +1492,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     _dbg["angle"] = angle
     _dbg["dist"] = dist_from_start
 
-    global _stuck_frames, _reverse_frames, _recovering, _target_lp, _line_lp, _avoid_lp
+    global _stuck_frames, _bursting, _burst_frames, _recovering, _target_lp, _line_lp, _avoid_lp
     global _stuck_progress_dist, _stuck_progress_frames, _stabilizing, _stabilize_bled
     global _front_gap_prev, _close_rate_lp, _launch_clutch_timer, _standoff_timer
     global _side_gap_prev, _side_close_rate_lp
@@ -1535,29 +1558,37 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
                 return _stabilize_action(speed, angle, tpos, gear, speed_y)
 
     # --- stuck / crash recovery (works on OR off track, takes priority) ---
-    # Once we've committed to a reverse burst, see it through; then resume normal
-    # driving (which floors it forward again).  We trigger it after a sustained
-    # crawl, which is the signature of having rammed a wall or another car.
-    if _reverse_frames > 0:
-        _reverse_frames -= 1
-        _dbg["mode"] = "burst"
-        return format_scr_control(accel=0.5, brake=0.0, gear=-1,
-                                  steer=_recovery_steer(angle, tpos))
     # "jammed" = crawling AND something is right in front, or we're pinned at the
     # edge.  The front/edge gate is what prevents a false reverse on a clear
     # standing start or in the pit lane (slow, but open road ahead).
     front      = track[9] if len(track) > 9 else 200.0
-    jammed_now = abs(speed) < _STUCK_SPEED and (front < _STUCK_WALL or abs(tpos) > 0.9)
-    if jammed_now:
-        _stuck_frames += 1
+    jam_signal = front < _STUCK_WALL or abs(tpos) > 0.9
+    if _bursting:
+        # bt-style: re-checked every tick, not run to a fixed count (see the
+        # 2026-08-09 comment at _bursting above). Exit the instant the same
+        # signal that triggered this is gone, so a car freed after 3 frames
+        # doesn't keep reversing for 37 more doing nothing useful.
+        _burst_frames += 1
+        if _burst_frames >= _UNSTUCK_MIN_FRAMES and (
+                not jam_signal or _burst_frames >= _UNSTUCK_MAX_FRAMES):
+            _bursting = False   # freed (or safety cap) — fall through to normal driving THIS tick
+        else:
+            _dbg["mode"] = "burst"
+            return format_scr_control(accel=0.5, brake=0.0, gear=-1,
+                                      steer=_recovery_steer(angle, tpos))
     else:
-        _stuck_frames = 0
-    if _stuck_frames >= _STUCK_FRAMES:
-        _stuck_frames   = 0
-        _reverse_frames = _REVERSE_FRAMES
-        _dbg["mode"] = "burst"
-        return format_scr_control(accel=0.5, brake=0.0, gear=-1,
-                                  steer=_recovery_steer(angle, tpos))
+        jammed_now = abs(speed) < _STUCK_SPEED and jam_signal
+        if jammed_now:
+            _stuck_frames += 1
+        else:
+            _stuck_frames = 0
+        if _stuck_frames >= _STUCK_FRAMES:
+            _stuck_frames = 0
+            _bursting     = True
+            _burst_frames = 0
+            _dbg["mode"] = "burst"
+            return format_scr_control(accel=0.5, brake=0.0, gear=-1,
+                                      steer=_recovery_steer(angle, tpos))
 
     # --- recovery gate: off-track, wrong-way, or mid-manoeuvre ---
     # Hysteresis: recovery starts only when genuinely off (kerb-riding at the
