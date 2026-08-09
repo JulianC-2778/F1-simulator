@@ -25,6 +25,11 @@ from typing import Callable
 
 WEAR_RATE_PER_SECOND = 0.02          # tuned so ~2000s (~25 laps at ~80s/lap) of normal driving reaches ~100%
 CORNERING_MULTIPLIER = 8.0           # extra wear weight for lateral track-position movement (cornering proxy)
+CORNERING_DELTA_CAP = 0.2            # cap the per-update lateral-position delta before weighting it -- per
+                                      # Archard's wear law (V = k*F*s/H; see Maglione et al. 2026, iScience,
+                                      # 10.1016/j.isci.2026.114755), wear accumulates smoothly with load and
+                                      # sliding distance, so a single anomalous track_pos jump (off-track
+                                      # excursion/spin) shouldn't be read as an implausibly large cornering load
 FUEL_INCREASE_RESET_THRESHOLD = 2.0  # litres -- a jump this big only happens on a refuel/pit stop
 LAP_RESET_DROP_THRESHOLD = 5.0       # seconds -- lap_time dropping by more than this signals a new lap started
 
@@ -82,7 +87,9 @@ class RaceStrategyTracker:
             dt = 0.0
 
         if dt > 0:
-            cornering = 0.0 if self._last_track_pos is None else abs(track_pos - self._last_track_pos)
+            cornering = 0.0 if self._last_track_pos is None else min(
+                abs(track_pos - self._last_track_pos), CORNERING_DELTA_CAP
+            )
             speed_factor = max(0.0, speed) / 100.0
             increment = dt * WEAR_RATE_PER_SECOND * (1.0 + speed_factor) * (1.0 + cornering * CORNERING_MULTIPLIER)
             self._wear_pct = min(100.0, self._wear_pct + increment)

@@ -845,6 +845,7 @@
             </select>
           </div>
           <button class="secondary" id="engClearBtn" style="width:100%">Clear history</button>
+          <button class="secondary" id="engExportBtn" style="width:100%;margin-top:8px">Export conversation</button>
           <div id="engStats" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">-- / -- tokens</div>
         </div>
         <div class="panel panel-pad">
@@ -2137,6 +2138,13 @@ $("engClearBtn").addEventListener("click", async () => {
   await fetch("/api/engineer/clear", { method: "POST" });
   $("engFeed").innerHTML = '<div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div>';
   engLoadStats();
+});
+
+// On-demand only -- navigating here just triggers the browser's normal file
+// download (the backend sets Content-Disposition: attachment), nothing
+// auto-exports on its own.
+$("engExportBtn").addEventListener("click", () => {
+  window.location.href = "/api/engineer/export?fmt=markdown";
 });
 
 $("engStyleSelect").addEventListener("change", async () => {
