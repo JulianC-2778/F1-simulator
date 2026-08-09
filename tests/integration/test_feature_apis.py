@@ -58,6 +58,45 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         self.assertLess(plain_max_tokens, explain_max_tokens)
         self.client.post("/api/engineer/clear")
 
+    def test_export_with_no_history_is_still_a_valid_downloadable_file(self):
+        self.client.post("/api/engineer/clear")
+        response = self.client.get("/api/engineer/export")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no messages yet", response.text)
+        self.assertIn("attachment", response.headers["content-disposition"])
+
+    def test_export_markdown_includes_driver_and_engineer_turns(self):
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes, push.")):
+            self.client.post("/api/engineer/ask", json={"question": "should I push now?"})
+        response = self.client.get("/api/engineer/export")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("should I push now?", response.text)
+        self.assertIn("Yes, push.", response.text)
+        self.assertIn(".md", response.headers["content-disposition"])
+        self.client.post("/api/engineer/clear")
+
+    def test_export_json_format_returns_structured_messages(self):
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="No, stay out.")):
+            self.client.post("/api/engineer/ask", json={"question": "should I pit now?"})
+        response = self.client.get("/api/engineer/export?fmt=json")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        contents = [m["content"] for m in data["messages"]]
+        self.assertTrue(any("should I pit now?" in c for c in contents))
+        self.assertIn("No, stay out.", contents)
+        self.assertIn(".json", response.headers["content-disposition"])
+        self.client.post("/api/engineer/clear")
+
+    def test_export_never_leaks_the_system_persona_into_the_conversation(self):
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes, push.")):
+            self.client.post("/api/engineer/ask", json={"question": "should I push now?"})
+        response = self.client.get("/api/engineer/export")
+        # The system-role persona message is internal instruction text, not
+        # part of the conversation the driver actually had -- it must never
+        # show up in an exported transcript.
+        self.assertNotIn("professional, direct-talking AI racing engineer", response.text)
+        self.client.post("/api/engineer/clear")
+
     def test_voice_available_reflects_mic_check(self):
         with patch("voice_input.mic_available", return_value=True):
             self.assertTrue(self.client.get("/api/engineer/voice/available").json()["available"])
