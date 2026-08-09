@@ -1294,6 +1294,39 @@ def _first_sentence(text: str) -> str:
 # what gets displayed afterwards.
 _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 
+# Topics car_state (see race_analyzer.CAR_STATE_KEYS) categorically never
+# has -- TORCS's SCR telemetry doesn't report any of these, and neither do
+# this module's own heuristic additions (tire_wear_pct/pit_window/
+# recent_incidents). ENGINEER_PERSONA already tells the model "never invent
+# numbers", but that's asking an 8B local model to police itself; answering
+# these deterministically is the same "compute the real answer in Python,
+# don't trust the model to reason about it" pattern tire_strategy.py's
+# module docstring already uses for pit-window math. A question that
+# doesn't match any of these just falls through to the model as normal --
+# this never blocks or changes behavior for anything else.
+_UNAVAILABLE_DATA_TOPICS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bt[iy]re pressure\b", re.IGNORECASE), "tire pressure"),
+    (re.compile(r"\bt[iy]re temp(erature)?\b", re.IGNORECASE), "tire temperature"),
+    (re.compile(r"\bbrake temp(erature)?\b", re.IGNORECASE), "brake temperature"),
+    (re.compile(r"\b(engine|water) temp(erature)?\b", re.IGNORECASE), "engine temperature"),
+    (re.compile(r"\bweather\b|\braining\b|\btrack temp(erature)?\b", re.IGNORECASE), "weather or track temperature"),
+    (re.compile(r"\bsector\b|\bsplit time", re.IGNORECASE), "sector times"),
+    (re.compile(r"\bdrs\b|\bers\b|\bkers\b", re.IGNORECASE), "DRS/ERS/KERS systems"),
+    (
+        re.compile(r"\bhow many laps (are )?(left|remaining)\b|\blaps? (left|remaining) in the race\b", re.IGNORECASE),
+        "total race laps remaining",
+    ),
+]
+
+
+def _unavailable_data_topic(question: str) -> str | None:
+    """Short label naming a known TORCS/car_state data gap the question is
+    asking about, or None if it doesn't match one of those known gaps."""
+    for pattern, label in _UNAVAILABLE_DATA_TOPICS:
+        if pattern.search(question):
+            return label
+    return None
+
 
 @app.post("/api/engineer/ask")
 async def ask_engineer(body: dict):
@@ -1334,6 +1367,22 @@ async def ask_engineer(body: dict):
     messages = engineer_ctx_mgr.build_messages()
     request_id = str(uuid.uuid4())
     await broadcast({"type": "ai_start", "source": "engineer", "request_id": request_id})
+
+    missing_topic = _unavailable_data_topic(question)
+    if missing_topic is not None:
+        answer = (
+            f"I don't have {missing_topic} data -- TORCS doesn't report that. "
+            "I can help with speed, fuel, damage, tire wear estimate, or pit strategy instead."
+        )
+        engineer_ctx_mgr.add_assistant(answer)
+        await broadcast({"type": "ai_done", "source": "engineer", "content": answer, "request_id": request_id})
+        return {
+            "ok": True,
+            "answer": answer,
+            "car_state": car_state,
+            "stats": engineer_ctx_mgr.stats(),
+        }
+
     try:
         answer = await call_model_for_feature(
             messages,

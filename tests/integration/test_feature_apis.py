@@ -46,6 +46,19 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         self.assertEqual(response.json()["answer"], "No, stay out and continue racing.")
         self.client.post("/api/engineer/clear")
 
+    def test_question_about_unavailable_data_is_answered_without_calling_the_model(self):
+        # TORCS/car_state never reports tire pressure -- see runtime.py's
+        # _unavailable_data_topic(). Answering this deterministically is
+        # more reliable than trusting the model's "never invent numbers"
+        # instruction on its own.
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="should never be called")) as model:
+            response = self.client.post("/api/engineer/ask", json={"question": "what's my tire pressure?"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("tire pressure", response.json()["answer"])
+        model.assert_not_awaited()
+        self.assertGreater(len(self.client.get("/api/engineer/history").json()["messages"]), 0)
+        self.client.post("/api/engineer/clear")
+
     def test_plain_question_gets_a_tight_token_budget_but_why_question_gets_more_room(self):
         with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes.")) as model:
             self.client.post("/api/engineer/ask", json={"question": "should I push now?"})
