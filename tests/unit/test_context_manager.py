@@ -37,6 +37,28 @@ class FormatCarStateTests(unittest.TestCase):
         text = format_car_state({"problems": ["normal"]})
         self.assertIn("Detected issues: None -- car is on track and under control.", text)
 
+    def test_omits_recent_incidents_line_when_none_have_happened(self):
+        # recent_incidents is only added to car_state by runtime.py's
+        # ask_engineer once engineer_events.py's IncidentTracker has found
+        # at least one incident -- see engineer_events.py.
+        text = format_car_state({"problems": [], "recent_incidents": []})
+        self.assertNotIn("Recent incidents", text)
+
+    def test_renders_recent_incidents_when_present(self):
+        car_state = {
+            "problems": [],
+            "recent_incidents": [
+                {"type": "damage", "detail": "took damage (+450)", "seconds_ago": 5.0},
+                {"type": "off_track", "detail": "went off track (track position 1.20)", "seconds_ago": 22.0},
+            ],
+        }
+        text = format_car_state(car_state)
+        self.assertIn(
+            "Recent incidents this session: took damage (+450) (5s ago); "
+            "went off track (track position 1.20) (22s ago)",
+            text,
+        )
+
 
 class FormatEngineerPromptTests(unittest.TestCase):
     def test_combines_car_state_and_question(self):
