@@ -281,19 +281,31 @@ class LatestTaskRunner:
                 self._wake_event.set()
 
     def _run(self) -> None:
+        # Everything below is wrapped in a broad except so a bug anywhere in
+        # this loop (including in handler-exception bookkeeping or _finish()
+        # itself) logs and resumes instead of silently killing this daemon
+        # thread -- a dead thread here previously meant every future submit()
+        # queued forever with nothing to pick it up, and no log line ever
+        # said why (observed 2026-08-07: a full race with strategy pinned at
+        # NORMAL, zero [Granite]/[ModelBroker] lines, zero completions).
         while True:
-            self._wake_event.wait()
-            self._wake_event.clear()
-            task, _priority = self._take_pending()
-            if task is None:
-                continue
             try:
-                output = self.handler(task)
-                self._results.put(WorkerResult(task=task, output=output))
+                self._wake_event.wait()
+                self._wake_event.clear()
+                task, _priority = self._take_pending()
+                if task is None:
+                    continue
+                try:
+                    output = self.handler(task)
+                    self._results.put(WorkerResult(task=task, output=output))
+                except Exception as exc:
+                    self._results.put(WorkerResult(task=task, error=str(exc)))
+                finally:
+                    self._finish()
             except Exception as exc:
-                self._results.put(WorkerResult(task=task, error=str(exc)))
-            finally:
-                self._finish()
+                print(f"[{self.name}] worker loop crashed on an iteration, resuming: {exc!r}")
+                with self._lock:
+                    self._busy = False
 
 
 def env_flag(name: str, default: bool = False) -> bool:

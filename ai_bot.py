@@ -808,13 +808,24 @@ _AVOID_RIGHT = range(18, 28)        # ~0° to +90°: opponent ahead-right/alongs
 # replicate diffangle directly, so this approximates "actually converging"
 # with the same closing-rate technique already validated for the front
 # overtake trigger: whichever of left_gap/right_gap is tighter, track
-# whether IT is shrinking. Full avoid authority when genuinely closing;
-# reduced (not zero — a stable close gap still deserves some margin, unlike
-# bt's all-or-nothing) when stable or opening.
+# whether IT is shrinking. Full avoid authority when genuinely closing.
+# 2026-08-09: floor dropped 0.4 -> 0.0 — went back to match bt's actual
+# all-or-nothing gate (a car confirmed NOT converging gets zero correction,
+# full stop) instead of the softened "some margin anyway" compromise this
+# started as. The 0.4 floor was itself the bug: a neighbour sitting at a
+# stable ~9-10 m gap for 15+ seconds (ai_bot log, steps 339-355, tpos crept
+# -0.30 -> -0.87) never dropped below 0.4x authority because it was never
+# closing fast enough to satisfy _SIDE_CLOSE_RATE_MIN, so the steady push
+# never actually stopped — room_taper only caught it once already almost at
+# the edge. A car that isn't closing on us is not a steering problem; the
+# speed-side response (_SIDE_EASE_GAIN / standoff breaker below) still
+# handles a persistent close-but-stable neighbour by shedding pace instead
+# of swerving, same division of labor bt uses (filterSColl vs OPP_LETPASS).
 _SIDE_CLOSE_RATE_MIN = 0.5           # m/s: side gap must shrink at least
                                       # this fast to count as converging
-_AVOID_CONVERGE_FLOOR = 0.4          # min fraction of avoid's authority kept
-                                      # even when the gap isn't closing
+_AVOID_CONVERGE_FLOOR = 0.0          # min fraction of avoid's authority kept
+                                      # even when the gap isn't closing —
+                                      # 0.0 = bt-style all-or-nothing
 _side_gap_prev: float | None = None  # module state: min(left_gap,right_gap)
                                       # one tick ago
 _side_close_rate_lp: float = 0.0     # module state: smoothed closing rate
@@ -1691,19 +1702,29 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         avoid += avoid_gain * (1.0 - right_gap / avoid_dist)
     # Convergence gate (see _SIDE_CLOSE_RATE_MIN above): scale avoid by
     # whether the binding side gap is actually shrinking, not just close.
+    # With the floor at 0.0 this is now a real gate, not a softener, so it
+    # must not fire on a guess: a rate reading only counts once we have an
+    # actual prior sample to diff against AND it passes the sanity check.
+    # Without either (opponent just entered the cone this tick, or a
+    # cone-boundary jump made the reading meaningless) we don't know yet
+    # whether it's converging — default to full authority rather than
+    # silently assuming "stable", which is exactly the assumption that let
+    # the car creep to the edge against a neighbour never actually confirmed
+    # as non-converging.
     if avoid != 0.0:
         side_gap_now = min(left_gap, right_gap)
-        raw_side_close_rate = 0.0
+        rate_known = False
         if (_side_gap_prev is not None and _side_gap_prev < 200.0
                 and side_gap_now < 200.0):
             candidate = (_side_gap_prev - side_gap_now) / _TICK_S
             if abs(candidate) <= _CLOSE_RATE_SANITY_MAX:
-                raw_side_close_rate = candidate
-        _side_close_rate_lp += _CLOSE_RATE_ALPHA * (raw_side_close_rate - _side_close_rate_lp)
+                _side_close_rate_lp += _CLOSE_RATE_ALPHA * (candidate - _side_close_rate_lp)
+                rate_known = True
         _side_gap_prev = side_gap_now
-        converge = _AVOID_CONVERGE_FLOOR + (1.0 - _AVOID_CONVERGE_FLOOR) * clamp(
-            _side_close_rate_lp / _SIDE_CLOSE_RATE_MIN, 0.0, 1.0)
-        avoid *= converge
+        if rate_known:
+            converge = _AVOID_CONVERGE_FLOOR + (1.0 - _AVOID_CONVERGE_FLOOR) * clamp(
+                _side_close_rate_lp / _SIDE_CLOSE_RATE_MIN, 0.0, 1.0)
+            avoid *= converge
     else:
         _side_gap_prev = min(left_gap, right_gap)
         if _side_gap_prev >= 200.0:
@@ -3148,17 +3169,27 @@ def _run_tests() -> None:
     # ~6-9 m side gap that never closed or opened let avoid and barrier
     # settle into a near-equilibrium rub AT the track edge (tpos crept from
     # -0.30 to -0.97 over ~150 ticks and stayed there) instead of resolving.
-    # Same left-side gap, compare avoid's converged magnitude at track
-    # centre vs already almost at the edge avoid itself pushes toward.
+    # 2026-08-09: the convergence gate above now zeroes `avoid` on its own
+    # once a side gap is confirmed stable (floor dropped 0.4 -> 0.0), so a
+    # permanently-static opponent like the old opps_room no longer reaches
+    # meaningful avoid authority at ALL — there is nothing left for room
+    # taper to visibly taper. Use an actively, steadily closing opponent
+    # instead (same shape as the convergence-gate test above) so the
+    # convergence gate stays satisfied (real closing rate the whole run) and
+    # this test isolates room taper's own effect: same closing gap, compare
+    # avoid's converged magnitude at track centre vs already almost at the
+    # edge avoid itself pushes toward.
     _reset_driver_state()
     opps_room = [200.0] * 36
-    opps_room[13] = 6.0   # left_gap = 6 m, well inside _AVOID_DIST
-    for _ in range(60):
+    for i in range(60):
+        opps_room[13] = 14.0 - i * 0.1   # closing 14m -> ~8m, steadily
         compute_control({**cs, "speed_x": 100.0, "track_pos": 0.0,
                          "track": [200.0] * 19, "opponents": opps_room}, NORMAL)
     avoid_centre = _avoid_lp
     _reset_driver_state()
-    for _ in range(60):
+    opps_room = [200.0] * 36
+    for i in range(60):
+        opps_room[13] = 14.0 - i * 0.1
         compute_control({**cs, "speed_x": 100.0, "track_pos": -0.95,
                          "track": [200.0] * 19, "opponents": opps_room}, NORMAL)
     avoid_edge = _avoid_lp
