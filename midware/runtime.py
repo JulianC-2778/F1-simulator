@@ -41,6 +41,7 @@ import config
 from telemetry_common import extract_json_object
 from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
+from tire_strategy import RaceStrategyTracker, estimate_pit_window
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -122,6 +123,7 @@ engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PER
 # turns, even after the system prompt changes).
 _ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSONA_CONCISE}
 _engineer_style = "professional"
+engineer_strategy_tracker = RaceStrategyTracker()
 
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
@@ -1304,6 +1306,17 @@ async def ask_engineer(body: dict):
     else:
         telemetry, _rankings = telemetry_store.latest()
         car_state = telemetry_to_car_state(telemetry) if telemetry else empty_car_state()
+
+    # tire_strategy.py: TORCS reports neither tire wear nor a pit
+    # recommendation, so estimate both here (real math in Python, not left
+    # to the model to invent or get wrong) and fold them into car_state so
+    # format_car_state/format_engineer_prompt can hand them to the model
+    # the same way as any other telemetry field.
+    engineer_strategy_tracker.update(car_state)
+    car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
+    car_state["pit_window"] = estimate_pit_window(
+        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap
+    )
 
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()
