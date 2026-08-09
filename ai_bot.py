@@ -484,6 +484,42 @@ def _apply_tcl(accel: float, speed_kmh: float, wheel_vels: list[float]) -> float
     return accel
 
 
+# 2026-08-09: track-hold throttle cut, ported from bt's Driver::filterTrk
+# (driver.cpp) — bt cuts throttle to ZERO the moment the car is running wide
+# toward the edge at speed, BEFORE it actually crosses it, rather than only
+# reacting once track_pos has already blown past the recovery threshold
+# (_RECOVER_ENTER_TPOS=1.15 below). bt checks the true velocity-vector angle
+# against the track (its `speedangle`, from full sim state) and the car's
+# position against the actual segment width — we have neither (SCR gives no
+# track geometry or true velocity heading). Substitutes the signal we DO
+# have every tick instead: is |track_pos| itself getting worse right now.
+# Same tick-to-tick trend pattern as _close_rate_lp/_side_close_rate_lp
+# elsewhere in this file, rather than reconstructed vehicle-dynamics math
+# from an imperfect telemetry proxy.
+_TRACK_HOLD_MIN_KMH = 20.0        # km/h: below this, don't bother — mirrors
+                                   # bt's "too slow" bypass (MAX_UNSTUCK_SPEED)
+_tpos_prev: float | None = None   # module state: track_pos one tick ago
+
+
+def _apply_track_hold(accel: float, speed_kmh: float, tpos: float) -> float:
+    """Cut throttle to zero if already near the edge AND still drifting further out.
+
+    Mirrors bt's filterTrk: only intervenes past the apex-free band
+    (_EDGE_FREE) that a legitimate corner line is allowed to use, and only
+    while track_pos is actively getting worse tick over tick — a car that's
+    out near the edge but already curving back toward centre is left alone,
+    same as bt letting a speed vector pointed "toward the inside of the
+    turn" through untouched.
+    """
+    global _tpos_prev
+    prev = _tpos_prev
+    _tpos_prev = tpos
+    if prev is None or speed_kmh < _TRACK_HOLD_MIN_KMH or abs(tpos) < _EDGE_FREE:
+        return accel
+    drifting_out = tpos * (tpos - prev) > 0.0
+    return 0.0 if drifting_out else accel
+
+
 # ---------------------------------------------------------------------------
 # Physics-derived brake distance — step 2/3 of the bt pace comparison (see
 # conversation history: step 1 was the throttle ease-off band, step 3 is the
@@ -684,6 +720,24 @@ _LINE_GAIN = 0.18
 # ~1 s, so repositioning is a drift, never a dart.
 _LINE_SLEW = 0.02          # max setpoint change per 20 ms tick
 _line_lp   = 0.0           # module state: slewed line setpoint
+
+# 2026-08-09: speed-adaptive entry-zone horizon, bt-inspired (see
+# Driver::getTargetPoint's lookahead = LOOKAHEAD_CONST + speed*
+# LOOKAHEAD_FACTOR, driver.cpp) — bt looks further down the track the
+# faster it's going. Deliberately NOT applied to the sensor-based pursuit
+# aim (_PP_ARC/_PP_POWER above carry their own "verified on track" wall-
+# drag incident from a past widening attempt — sharpening that weighting
+# further at speed would make exactly that failure mode worse exactly when
+# it matters most). line_tpos's entry_zone is safe ground for the same
+# idea instead: it runs on the map's real corner geometry (dist_from_start,
+# corner position), not noisy sensor beams, so there's no grazing-beam
+# failure mode to reintroduce — the risk profile that ruled out the sensor
+# path simply doesn't apply here.
+# 250.0 is line_tpos's own existing default, kept as a floor so low-speed
+# behaviour is byte-for-byte unchanged from before this; only speeds above
+# that baseline extend the horizon further.
+_LINE_ENTRY_ZONE_BASE     = 250.0   # m: unchanged floor (line_tpos's default)
+_LINE_ENTRY_ZONE_SPEED_K  = 0.5     # m per km/h added above the floor
 
 # NOTE: a PD upgrade of this term (damping on the low-passed tpos rate) was
 # tried and REVERTED twice in one day.  Unguarded, stale corner-sweep rate
@@ -965,6 +1019,42 @@ _CLUTCH_RAMP_TIME = 1.5             # s: time to feather from full slip to
                                      # fully engaged once 1st gear connects
 _launch_clutch_timer: float = 0.0   # module state: seconds since 1st gear
                                      # connected during the launch window
+
+# 2026-08-09: slip-fed launch clutch, closing the gap the 2026-08-08 comment
+# above flagged — bt meters clutch release off engine rpm vs. the wheel
+# speed that rpm SHOULD correspond to in gear 1 (needs live gear ratio +
+# redline, which SCR doesn't expose, hence the plain time ramp above). We
+# don't need to reconstruct that indirection: SCR DOES give wheel_spin_vel
+# directly — the same signal _apply_tcl already trusts for mid-race
+# wheelspin — so comparing rear wheel ground-equivalent speed to actual
+# chassis speed IS the slip bt is really after, no rpm/gear-ratio math
+# required. A pure time ramp can't tell "gripping fine, could close faster"
+# from "still spinning, needs to hold" — it runs the same schedule either
+# way; this adds a floor so it holds open at LEAST as long as the rear
+# wheels are still measurably outrunning the chassis, and closes faster
+# than the flat schedule once they're not.
+# Guard: the instant 1st gear connects, wheel_spin_vel can read ~0 (nothing
+# transferred yet) — same reading as "already gripping perfectly", the
+# exact ambiguity that caused the original rpm-crash incident (9611->956)
+# if misread as safe to lock up. Only trust the slip signal once it's
+# genuinely POSITIVE (wheels already outrunning the car, i.e. torque IS
+# getting through); otherwise fall back to the plain time ceiling.
+_LAUNCH_SLIP_BAND = 3.0   # m/s: rear-wheel-vs-chassis slip band the release
+                           # rate is scaled over, once slip is confirmed
+
+
+def _launch_clutch(time_ceiling: float, speed_kmh: float,
+                    wheel_vels: list[float]) -> float:
+    """Clutch command for the launch ramp: time ceiling, tightened by live wheel slip."""
+    if len(wheel_vels) < 4:
+        return time_ceiling
+    rear_ms = (wheel_vels[2] + wheel_vels[3]) / 2.0 * _WHEEL_RADIUS
+    slip_ms = rear_ms - speed_kmh / 3.6
+    if slip_ms <= 0.0:
+        return time_ceiling
+    slip_factor = clamp(slip_ms / _LAUNCH_SLIP_BAND, 0.0, 1.0)
+    return min(time_ceiling, slip_factor)
+
 
 # Front-opponent following/overtake: the "track" beams only see the road, so a
 # slower car sitting dead ahead is otherwise invisible to this function — it
@@ -1322,7 +1412,7 @@ def _reset_driver_state() -> None:
     global _stuck_frames, _bursting, _burst_frames, _recovering, _turnaround, _ta_fwd, _ta_jam, _ta_rev
     global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
     global _stabilize_bled, _avoid_lp, _front_gap_prev, _close_rate_lp, _launch_clutch_timer
-    global _standoff_timer, _side_gap_prev, _side_close_rate_lp
+    global _standoff_timer, _side_gap_prev, _side_close_rate_lp, _tpos_prev
     _stuck_frames = 0
     _bursting = False
     _burst_frames = 0
@@ -1341,6 +1431,7 @@ def _reset_driver_state() -> None:
     _standoff_timer = 0.0
     _side_gap_prev = None
     _side_close_rate_lp = 0.0
+    _tpos_prev = None
 
 
 def _recovery_steer(angle: float, tpos: float) -> float:
@@ -1662,16 +1753,21 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # freshly entering the cone doesn't read as an instant teleport-speed
     # closure, and EMA-smoothed since a single-tick reading is noisy.
     raw_close_rate = 0.0
+    close_rate_known = False   # was this tick's rate an actual measurement,
+                                # not a guess? feeds the front-collision brake
+                                # check below (see _dbg["close_rate_known"])
     if _front_gap_prev is not None and _front_gap_prev < 200.0 and front_gap < 200.0:
         candidate = (_front_gap_prev - front_gap) / _TICK_S
         if abs(candidate) <= _CLOSE_RATE_SANITY_MAX:
             raw_close_rate = candidate
+            close_rate_known = True
         # else: a cone-boundary jump (see _CLOSE_RATE_SANITY_MAX) — leave
         # raw_close_rate at 0 so the EMA decays toward "unknown" instead of
         # absorbing the spike.
     _close_rate_lp += _CLOSE_RATE_ALPHA * (raw_close_rate - _close_rate_lp)
     _front_gap_prev = front_gap
     _dbg["close_rate"] = _close_rate_lp
+    _dbg["close_rate_known"] = close_rate_known
     # A+ racing line: hold-line setpoint.  0 (centre) on open road, but on
     # the approach to a mapped corner the map moves it to the OUTSIDE edge
     # (out-in-out entry).  Same fade as before: the term only acts while the
@@ -1679,7 +1775,8 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # zones and never wrestles pursuit for the wheel mid-corner.
     line_raw = 0.0
     if _track_model is not None and dist_from_start >= 0.0:
-        line_raw = _track_model.line_tpos(dist_from_start)
+        entry_zone = _LINE_ENTRY_ZONE_BASE + max(0.0, speed) * _LINE_ENTRY_ZONE_SPEED_K
+        line_raw = _track_model.line_tpos(dist_from_start, entry_zone=entry_zone)
     # Overtake bias: a slower car dead ahead only counts as "found" once we
     # are close enough that neither side reads open by coincidence; pick
     # whichever side is clearly roomier and ease that way.  Only overrides an
@@ -1959,6 +2056,30 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
             accel = 0.0
             brake = max(brake, 1.0)
 
+    # 2026-08-09: front-collision hard brake, ported from bt's filterBColl
+    # (driver.cpp) — same brakedist() physics as the sight-based check just
+    # above, but checked against the car directly ahead (front_gap) instead
+    # of track geometry: if the distance needed to shed speed down to THEIR
+    # speed exceeds the real gap, brake now, regardless of whether either
+    # side has room to swerve. The follow_cap above only reacts once BOTH
+    # sides are blocked (_FRONT_ESCAPE_M) and is a smoothed target-speed cap,
+    # not a hard instantaneous check — bt runs this unconditionally on any
+    # laterally-aligned car ahead, the same division of labor as its
+    # getOffset() (steer around) vs filterBColl (stop in time regardless).
+    # SCR gives no opponent speed (bt reads it from full sim state); this
+    # estimates it from the closing-rate signal computed above: opponent
+    # speed ~= our speed - closing rate. Gated on close_rate_known — a car
+    # that just appeared this tick has no rate history yet, and treating
+    # "unknown" as "not closing" would silently skip the check on exactly
+    # the case (a sudden close encounter) it exists to catch.
+    if front_gap < _FRONT_BRAKE_M and _dbg.get("close_rate_known", False):
+        opp_speed_est = max(0.0, speed - _close_rate_lp * 3.6)
+        needed = _brake_dist(speed, opp_speed_est, _CAR_MASS_BASE + fuel)
+        if needed >= front_gap:
+            accel = 0.0
+            brake = 1.0
+            _dbg["why"] = "front-coll"
+
     # Start-of-race caution (see the _START_CAUTION_DIST comment): no throttle
     # cap any more (matches bt — see _START_ACCEL_CAP history), but the
     # launch clutch ramp below still applies during this window.
@@ -1971,13 +2092,18 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
     # else clutch stays 0.0 (fully engaged), unchanged from before this.
     if launching and raw_gear == 1:
         _launch_clutch_timer += _TICK_S
-        clutch = clamp(1.0 - _launch_clutch_timer / _CLUTCH_RAMP_TIME, 0.0, 1.0)
+        time_ceiling = clamp(1.0 - _launch_clutch_timer / _CLUTCH_RAMP_TIME, 0.0, 1.0)
+        clutch = _launch_clutch(time_ceiling, speed, wheel_vels)
     else:
         _launch_clutch_timer = 0.0
         clutch = 0.0
 
     # ABS: prevent wheel lock-up under braking (snakeoil.py)
     brake = _apply_abs(brake, speed, wheel_vels)
+    # Track-hold: cut throttle before running wide off the edge (bt-inspired,
+    # see _apply_track_hold above) — checked before TCL, same order as bt's
+    # filterTCL(filterTrk(...)) chain.
+    accel = _apply_track_hold(accel, speed, tpos)
     # TCL: prevent rear-wheel spin on acceleration (snakeoil.py)
     accel = _apply_tcl(accel, speed, wheel_vels)
 
@@ -2997,6 +3123,35 @@ def _run_tests() -> None:
     assert "(gear -1)" not in out, f"FAIL: clear standing start wrongly reversed: {out}"
     print("compute_control clear start (no false reverse) ... OK")
     _reset_driver_state()
+
+    # 2026-08-09: track-hold throttle cut (bt-inspired, see _apply_track_hold
+    # above / bt's Driver::filterTrk) — cut the throttle BEFORE running off
+    # the edge, not just after. Clear straight ahead each time (so the
+    # reactive target-speed logic alone would always want full throttle),
+    # varying only track_pos tick-to-tick to isolate the filter's own effect.
+    clear_track = [200.0] * 19
+    # (a) already past the apex-free band and still drifting further out →
+    # cut to zero, even though the road ahead is clear.
+    _reset_driver_state()
+    compute_control({**cs, "speed_x": 100.0, "track_pos": 0.87, "track": clear_track}, NORMAL)
+    out_drift = compute_control({**cs, "speed_x": 100.0, "track_pos": 0.92, "track": clear_track}, NORMAL)
+    assert "(accel 0.000)" in out_drift, \
+        f"FAIL: drifting further past the edge band must cut throttle: {out_drift}"
+    # (b) same band, but curving back toward centre → left alone.
+    _reset_driver_state()
+    compute_control({**cs, "speed_x": 100.0, "track_pos": 0.92, "track": clear_track}, NORMAL)
+    out_return = compute_control({**cs, "speed_x": 100.0, "track_pos": 0.87, "track": clear_track}, NORMAL)
+    assert "(accel 0.000)" not in out_return, \
+        f"FAIL: curving back toward centre must not be cut: {out_return}"
+    # (c) inside the apex-free band (kerb-riding line) even while drifting →
+    # left alone, same as bt not punishing a car already on the inside line.
+    _reset_driver_state()
+    compute_control({**cs, "speed_x": 100.0, "track_pos": 0.5, "track": clear_track}, NORMAL)
+    out_apex = compute_control({**cs, "speed_x": 100.0, "track_pos": 0.6, "track": clear_track}, NORMAL)
+    assert "(accel 0.000)" not in out_apex, \
+        f"FAIL: apex-free band must not be cut by track-hold: {out_apex}"
+    _reset_driver_state()
+    print("compute_control track-hold throttle cut (bt-inspired) ... OK")
 
     # PIT + speed < 10 → meta=1
     cs_pit = {**cs, "speed_x": 5.0, "rpm": 800.0, "gear": 1}
