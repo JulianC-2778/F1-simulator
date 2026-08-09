@@ -21,6 +21,7 @@ import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1377,6 +1378,48 @@ async def get_engineer_history():
         "stats": engineer_ctx_mgr.stats(),
         "style": _engineer_style,
     }
+
+
+def _render_engineer_export_markdown() -> str:
+    lines = ["# AI Race Engineer -- Conversation Export", ""]
+    if not engineer_ctx_mgr.history:
+        lines.append("(no messages yet)")
+    for message in engineer_ctx_mgr.history:
+        if message.role == "user":
+            lines.append(f"**Driver:** {message.content}")
+            lines.append("")
+        elif message.role == "assistant":
+            lines.append(f"**Engineer:** {message.content}")
+            lines.append("")
+        # system-role messages (the persona itself) aren't part of the
+        # conversation being exported, so they're skipped here on purpose.
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@app.get("/api/engineer/export")
+async def export_engineer_history(fmt: str = "markdown"):
+    """On-demand only -- this never runs on its own. Nothing calls this
+    endpoint except a user clicking Export in the dashboard (or hitting the
+    URL directly); there is no background job or auto-export anywhere."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if fmt == "json":
+        payload = {
+            "messages": [
+                {"role": m.role, "content": m.content, "tokens": m.tokens, "pinned": m.pinned}
+                for m in engineer_ctx_mgr.history
+            ],
+            "style": _engineer_style,
+            "exported_at_utc": timestamp,
+        }
+        return JSONResponse(
+            payload,
+            headers={"Content-Disposition": f'attachment; filename="engineer_conversation_{timestamp}.json"'},
+        )
+    return PlainTextResponse(
+        _render_engineer_export_markdown(),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="engineer_conversation_{timestamp}.md"'},
+    )
 
 
 @app.post("/api/engineer/clear")
