@@ -59,6 +59,27 @@ class FormatCarStateTests(unittest.TestCase):
             text,
         )
 
+    def test_omits_top_priority_line_when_priority_key_is_absent(self):
+        text = format_car_state({"problems": []})
+        self.assertNotIn("Top priority", text)
+
+    def test_renders_top_priority_with_reason(self):
+        car_state = {
+            "problems": [],
+            "priority": {"top_priority": "pit now", "severity": "high", "reason": "tires, fuel"},
+        }
+        text = format_car_state(car_state)
+        self.assertIn("Top priority: pit now [high] (tires, fuel)", text)
+
+    def test_renders_top_priority_without_a_reason(self):
+        car_state = {
+            "problems": [],
+            "priority": {"top_priority": "no urgent priority -- car is in good shape", "severity": "low", "reason": ""},
+        }
+        text = format_car_state(car_state)
+        self.assertIn("Top priority: no urgent priority -- car is in good shape [low]", text)
+        self.assertNotIn("()", text)
+
 
 class FormatEngineerPromptTests(unittest.TestCase):
     def test_combines_car_state_and_question(self):
