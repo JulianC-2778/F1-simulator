@@ -62,6 +62,8 @@ class RaceStrategyTracker:
         self._last_lap_time: float | None = None
         self._lap_start_fuel: float | None = None
         self._last_lap_fuel_consumption: float | None = None
+        self._lap_start_wear: float | None = None
+        self._last_lap_wear_consumption: float | None = None
 
     def reset(self) -> None:
         """New tires -- e.g. called when update() detects a pit stop."""
@@ -101,8 +103,12 @@ class RaceStrategyTracker:
             if self._lap_start_fuel is not None:
                 self._last_lap_fuel_consumption = max(0.0, self._lap_start_fuel - fuel)
             self._lap_start_fuel = fuel
+            if self._lap_start_wear is not None:
+                self._last_lap_wear_consumption = max(0.0, self._wear_pct - self._lap_start_wear)
+            self._lap_start_wear = self._wear_pct
         elif self._lap_start_fuel is None:
             self._lap_start_fuel = fuel
+            self._lap_start_wear = self._wear_pct
 
         self._last_track_pos = track_pos
         self._last_fuel = fuel
@@ -116,8 +122,14 @@ class RaceStrategyTracker:
     def fuel_per_lap(self) -> float | None:
         return None if self._last_lap_fuel_consumption is None else round(self._last_lap_fuel_consumption, 2)
 
+    @property
+    def wear_per_lap(self) -> float | None:
+        return None if self._last_lap_wear_consumption is None else round(self._last_lap_wear_consumption, 2)
 
-def estimate_pit_window(car_state: dict, wear_pct: float, fuel_per_lap: float | None) -> dict:
+
+def estimate_pit_window(
+    car_state: dict, wear_pct: float, fuel_per_lap: float | None, wear_per_lap: float | None = None
+) -> dict:
     """Pure function: given the current data + tracker readings, decide
     whether to recommend a pit stop and why.
 
@@ -150,10 +162,22 @@ def estimate_pit_window(car_state: dict, wear_pct: float, fuel_per_lap: float | 
             if urgency != "high":
                 urgency = "medium"
 
+    # Same "how far can I go" projection as laps_of_fuel_left, just against
+    # the tire-wear budget instead of the fuel tank -- car dashboards do the
+    # same thing with a fuel gauge's estimated range.
+    laps_of_tire_left = None
+    if wear_per_lap and wear_per_lap > 0:
+        laps_of_tire_left = round(max(0.0, TIRE_CRITICAL_PCT - wear_pct) / wear_per_lap, 1)
+
+    candidates = [laps for laps in (laps_of_fuel_left, laps_of_tire_left) if laps is not None]
+    estimated_laps_remaining = min(candidates) if candidates else None
+
     return {
         "recommend_pit": urgency in ("medium", "high"),
         "urgency": urgency,
         "reasons": reasons,
         "tire_wear_pct": round(wear_pct, 1),
         "laps_of_fuel_left": laps_of_fuel_left,
+        "laps_of_tire_left": laps_of_tire_left,
+        "estimated_laps_remaining": estimated_laps_remaining,
     }
