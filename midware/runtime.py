@@ -884,7 +884,8 @@ async def _auto_engineer_alert_loop():
             engineer_strategy_tracker.update(car_state)
             car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
             car_state["pit_window"] = estimate_pit_window(
-                car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap
+                car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
+                engineer_strategy_tracker.wear_per_lap,
             )
             engineer_incident_tracker.update(car_state)
             recent_incidents = engineer_incident_tracker.recent_events
@@ -1424,7 +1425,8 @@ async def ask_engineer(body: dict):
     engineer_strategy_tracker.update(car_state)
     car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
     car_state["pit_window"] = estimate_pit_window(
-        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap
+        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
+        engineer_strategy_tracker.wear_per_lap,
     )
 
     # engineer_events.py: car_state is only ever "this instant" (see

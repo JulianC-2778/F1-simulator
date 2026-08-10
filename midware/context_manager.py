@@ -199,11 +199,17 @@ def format_car_state(car_state: dict) -> str:
         pit = car_state["pit_window"]
         laps_left = pit.get("laps_of_fuel_left")
         laps_left_text = "unknown" if laps_left is None else f"{laps_left:.1f}"
+        tire_laps_left = pit.get("laps_of_tire_left")
+        tire_laps_left_text = "unknown" if tire_laps_left is None else f"{tire_laps_left:.1f}"
+        overall_left = pit.get("estimated_laps_remaining")
+        overall_left_text = "unknown" if overall_left is None else f"{overall_left:.1f}"
         reasons_text = ", ".join(pit.get("reasons") or []) or "none"
         lines.append(
             f"Pit window analysis: recommend pit = {'yes' if pit.get('recommend_pit') else 'no'}, "
             f"urgency = {pit.get('urgency', 'low')}, reasons = {reasons_text}, "
-            f"estimated laps of fuel left = {laps_left_text}"
+            f"estimated laps of fuel left = {laps_left_text}, "
+            f"estimated laps until critical tire wear = {tire_laps_left_text}, "
+            f"estimated laps remaining before a pit is needed = {overall_left_text}"
         )
 
     # recent_incidents is optional -- only present when runtime.py's
