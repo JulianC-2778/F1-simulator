@@ -1474,6 +1474,10 @@ _stabilize_stuck_frames = 0      # module state: frames elapsed in that window
 # instead of re-braking to a stop it has already completed.
 _pit_docking  = False   # module state: committed to the current pit lane visit
 _pit_serviced = False   # module state: already captured + serviced this visit
+_pit_prev_angle: float | None = None   # module state: angle one tick ago, for the
+                                        # yaw-rate damping term in _pit_control's
+                                        # steer law (see its 2026-08-10 comment).
+                                        # None = no previous sample yet (fresh arm).
 
 # Fuel-per-lap tracking (bt parity — see SimpleStrategy.update(), strategy.cpp).
 # bt measures actual fuel burned over the last completed lap and uses that
@@ -1514,7 +1518,7 @@ def _reset_driver_state() -> None:
     global _target_lp, _line_lp, _stuck_progress_dist, _stuck_progress_frames, _stabilizing
     global _stabilize_bled, _avoid_lp, _front_gap_prev, _close_rate_lp, _launch_clutch_timer
     global _standoff_timer, _side_gap_prev, _side_close_rate_lp, _tpos_prev
-    global _pit_docking, _pit_serviced
+    global _pit_docking, _pit_serviced, _pit_prev_angle, _pit_prev_angle
     global _fuel_last_lap_time, _fuel_at_lap_start, _fuel_per_lap_est
     global _stabilize_stuck_dist, _stabilize_stuck_frames
     _stuck_frames = 0
@@ -1538,6 +1542,7 @@ def _reset_driver_state() -> None:
     _tpos_prev = None
     _pit_docking = False
     _pit_serviced = False
+    _pit_prev_angle = None
     _fuel_last_lap_time = 0.0
     _fuel_at_lap_start = None
     _fuel_per_lap_est = 0.0
@@ -1732,9 +1737,41 @@ _PIT_EDGE_TPOS = 0.75   # track_pos units: fallback aim if seg_width data is mis
 _PIT_LOOKAHEAD_M = 8.0  # metres: how far down the pit spline _pit_control aims its
                         # steering target (bt parity: PIT_LOOKAHEAD=6.0 in driver.cpp,
                         # see the 2026-08-10 comment on _pit_control's steer computation).
+_PIT_LEADIN_MAP_MARGIN = 0.85   # derate _track_model.limit_kmh by this much during the
+                                # pre-entry lead-in -- that limit assumes the racing
+                                # line's apex-widened effective radius, which a car
+                                # pinned to track_pos=0 (the whole point of the lead-in)
+                                # never gets. See the 2026-08-10 comment where it's used.
+_PIT_MAX_CRAB_ANGLE = 0.45   # rad (~26 deg): hard cap on aim_angle below. atan2(gap, 8 m)
+                             # is unbounded -- with box_tpos several track_pos units off
+                             # centreline (forza: ~3.45), the lateral gap stays large for
+                             # a long stretch of the approach (it only shrinks as tpos
+                             # itself catches up, which takes many ticks), so atan2 keeps
+                             # demanding a bigger aim_angle than the car has yet reached.
+                             # Verified live on forza: steer and angle grew in lockstep,
+                             # smoothly, tick over tick, from steer=-0.02/angle=+0.02 at
+                             # pit_entry all the way to steer=+0.84/angle=-1.09 rad (~62
+                             # deg) 97 steps later at the moment of impact -- the car was
+                             # never fighting the command or failing to respond, it was
+                             # faithfully chasing an aim_angle that the formula itself
+                             # never stopped raising. Capping aim_angle forces the ease to
+                             # take longer (more track distance) to converge instead of
+                             # commanding a heading no merge at speed should ever need.
 _PIT_ALIGN_TPOS  = 0.05   # track_pos units: lateral error tracked for the pit_aligned debug
                           # field only (see below) — no longer gates the speed target.
 _PIT_ALIGN_ANGLE = 0.05   # rad (~3 deg): heading error, same debug-only role as above.
+_PIT_YAW_DAMP = 2.0   # steer per (rad/s) of heading rate -- the missing derivative term
+                       # in _pit_control's steer law, see its 2026-08-10 comment. Raised
+                       # from the first attempt (0.4): verified live it slowed the drift
+                       # (angle's tick-over-tick growth was smaller than pre-damping runs)
+                       # but didn't stop it -- still net-unstable, just a slower climb to
+                       # the same crash. 0.4 wasn't enough authority to cancel whatever is
+                       # driving the growth; raised 5x.
+_PIT_BOX_OFFSET_M = 50.0   # metres: user-reported live/visual correction -- pit_start and
+                           # pit_end as TORCS reports them sit this far past where the pit
+                           # box row actually renders on forza. Subtracted from both before
+                           # use (see compute_control's pit dispatch). Not applied to
+                           # pit_entry/pit_exit -- only pit_start/pit_end were reported off.
 _PIT_CREEP_KMH   = 8.0    # km/h: minimum speed kept only during the APPROACH ease
                           # (pit_entry..pit_start, see the s_now <= s_start branch below).
                           # 2026-08-09: originally this floor also applied inside the stop
@@ -1775,25 +1812,55 @@ def _pit_control(state: dict[str, Any], s_now: float, s_lead: float, s_start: fl
     # is built entirely from car->_pit->pos.toMiddle, never normalized).
     # 2026-08-09: this legitimately reads several metres past the normal
     # +-1 track_pos range on real tracks (e.g. ~19 m on forza, whose pit
-    # apron is a 15 m widening of an 11 m base track) -- NOT a bad value,
-    # the pit lane really is that far off centreline. Converting with the
-    # LIVE current-segment width (seg_width) keeps it in exactly the frame
-    # track_pos itself is normalized by (2*toMiddle/seg->width, see
-    # dist_to_middle in scr_server.cpp), so a large target here is expected
-    # and correct, not a sign of a unit mismatch.
+    # apron is a 15 m widening of an 11 m base track) -- the MAGNITUDE has
+    # always checked out, the pit lane really is that far off centreline.
+    #
+    # 2026-08-10: the SIGN does not check out. Confirmed live watching
+    # forza: the track declares its pit side="right" (pit_side reads 1,
+    # TR_RGT), but steering toward the raw pit_box_offset's own sign sent
+    # the car to the opposite side of the track from the real pit garage,
+    # stopping ~50 m from it. track3.cpp's TR_PIT_ON_TRACK_SIDE placement
+    # code computes toMiddle in a way that does not match the side it was
+    # just told to place the pit on (see the toRight/toLeft trace that
+    # found this) -- a bug in that geometry code itself, not something
+    # introduced here. pit_side, by contrast, is an unprocessed read of the
+    # track file's own declared side and isn't touched by that bug, so it's
+    # the trustworthy source for direction; take the engine's real trackPos
+    # convention (+ left, - right -- confirmed via scr_server.cpp's
+    # unmodified toMiddle->trackPos passthrough on the CAR's own position,
+    # a completely different code path from the pit-placement one that's
+    # wrong) as ground truth for what that direction should be: right ->
+    # negative, left -> positive. Keep pit_box_offset for magnitude only.
     seg_width = state.get("seg_width", -1.0)
     box_m     = state.get("pit_box_offset", 0.0)
+    pit_side  = state.get("pit_side", -1)
+    sign = -1.0 if pit_side == 1 else (1.0 if pit_side == 2 else 0.0)
     if seg_width > 0.0:
-        box_tpos = box_m / (seg_width / 2.0)
+        box_tpos = sign * abs(box_m) / (seg_width / 2.0)
     else:
         # Fallback for a scr_server build predating pitBoxOffset/segWidth:
-        # just lean toward the pit side (track_pos "+ left, - right",
-        # tTrkLocPos.toMiddle convention; pitSide TR_RGT=1 / TR_LFT=2).
-        pit_side = state.get("pit_side", -1)
-        box_tpos = -_PIT_EDGE_TPOS if pit_side == 1 else (
-            _PIT_EDGE_TPOS if pit_side == 2 else 0.0)
+        # same sign, just no live magnitude to work with.
+        box_tpos = sign * _PIT_EDGE_TPOS
 
-    target_tpos = _pit_target_tpos(s_now, s_lead, s_start, s_end, s_exit, box_tpos)
+    # 2026-08-10: the lateral ease must NOT start at s_lead. s_lead exists
+    # purely to buy extra distance for the SPEED ease (see target_speed
+    # below) -- it says nothing about where the road actually has room for
+    # the car to move sideways. Checked forza's own track file: the segment
+    # named "pit entry" is a 58.5 m taper whose right-side extra width goes
+    # 2.0 m -> 15.0 m (i.e. box_tpos's ~15 m apron doesn't exist yet at its
+    # start and isn't full width until pit_start); every segment BEFORE
+    # "pit entry" has a plain wall at the normal track edge, zero extra
+    # width. With s_lead=-150 feeding straight into _pit_target_tpos, the
+    # smoothstep ease is already ~80% of the way to box_tpos by the time
+    # s_now reaches 0 (pit_entry) -- demanding several metres of pavement
+    # that, at that point on the track, simply is not there yet. That is
+    # what actually put the car into the wall on forza: not a control-loop
+    # bug, not a physics limit, but the ease being told to converge onto
+    # ground that hadn't started widening. Clamping the lateral ease's
+    # start to 0.0 (pit_entry itself, where the taper actually begins)
+    # keeps target_tpos pinned to the racing line for the whole lead-in and
+    # only lets it grow once there's real road backing it.
+    target_tpos = _pit_target_tpos(s_now, 0.0, s_start, s_end, s_exit, box_tpos)
     aligned  = (abs(tpos - target_tpos) < _PIT_ALIGN_TPOS
                 and abs(angle) < _PIT_ALIGN_ANGLE)
     # TEMP DEBUG (2026-08-10): TORCS's own pit-capture gate (raceengine.cpp
@@ -1826,22 +1893,65 @@ def _pit_control(state: dict[str, Any], s_now: float, s_lead: float, s_start: fl
         # distance to shed speed, on top of more distance to converge.
         ease = _pit_ease(s_now, s_lead, s_start)
         target_speed = limit_kmh + (_PIT_CREEP_KMH - limit_kmh) * ease
+        # 2026-08-10: this ease schedule has no idea the track curves here --
+        # forza's own lead-in is mostly two real corners (curve 25/26, radii
+        # 190.5 m / 410 m) with only 30 m of actual straight before pit
+        # entry, not the straight it was designed assuming. Braking hard
+        # AND holding track_pos rigidly at 0 through a real corner asks for
+        # combined lateral + longitudinal grip a tyre's friction circle
+        # can't supply -- verified live: even with the steer-gain fix above,
+        # the car still drifted off centre through here and got stuck at low
+        # speed on the shoulder. The main driving path already has a
+        # corner-aware cap for exactly this (_track_model.limit_kmh, built
+        # from the track's real geometry -- same source ATTACK/NORMAL use,
+        # see the map-corner branch in compute_control above); pit docking
+        # never consulted it because _pit_control used to only run at creep
+        # speed, where corner grip was never in question. Now that the
+        # lead-in covers real corners at real speed, take whichever target
+        # is lower, same as the main path does.
+        # 2026-08-10: the map's limit_kmh is calibrated for the RACING LINE
+        # (_track_model.line_tpos hugs the apex, widening the effective
+        # corner radius -- see the map-corner branch in compute_control
+        # above) -- verified live it still let the car do 145-148 km/h
+        # through curve 25 (190.5 m radius) while braking hard, pinned to
+        # track_pos=0 the whole time. A car glued to centre never gets that
+        # apex-widened radius, so the same limit is genuinely too generous
+        # for it. Derate it for the lead-in specifically -- PIT never takes
+        # the racing line here, so it should never get the racing-line
+        # speed either.
+        dist_from_start = state.get("dist_from_start", -1.0)
+        if _track_model is not None and dist_from_start >= 0.0:
+            map_limit = _track_model.limit_kmh(dist_from_start) * _PIT_LEADIN_MAP_MARGIN
+            target_speed = min(target_speed, map_limit)
     elif not released:
-        # 2026-08-10 (bt parity, driver.cpp filterBPit): bt never holds a
-        # minimum creep speed in the stop zone -- it brake-distance-computes
-        # toward a full stop and, once at/past the pit location, holds
-        # brake=1.0 unconditionally regardless of current speed or lateral
-        # alignment (see pit.cpp / filterBPit's "Stop in the pit" branch).
-        # Our old _PIT_CREEP_KMH floor (8 km/h) sat ABOVE the engine's own
-        # capture gate (car->_speed_x < 1.0 m/s =~ 3.6 km/h, checked in
-        # raceengine.cpp ReManage) -- gating the drop to 0 on `aligned` meant
-        # a car that never converged laterally would cruise the whole
-        # [s_start, s_end] zone at 8 km/h and sail through uncaptured every
-        # time. Target 0 unconditionally for the whole zone (dropped the
-        # `s_now <= s_end` upper bound too, so an overshoot keeps braking
-        # instead of giving up) so the car actually comes to rest instead of
-        # perpetually creeping through.
-        target_speed = 0.0
+        # 2026-08-10: restore an alignment-gated creep floor instead of an
+        # unconditional 0. The unconditional-0 version existed because the
+        # OLD lateral-convergence law never actually converged (wrong
+        # pit-side sign, unbounded aim_angle, and the ease starting 150 m
+        # before the road had any extra width to swing into -- all fixed
+        # above), so gating the drop to 0 on `aligned` back then just meant
+        # a car that could never reach box_tpos crept through the whole
+        # [s_start, s_end] zone at 8 km/h and sailed out uncaptured every
+        # time. Now that the lateral law actually converges, forcing 0 the
+        # instant s_now crosses s_start cuts that convergence off early:
+        # verified live on forza, the 58.5 m [pit_entry, pit_start] gap
+        # isn't enough room to both shed speed AND swing tpos onto box_tpos
+        # while capped at _PIT_MAX_CRAB_ANGLE, so the car braked to a dead
+        # stop well short of the box, still laterally uncommitted, with no
+        # speed left to keep converging. Hold the creep floor until actually
+        # aligned, using the rest of [s_start, s_end] (there's ~130 m of it
+        # on forza) to finish the swing; past s_end, still target 0
+        # regardless of alignment -- same overshoot protection the
+        # unconditional version had, just scoped to when the room to
+        # converge has actually run out instead of from the first metre.
+        # Gated on LATERAL alignment only (tpos, not the full `aligned`
+        # which also checks angle) -- once the car has actually reached
+        # target_tpos there's no more lateral distance left to buy with a
+        # creep floor, so brake hard regardless of residual heading error;
+        # it's only *before* reaching target_tpos that continuing to creep
+        # instead of stopping dead is the point of this whole change.
+        tpos_ok = abs(tpos - target_tpos) < _PIT_ALIGN_TPOS
+        target_speed = 0.0 if (tpos_ok or s_now > s_end) else _PIT_CREEP_KMH
     else:
         target_speed = limit_kmh
 
@@ -1866,13 +1976,80 @@ def _pit_control(state: dict[str, Any], s_now: float, s_lead: float, s_start: fl
     # between that aim direction and the car's actual heading. Once the car
     # is already pointed correctly to converge, this naturally settles near
     # 0 instead of being cancelled by a competing "hold angle 0" objective.
-    target_tpos_ahead = _pit_target_tpos(s_now + _PIT_LOOKAHEAD_M, s_lead, s_start,
+    # 0.0, not s_lead: see the matching comment on target_tpos above -- the
+    # lateral ease must not anticipate road width the track doesn't have yet.
+    target_tpos_ahead = _pit_target_tpos(s_now + _PIT_LOOKAHEAD_M, 0.0, s_start,
                                           s_end, s_exit, box_tpos)
+    # 2026-08-10: during the entry ease (s_now <= s_start) the schedule is
+    # monotonic toward box_tpos, so the car's actual tpos should never lead
+    # target_tpos_ahead -- if it does (e.g. after swerving hard around an
+    # opponent while merging into the pit lane), the fixed 8 m lookahead
+    # produces an aim_angle that, by coincidence, ends up close to the car's
+    # already-steep heading, so (aim_angle - angle) collapses toward 0 and
+    # the steering law stops correcting. Verified live on forza: the car
+    # settled into a stable ~52 deg crab angle at 77 km/h with the schedule
+    # 2.5 track_pos units behind it (pit_tpos_err +2.55) and coasted straight
+    # into the pit-apron wall, never straightening out. Clamping the
+    # lookahead target to the car's own current tpos (capped at box_tpos)
+    # whenever it's already ahead of schedule makes the aim point "go
+    # straight from here" instead of "keep swinging further", which drives
+    # (aim_angle - angle) strongly positive again and pulls the heading back
+    # down. Only applied during the entry ease -- the hold/exit phases decay
+    # tpos back toward 0 on purpose, where "ahead of schedule" is the normal,
+    # wanted state, not overshoot.
+    if s_now <= s_start:
+        if box_tpos >= 0.0:
+            target_tpos_ahead = max(target_tpos_ahead, min(tpos, box_tpos))
+        else:
+            target_tpos_ahead = min(target_tpos_ahead, max(tpos, box_tpos))
     lateral_gap_tpos = target_tpos_ahead - tpos
     half_width = (seg_width / 2.0) if seg_width > 0.0 else 5.5   # 5.5 m: half of an 11 m track, same fallback scale as _PIT_EDGE_TPOS
     lateral_gap_m = lateral_gap_tpos * half_width
-    aim_angle = math.atan2(lateral_gap_m, _PIT_LOOKAHEAD_M)
-    steer = clamp((aim_angle - angle) * _PARAMS[PIT].steer_gain - speed_y * _STEER_DAMP,
+    aim_angle = clamp(math.atan2(lateral_gap_m, _PIT_LOOKAHEAD_M),
+                       -_PIT_MAX_CRAB_ANGLE, _PIT_MAX_CRAB_ANGLE)
+    # 2026-08-10: PIT's steer_gain (1.50, the highest of any strategy) was
+    # tuned for the slow, precise final docking move -- the only regime
+    # _pit_control used to run in before s_lead got extended to -150 m to
+    # buy room to converge (see _pit_target_tpos's history above). That
+    # extension put this same 1.50 gain in charge of the car at highway
+    # speed too (still ~90-160 km/h through most of the lead-in, since
+    # target_tpos is pinned at 0 there and there's nothing to converge onto
+    # yet -- see the lateral-ease fix above). Verified live on forza: with
+    # a rock-steady target_tpos=0.00 the whole lead-in, the car still
+    # oscillated -- tpos swinging 0 -> +0.67 -> -1.16 while angle swung
+    # -0.19 -> +1.11 rad, growing each cycle until it crashed, never
+    # touching the target. That is a classic overgained feedback loop, not
+    # a target-tracking bug: the same gain that is precise at an 8 km/h
+    # creep is twitchy enough at 90+ km/h to overshoot and resonate. Use
+    # NORMAL's gain (0.85, the same value already trusted to hold a
+    # straight line at these speeds) for the lead-in, where the job really
+    # is just "hold centre and brake" -- only switch to PIT's higher gain
+    # once inside [pit_start, pit_exit], where speed has already bled down
+    # to creep pace and the tighter precision is both needed and safe.
+    steer_gain = _PARAMS[NORMAL].steer_gain if s_now <= 0.0 else _PARAMS[PIT].steer_gain
+    # 2026-08-10: yaw-rate damping. Verified live, at NORMAL's own gain, on
+    # a straight (no corner, no speed issue -- s_now already inside the
+    # lead-in's clear final stretch): the car still drifted smoothly off a
+    # constant target_tpos=0.00, tpos and angle growing together in
+    # lockstep from tpos=+0.16/angle=-0.03 out to a crash 30+ ticks later,
+    # never correcting. That is not an aim-point or gain-magnitude problem
+    # -- it is textbook underdamped overshoot: steering -> yaw rate ->
+    # heading -> lateral position is a chain of integrators, and the only
+    # damping this law had (speed_y * _STEER_DAMP) acts on lateral
+    # velocity, not on how fast the heading itself is rotating. Once angle
+    # started swinging through zero under the position correction alone,
+    # nothing resisted the swing continuing past it, so it overshot,
+    # triggered the opposite correction, overshot further, and so on.
+    # Add a term directly proportional to the heading's own rate of
+    # change (angle one tick ago vs now, over the fixed 50 Hz tick) so a
+    # fast-rotating heading gets pulled up regardless of where target_tpos
+    # or aim_angle currently sit -- the missing "D" in this loop's P
+    # control.
+    global _pit_prev_angle
+    angle_rate = 0.0 if _pit_prev_angle is None else (angle - _pit_prev_angle) / _TICK_S
+    _pit_prev_angle = angle
+    steer = clamp((aim_angle - angle) * steer_gain
+                   - speed_y * _STEER_DAMP - angle_rate * _PIT_YAW_DAMP,
                   -1.0, 1.0)
 
     excess = speed - target_speed
@@ -2001,13 +2178,40 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
         # _near_pit_lane), so the lane change starts the moment the car
         # actually starts slowing down instead of waiting until it's
         # nearly out of room.
-        if track_len > 0.0 and raw_s > track_len - _PIT_APPROACH_DIST:
+        # 2026-08-10: use _PIT_DOCK_LEAD_DIST here, NOT _PIT_APPROACH_DIST.
+        # They used to be the same 150 m constant, but they answer different
+        # questions: _PIT_APPROACH_DIST (see _near_pit_lane) is about when
+        # the STRATEGY layer commits to PIT at all -- 150 m of early notice
+        # is fine and safe, that's just a label. This is about when
+        # _pit_control's own rigid, track_pos-pinned docking law takes over
+        # from ordinary (curve-aware, pursuit-based) driving. Checked
+        # forza's own geometry: the 150 m before pit_entry is mostly two
+        # real corners (curve 25/26, radii 190.5 m / 410 m) with only the
+        # last 30 m actually straight. Pinning track_pos to 0 through a real
+        # corner demands lateral grip a centre-line car doesn't have the
+        # apex-widened radius to spare, especially while also braking hard
+        # for the pit -- verified live, even after capping speed via the
+        # map (see target_speed below) the car still drifted off centre and
+        # got stuck there every time. Ordinary driving already corners
+        # curve 25/26 correctly (pursuit-based steering, not a rigid pin,
+        # using the same map-based corner speed); handing off to the
+        # specialised docking law only once inside _PIT_DOCK_LEAD_DIST of
+        # pit_entry keeps it entirely on the straight and taper, where
+        # holding track_pos steady was always the right idea.
+        if track_len > 0.0 and raw_s > track_len - _PIT_DOCK_LEAD_DIST:
             s_now = raw_s - track_len   # negative: metres still to go before entry
         else:
             s_now = raw_s
-        s_lead  = -_PIT_APPROACH_DIST
-        s_start = _pit_spline_coord(state.get("pit_start", pit_entry), pit_entry, track_len)
-        s_end   = _pit_spline_coord(state.get("pit_end",   pit_entry), pit_entry, track_len)
+        s_lead  = -_PIT_DOCK_LEAD_DIST
+        # 2026-08-10: user-reported live/visual correction -- the pit box
+        # row (pit_start..pit_end) as TORCS reports it sits _PIT_BOX_OFFSET_M
+        # further down the track than where it actually renders. Pull both
+        # markers back by that much before converting to local coordinates;
+        # pit_entry and pit_exit are left alone (not reported as off).
+        s_start = _pit_spline_coord(state.get("pit_start", pit_entry) - _PIT_BOX_OFFSET_M,
+                                     pit_entry, track_len)
+        s_end   = _pit_spline_coord(state.get("pit_end",   pit_entry) - _PIT_BOX_OFFSET_M,
+                                     pit_entry, track_len)
         s_exit  = _pit_spline_coord(state.get("pit_exit",  pit_entry), pit_entry, track_len)
         in_lane      = s_now <= s_exit          # lead-in window through the pit lane proper
         in_pit_range = 0.0 <= s_now <= s_exit   # bt's isBetween(): raw [pit_entry, pit_exit] ONLY,
@@ -2052,6 +2256,7 @@ def compute_control(state: dict[str, Any], strategy: str = NORMAL) -> str:
             # leaving the normal approach path (which always passes through
             # the lead-in first) completely unaffected.
             _pit_docking = True
+            _pit_prev_angle = None
             if state.get("in_pit_stop", 0):
                 _pit_serviced = True
             _dbg["mode"] = "pit"
@@ -2606,6 +2811,17 @@ _FUEL_CAUTION_ENABLED = False
 # the car room to brake down from ATTACK's ~330 km/h target before reaching
 # the pit-lane speed limit.
 _PIT_APPROACH_DIST = 150.0   # metres
+
+# 2026-08-10: how close to pit_entry _pit_control's own rigid docking law
+# (track_pos pinned to 0, then eased onto box_tpos) is allowed to take over
+# from ordinary pursuit-based driving. Deliberately NOT the same as
+# _PIT_APPROACH_DIST above -- see the comment where this is used in
+# compute_control for why forcing centre-line through real corners (as the
+# old shared 150 m value did) doesn't work. 40 m clears forza's last real
+# corner (curve 26 ends 30 m out) with a small margin, leaving the docking
+# law entirely on straight/taper road, where holding track_pos steady is
+# actually achievable.
+_PIT_DOCK_LEAD_DIST = 40.0   # metres
 
 
 def _near_pit_lane(state: dict[str, Any]) -> bool:
@@ -3817,11 +4033,15 @@ def _run_tests() -> None:
     # range (see compute_control's `in_pit_range` gate) -- pit_cs's
     # dist_from_start=125 (s_now=75) sits inside that range, so tests that
     # want to exercise the stop zone need to arm the latch first via one
-    # call from the lead-in, exactly like a real approach would. dist=1950
-    # on this 2000 m track is 100 m before pit_entry (wraps through 0),
-    # comfortably inside the 150 m lead-in window.
+    # call from the lead-in, exactly like a real approach would. dist=20.0
+    # is 30 m before pit_entry=50.0 (_pit_spline_coord wraps it to -30
+    # through the 2000 m track length), comfortably inside
+    # _PIT_DOCK_LEAD_DIST's 40 m lead-in window (NOT _PIT_APPROACH_DIST's
+    # 150 m -- that constant now only gates when the STRATEGY layer commits
+    # to PIT, not when this rigid docking law takes over from ordinary
+    # driving; see the comment in compute_control).
     def _arm_pit_docking():
-        compute_control({**pit_cs, "dist_from_start": 1950.0, "speed_x": 90.0}, PIT)
+        compute_control({**pit_cs, "dist_from_start": 20.0, "speed_x": 90.0}, PIT)
 
     _reset_driver_state()
     _arm_pit_docking()
