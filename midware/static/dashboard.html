@@ -848,10 +848,11 @@
           </div>
         </details>
         <h2 class="card-title">Ask the race engineer</h2>
-        <button id="engAlertsToggle" class="secondary" style="font-size:0.8rem;padding:6px 10px;width:auto;margin-bottom:10px;"
+        <button id="engAlertsToggle" class="secondary" style="font-size:0.8rem;padding:6px 10px;width:auto;"
                 title="When on, the engineer speaks up on its own for high-severity situations (off track, critical pit window) without being asked. Off by default.">
           🔔 Proactive alerts: off
         </button>
+        <div id="engAlertsNote" style="color:var(--text-faint);font-size:0.78rem;margin:4px 0 10px;">Off — the engineer only speaks when you ask.</div>
         <div class="feed" id="engFeed"><div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div></div>
         <div class="composer">
           <textarea id="engQuestion" placeholder="e.g. How are the tyres holding up?"></textarea>
@@ -875,6 +876,7 @@
               <label for="enStream" style="margin:0;text-transform:none;letter-spacing:0;">Streaming output</label>
             </div>
             <button id="enSaveModelBtn" class="secondary" style="width:100%">Save connection</button>
+            <div id="enTokenStatsAdvanced" style="margin-top:10px;color:var(--text-faint);font-size:0.76rem;">-- / -- tokens used</div>
           </details>
         </div>
         <div class="panel panel-pad">
@@ -887,7 +889,7 @@
           </div>
           <button class="secondary" id="engClearBtn" style="width:100%">Clear history</button>
           <button class="secondary" id="engExportBtn" style="width:100%;margin-top:8px">Export conversation</button>
-          <div id="engStats" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">-- / -- tokens</div>
+          <div id="engStats" title="-- / -- tokens" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">Conversation memory: -- % used</div>
         </div>
         <div class="panel panel-pad">
           <div class="section-title">Voice input</div>
@@ -1101,6 +1103,7 @@ const State = {
   cmPlaybackTimer: null,
   cmPlaybackDoneReported: true,
   engStreaming: null,
+  engThinkingTimer: null,
   engRecording: false,
   engAlertsEnabled: false,
   coSessionId: null,
@@ -2088,22 +2091,43 @@ function engAppendUser(text) {
   $("engFeed").appendChild(el);
   $("engFeed").scrollTop = $("engFeed").scrollHeight;
 }
+function engStopThinkingTimer() {
+  if (State.engThinkingTimer) {
+    clearInterval(State.engThinkingTimer);
+    State.engThinkingTimer = null;
+  }
+}
+
 function engOnStart() {
   engClearEmpty();
   const el = document.createElement("div");
   el.className = "msg ai";
-  el.textContent = "…";
+  el.textContent = "Thinking…";
   $("engFeed").appendChild(el);
   State.engStreaming = { el, text: "" };
   $("engFeed").scrollTop = $("engFeed").scrollHeight;
+
+  // /api/engineer/ask doesn't stream (see runtime.py's ask_engineer --
+  // stream=False), so there's nothing to render token-by-token here; this
+  // is just a lightweight "still alive" ticker so a several-second wait
+  // doesn't read as a frozen page. engOnDone/engOnError clear it.
+  engStopThinkingTimer();
+  const startedAt = Date.now();
+  State.engThinkingTimer = setInterval(() => {
+    if (!State.engStreaming) { engStopThinkingTimer(); return; }
+    const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+    State.engStreaming.el.textContent = `Thinking… (${elapsedSeconds}s)`;
+  }, 1000);
 }
 function engOnDone(content) {
+  engStopThinkingTimer();
   if (!State.engStreaming) engOnStart();
   State.engStreaming.el.textContent = content || State.engStreaming.text;
   State.engStreaming = null;
   engLoadStats();
 }
 function engOnError(message) {
+  engStopThinkingTimer();
   engClearEmpty();
   const el = document.createElement("div");
   el.className = "msg err";
@@ -2221,7 +2245,19 @@ async function engLoadStats() {
     const r = await fetch("/api/engineer/history");
     const data = await r.json();
     const s = data.stats || {};
-    $("engStats").textContent = `${(s.history_tokens || 0) + (s.system_tokens || 0)} / ${s.max_context_tokens || "--"} tokens`;
+    const used = (s.history_tokens || 0) + (s.system_tokens || 0);
+    const max = s.max_context_tokens || 0;
+    const raw = `${used} / ${max || "--"} tokens`;
+    // "tokens" is an LLM implementation detail a driver has no reason to
+    // know -- the plain-language version (how full the engineer's memory
+    // of this conversation is) is the primary, always-visible label; the
+    // raw number is still reachable (hover here, or the Model connection
+    // section below) for anyone who wants it, just not the headline.
+    const pct = max > 0 ? Math.round((used / max) * 100) : 0;
+    $("engStats").textContent = `Conversation memory: ${pct}% used`;
+    $("engStats").title = raw;
+    const advanced = $("enTokenStatsAdvanced");
+    if (advanced) advanced.textContent = raw + " used";
     if (data.style) $("engStyleSelect").value = data.style;
   } catch (e) { /* ignore */ }
 }
@@ -2231,6 +2267,12 @@ async function engApplyAlertsButton(enabled) {
   const btn = $("engAlertsToggle");
   btn.textContent = enabled ? "🔔 Proactive alerts: on" : "🔔 Proactive alerts: off";
   btn.classList.toggle("recording", enabled);
+  // Always-visible explanation, not hover-only -- a first-time user (or
+  // anyone on a touch device, where hover tooltips don't exist) should be
+  // able to tell what this does without discovering the title attribute.
+  $("engAlertsNote").textContent = enabled
+    ? "On — the engineer will speak up on its own for urgent situations (off track, critical tires or fuel), without you asking."
+    : "Off — the engineer only speaks when you ask.";
 }
 
 async function engCheckAlerts() {
