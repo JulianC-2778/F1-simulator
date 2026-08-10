@@ -10,7 +10,7 @@ for a real-time racing use case.
 
 import unittest
 
-from midware.runtime import _EXPLAIN_REQUEST_RE, _first_sentence, _unavailable_data_topic
+from midware.runtime import _EXPLAIN_REQUEST_RE, _first_sentence, _next_engineer_alert, _unavailable_data_topic
 
 
 class FirstSentenceTests(unittest.TestCase):
@@ -95,6 +95,59 @@ class UnavailableDataTopicDetectionTests(unittest.TestCase):
 
     def test_fuel_question_is_not_flagged(self):
         self.assertIsNone(_unavailable_data_topic("how much fuel do I have left?"))
+
+
+def _priority(top_priority="pit now", severity="high", reason="tires"):
+    return {"top_priority": top_priority, "severity": severity, "reason": reason}
+
+
+class NextEngineerAlertTests(unittest.TestCase):
+    def test_low_severity_never_alerts(self):
+        text, key = _next_engineer_alert(_priority(severity="low"), active_key=None)
+        self.assertIsNone(text)
+        self.assertIsNone(key)
+
+    def test_medium_severity_never_alerts(self):
+        text, key = _next_engineer_alert(_priority(severity="medium"), active_key=None)
+        self.assertIsNone(text)
+
+    def test_high_severity_fires_an_alert(self):
+        text, key = _next_engineer_alert(_priority(top_priority="pit now", severity="high", reason="tires"), None)
+        self.assertEqual(text, "Pit now -- tires")
+        self.assertEqual(key, "pit now")
+
+    def test_same_active_priority_does_not_fire_again(self):
+        # Edge-triggered: still "pit now" from last tick -- stay quiet.
+        text, key = _next_engineer_alert(_priority(top_priority="pit now", severity="high"), active_key="pit now")
+        self.assertIsNone(text)
+        self.assertEqual(key, "pit now")
+
+    def test_a_different_high_priority_fires_a_new_alert(self):
+        # e.g. was alerting "pit now", now it's "get back on track" instead.
+        text, key = _next_engineer_alert(
+            _priority(top_priority="get back on track", severity="high", reason="off track"),
+            active_key="pit now",
+        )
+        self.assertEqual(text, "Get back on track -- off track")
+        self.assertEqual(key, "get back on track")
+
+    def test_dropping_below_high_clears_the_active_key(self):
+        text, key = _next_engineer_alert(_priority(severity="medium"), active_key="pit now")
+        self.assertIsNone(text)
+        self.assertIsNone(key)
+
+    def test_same_priority_fires_again_after_dropping_and_returning(self):
+        # First tick: severity drops, active key clears.
+        _, key = _next_engineer_alert(_priority(severity="low"), active_key="pit now")
+        self.assertIsNone(key)
+        # Second tick: back to high with the same top_priority -- re-arms.
+        text, key = _next_engineer_alert(_priority(top_priority="pit now", severity="high"), key)
+        self.assertIsNotNone(text)
+        self.assertEqual(key, "pit now")
+
+    def test_alert_text_has_no_trailing_dash_when_reason_is_empty(self):
+        text, _ = _next_engineer_alert(_priority(top_priority="pit now", severity="high", reason=""), None)
+        self.assertEqual(text, "Pit now")
 
 
 if __name__ == "__main__":

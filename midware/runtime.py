@@ -129,6 +129,16 @@ _engineer_style = "professional"
 engineer_strategy_tracker = RaceStrategyTracker()
 engineer_incident_tracker = IncidentTracker()
 
+# -- Proactive engineer radio alerts -- opt-in (off by default) so the
+# engineer stays silent-until-asked unless the driver explicitly turns this
+# on; see POST /api/engineer/alerts. _engineer_alert_active_key tracks which
+# top_priority we last alerted for, edge-triggered the same way
+# engineer_events.py's off-track detection is: fires once when severity
+# becomes "high", stays quiet while it remains that same priority, and
+# re-arms once severity drops back down.
+_engineer_proactive_alerts_enabled = False
+_engineer_alert_active_key: str | None = None
+
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
 # recorder because only one dashboard operator is expected to be recording
@@ -155,6 +165,7 @@ commentary_engine = CommentaryEngine(
     )
 )
 _auto_task: asyncio.Task | None = None
+_auto_engineer_alert_task: asyncio.Task | None = None
 _commentary_task: asyncio.Task | None = None
 _commentary_priority: int = 0
 # -- queue 模式（interrupt_mode == "queue"）状态 --
@@ -826,6 +837,67 @@ async def _auto_commentary_loop():
 
         except Exception as e:
             log.warning(f"自动解说失败: {e}")
+
+
+def _next_engineer_alert(priority: dict, active_key: str | None) -> tuple[str | None, str | None]:
+    """Pure decision: given the current priority conclusion and what we last
+    alerted for, decide whether to fire a new proactive alert now.
+
+    Returns (alert_text_or_None, new_active_key). Edge-triggered the same
+    way engineer_events.py's off-track detection is: fires once when
+    severity becomes "high", stays quiet while it remains that same
+    priority, and re-arms once severity drops back down (see
+    _engineer_alert_active_key's docstring above).
+    """
+    if priority["severity"] != "high":
+        return None, None
+    if priority["top_priority"] == active_key:
+        return None, active_key
+    text = f"{priority['top_priority'].capitalize()} -- {priority['reason']}".rstrip(" -")
+    return text, priority["top_priority"]
+
+
+async def _auto_engineer_alert_loop():
+    """Proactive radio alerts: unlike ask_engineer(), which only updates the
+    tire/incident trackers when the driver actually asks something, this
+    polls telemetry on its own so the engineer can speak up unprompted for
+    high-severity situations (currently off track, or a critical pit
+    window) -- opt-in via POST /api/engineer/alerts, off by default so it
+    never talks unless explicitly turned on. Reuses estimate_pit_window(),
+    engineer_incident_tracker, and summarize_priority() exactly as
+    ask_engineer() does -- same signals, same thresholds, no separate
+    "alert" logic to keep in sync with the Q&A path.
+    """
+    global _engineer_alert_active_key
+    while True:
+        await asyncio.sleep(1.0)
+        if not runtime_manager.is_enabled("engineer") or not _engineer_proactive_alerts_enabled:
+            _engineer_alert_active_key = None
+            continue
+
+        telemetry, _rankings = telemetry_store.latest()
+        if not telemetry:
+            continue
+
+        try:
+            car_state = telemetry_to_car_state(telemetry)
+            engineer_strategy_tracker.update(car_state)
+            car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
+            car_state["pit_window"] = estimate_pit_window(
+                car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap
+            )
+            engineer_incident_tracker.update(car_state)
+            recent_incidents = engineer_incident_tracker.recent_events
+            priority = summarize_priority(car_state, car_state["pit_window"], recent_incidents)
+
+            alert_text, _engineer_alert_active_key = _next_engineer_alert(priority, _engineer_alert_active_key)
+            if alert_text is None:
+                continue
+
+            engineer_ctx_mgr.add_assistant(alert_text)
+            await broadcast({"type": "engineer_alert", "content": alert_text, "priority": priority})
+        except Exception as e:
+            log.warning(f"proactive engineer alert failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1558,6 +1630,22 @@ async def stop_engineer_voice():
     return {"ok": True, "text": text}
 
 
+@app.get("/api/engineer/alerts")
+async def get_engineer_alerts_enabled():
+    return {"enabled": _engineer_proactive_alerts_enabled}
+
+
+@app.post("/api/engineer/alerts")
+async def set_engineer_alerts_enabled(body: dict):
+    """Opt-in toggle for _auto_engineer_alert_loop -- off by default, see
+    that function's docstring."""
+    global _engineer_proactive_alerts_enabled, _engineer_alert_active_key
+    _engineer_proactive_alerts_enabled = bool(body.get("enabled"))
+    if not _engineer_proactive_alerts_enabled:
+        _engineer_alert_active_key = None
+    return {"ok": True, "enabled": _engineer_proactive_alerts_enabled}
+
+
 @app.get("/api/bot/status")
 async def get_bot_status():
     return {"status": bot_status_service.snapshot().model_dump(mode="json")}
@@ -1918,15 +2006,16 @@ async def startup():
     log.info(f"UDP 监听器启动 0.0.0.0:{config.TELEMETRY_UDP_PORT}")
 
     # 启动自动解说循环
-    global _auto_task
+    global _auto_task, _auto_engineer_alert_task
     _auto_task = asyncio.create_task(_auto_commentary_loop())
+    _auto_engineer_alert_task = asyncio.create_task(_auto_engineer_alert_loop())
     log.info(f"服务启动完成 → {config.MIDWARE_BASE_URL}")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _auto_task, _commentary_task
-    for task in (_auto_task, _commentary_task):
+    global _auto_task, _commentary_task, _auto_engineer_alert_task
+    for task in (_auto_task, _commentary_task, _auto_engineer_alert_task):
         if task and not task.done():
             task.cancel()
     telemetry_service.stop()
