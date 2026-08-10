@@ -44,6 +44,7 @@ from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDeci
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
 from tire_strategy import RaceStrategyTracker, estimate_pit_window
 from engineer_events import IncidentTracker
+from engineer_priority import summarize_priority
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -1362,6 +1363,13 @@ async def ask_engineer(body: dict):
     recent_incidents = engineer_incident_tracker.recent_events
     if recent_incidents:
         car_state["recent_incidents"] = recent_incidents
+
+    # engineer_priority.py: synthesizes the above (plus the off-track/
+    # near-edge problem labels race_analyzer.py already computed) into a
+    # single top-priority conclusion, instead of leaving an 8B local model
+    # to weigh tire/fuel urgency against a fresh incident against currently
+    # being off track on its own.
+    car_state["priority"] = summarize_priority(car_state, car_state["pit_window"], recent_incidents)
 
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()
