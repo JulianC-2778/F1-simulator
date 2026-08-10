@@ -37,6 +37,39 @@ class FormatCarStateTests(unittest.TestCase):
         text = format_car_state({"problems": ["normal"]})
         self.assertIn("Detected issues: None -- car is on track and under control.", text)
 
+    def test_renders_pit_window_including_estimated_laps_remaining(self):
+        car_state = {
+            "problems": [],
+            "pit_window": {
+                "recommend_pit": True,
+                "urgency": "high",
+                "reasons": ["tires", "fuel"],
+                "laps_of_fuel_left": 3.0,
+                "laps_of_tire_left": 1.5,
+                "estimated_laps_remaining": 1.5,
+            },
+        }
+        text = format_car_state(car_state)
+        self.assertIn(
+            "Pit window analysis: recommend pit = yes, urgency = high, reasons = tires, fuel, "
+            "estimated laps of fuel left = 3.0, estimated laps until critical tire wear = 1.5, "
+            "estimated laps remaining before a pit is needed = 1.5",
+            text,
+        )
+
+    def test_pit_window_shows_unknown_when_laps_estimates_are_not_available(self):
+        car_state = {
+            "problems": [],
+            "pit_window": {
+                "recommend_pit": False, "urgency": "low", "reasons": [],
+                "laps_of_fuel_left": None, "laps_of_tire_left": None, "estimated_laps_remaining": None,
+            },
+        }
+        text = format_car_state(car_state)
+        self.assertIn("estimated laps of fuel left = unknown", text)
+        self.assertIn("estimated laps until critical tire wear = unknown", text)
+        self.assertIn("estimated laps remaining before a pit is needed = unknown", text)
+
     def test_omits_recent_incidents_line_when_none_have_happened(self):
         # recent_incidents is only added to car_state by runtime.py's
         # ask_engineer once engineer_events.py's IncidentTracker has found
