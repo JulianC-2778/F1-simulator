@@ -21,6 +21,7 @@ import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,8 @@ import config
 from telemetry_common import extract_json_object
 from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
+from tire_strategy import RaceStrategyTracker, estimate_pit_window
+from engineer_events import IncidentTracker
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -122,6 +125,8 @@ engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PER
 # turns, even after the system prompt changes).
 _ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSONA_CONCISE}
 _engineer_style = "professional"
+engineer_strategy_tracker = RaceStrategyTracker()
+engineer_incident_tracker = IncidentTracker()
 
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
@@ -1289,6 +1294,39 @@ def _first_sentence(text: str) -> str:
 # what gets displayed afterwards.
 _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 
+# Topics car_state (see race_analyzer.CAR_STATE_KEYS) categorically never
+# has -- TORCS's SCR telemetry doesn't report any of these, and neither do
+# this module's own heuristic additions (tire_wear_pct/pit_window/
+# recent_incidents). ENGINEER_PERSONA already tells the model "never invent
+# numbers", but that's asking an 8B local model to police itself; answering
+# these deterministically is the same "compute the real answer in Python,
+# don't trust the model to reason about it" pattern tire_strategy.py's
+# module docstring already uses for pit-window math. A question that
+# doesn't match any of these just falls through to the model as normal --
+# this never blocks or changes behavior for anything else.
+_UNAVAILABLE_DATA_TOPICS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bt[iy]re pressure\b", re.IGNORECASE), "tire pressure"),
+    (re.compile(r"\bt[iy]re temp(erature)?\b", re.IGNORECASE), "tire temperature"),
+    (re.compile(r"\bbrake temp(erature)?\b", re.IGNORECASE), "brake temperature"),
+    (re.compile(r"\b(engine|water) temp(erature)?\b", re.IGNORECASE), "engine temperature"),
+    (re.compile(r"\bweather\b|\braining\b|\btrack temp(erature)?\b", re.IGNORECASE), "weather or track temperature"),
+    (re.compile(r"\bsector\b|\bsplit time", re.IGNORECASE), "sector times"),
+    (re.compile(r"\bdrs\b|\bers\b|\bkers\b", re.IGNORECASE), "DRS/ERS/KERS systems"),
+    (
+        re.compile(r"\bhow many laps (are )?(left|remaining)\b|\blaps? (left|remaining) in the race\b", re.IGNORECASE),
+        "total race laps remaining",
+    ),
+]
+
+
+def _unavailable_data_topic(question: str) -> str | None:
+    """Short label naming a known TORCS/car_state data gap the question is
+    asking about, or None if it doesn't match one of those known gaps."""
+    for pattern, label in _UNAVAILABLE_DATA_TOPICS:
+        if pattern.search(question):
+            return label
+    return None
+
 
 @app.post("/api/engineer/ask")
 async def ask_engineer(body: dict):
@@ -1305,10 +1343,46 @@ async def ask_engineer(body: dict):
         telemetry, _rankings = telemetry_store.latest()
         car_state = telemetry_to_car_state(telemetry) if telemetry else empty_car_state()
 
+    # tire_strategy.py: TORCS reports neither tire wear nor a pit
+    # recommendation, so estimate both here (real math in Python, not left
+    # to the model to invent or get wrong) and fold them into car_state so
+    # format_car_state/format_engineer_prompt can hand them to the model
+    # the same way as any other telemetry field.
+    engineer_strategy_tracker.update(car_state)
+    car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
+    car_state["pit_window"] = estimate_pit_window(
+        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap
+    )
+
+    # engineer_events.py: car_state is only ever "this instant" (see
+    # car_state_source.py), so without this a driver asking "what just
+    # happened to me?" a few seconds after an incident gets nothing --
+    # by the time the question arrives the car may look normal again.
+    engineer_incident_tracker.update(car_state)
+    recent_incidents = engineer_incident_tracker.recent_events
+    if recent_incidents:
+        car_state["recent_incidents"] = recent_incidents
+
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()
     request_id = str(uuid.uuid4())
     await broadcast({"type": "ai_start", "source": "engineer", "request_id": request_id})
+
+    missing_topic = _unavailable_data_topic(question)
+    if missing_topic is not None:
+        answer = (
+            f"I don't have {missing_topic} data -- TORCS doesn't report that. "
+            "I can help with speed, fuel, damage, tire wear estimate, or pit strategy instead."
+        )
+        engineer_ctx_mgr.add_assistant(answer)
+        await broadcast({"type": "ai_done", "source": "engineer", "content": answer, "request_id": request_id})
+        return {
+            "ok": True,
+            "answer": answer,
+            "car_state": car_state,
+            "stats": engineer_ctx_mgr.stats(),
+        }
+
     try:
         answer = await call_model_for_feature(
             messages,
@@ -1364,6 +1438,48 @@ async def get_engineer_history():
         "stats": engineer_ctx_mgr.stats(),
         "style": _engineer_style,
     }
+
+
+def _render_engineer_export_markdown() -> str:
+    lines = ["# AI Race Engineer -- Conversation Export", ""]
+    if not engineer_ctx_mgr.history:
+        lines.append("(no messages yet)")
+    for message in engineer_ctx_mgr.history:
+        if message.role == "user":
+            lines.append(f"**Driver:** {message.content}")
+            lines.append("")
+        elif message.role == "assistant":
+            lines.append(f"**Engineer:** {message.content}")
+            lines.append("")
+        # system-role messages (the persona itself) aren't part of the
+        # conversation being exported, so they're skipped here on purpose.
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@app.get("/api/engineer/export")
+async def export_engineer_history(fmt: str = "markdown"):
+    """On-demand only -- this never runs on its own. Nothing calls this
+    endpoint except a user clicking Export in the dashboard (or hitting the
+    URL directly); there is no background job or auto-export anywhere."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if fmt == "json":
+        payload = {
+            "messages": [
+                {"role": m.role, "content": m.content, "tokens": m.tokens, "pinned": m.pinned}
+                for m in engineer_ctx_mgr.history
+            ],
+            "style": _engineer_style,
+            "exported_at_utc": timestamp,
+        }
+        return JSONResponse(
+            payload,
+            headers={"Content-Disposition": f'attachment; filename="engineer_conversation_{timestamp}.json"'},
+        )
+    return PlainTextResponse(
+        _render_engineer_export_markdown(),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="engineer_conversation_{timestamp}.md"'},
+    )
 
 
 @app.post("/api/engineer/clear")
