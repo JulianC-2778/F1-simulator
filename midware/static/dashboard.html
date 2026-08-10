@@ -811,6 +811,10 @@
     <div class="grid-2">
       <div class="panel panel-pad">
         <h2 class="card-title">Ask the race engineer</h2>
+        <button id="engAlertsToggle" class="secondary" style="font-size:0.8rem;padding:6px 10px;width:auto;margin-bottom:10px;"
+                title="When on, the engineer speaks up on its own for high-severity situations (off track, critical pit window) without being asked. Off by default.">
+          🔔 Proactive alerts: off
+        </button>
         <div class="feed" id="engFeed"><div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div></div>
         <div class="composer">
           <textarea id="engQuestion" placeholder="e.g. How are the tyres holding up?"></textarea>
@@ -1061,6 +1065,7 @@ const State = {
   cmPlaybackDoneReported: true,
   engStreaming: null,
   engRecording: false,
+  engAlertsEnabled: false,
   coSessionId: null,
   coChartHistory: {},
   botLogCommitted: "",   // full-log text already rendered as DOM lines
@@ -1384,6 +1389,20 @@ function routeWsMessage(msg) {
       break;
     case "event_detected":
       cmAppendSys(`Event: ${msg.event?.event_type || "?"} — ${msg.event?.reason || ""}`);
+      break;
+    case "engineer_alert":
+      // Proactive radio alert (see _auto_engineer_alert_loop in runtime.py) --
+      // opt-in via the "Proactive alerts" toggle, so this only ever arrives
+      // when the driver turned it on. Rendered the same way as a normal
+      // answer, then spoken with whichever TTS provider the Engineer tab
+      // is already configured to use.
+      engOnStart();
+      engOnDone(msg.content);
+      {
+        const enProvider = cmTtsProvider("en");
+        if (enProvider === "browser") cmSpeakBrowser(msg.content, "en");
+        else if (enProvider === "kokoro") enSpeakKokoro(msg.content);
+      }
       break;
     case "user_msg":
       if (source !== "engineer") {
@@ -2170,6 +2189,33 @@ async function engLoadStats() {
   } catch (e) { /* ignore */ }
 }
 
+async function engApplyAlertsButton(enabled) {
+  State.engAlertsEnabled = enabled;
+  const btn = $("engAlertsToggle");
+  btn.textContent = enabled ? "🔔 Proactive alerts: on" : "🔔 Proactive alerts: off";
+  btn.classList.toggle("recording", enabled);
+}
+
+async function engCheckAlerts() {
+  try {
+    const r = await fetch("/api/engineer/alerts");
+    const data = await r.json();
+    engApplyAlertsButton(!!data.enabled);
+  } catch (e) { /* leave the button at its default "off" state */ }
+}
+
+$("engAlertsToggle").addEventListener("click", async () => {
+  const next = !State.engAlertsEnabled;
+  try {
+    const r = await fetch("/api/engineer/alerts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: next }),
+    });
+    const data = await r.json();
+    engApplyAlertsButton(!!data.enabled);
+  } catch (e) { /* leave the button as-is on failure */ }
+});
+
 async function engCheckVoice() {
   try {
     const r = await fetch("/api/engineer/voice/available");
@@ -2632,6 +2678,7 @@ window.addEventListener("load", () => {
   fetch("/api/stats", { cache: "no-store" }).then(r => r.json()).then(cmUpdateStats).catch(() => {});
   engLoadStats();
   engCheckVoice();
+  engCheckAlerts();
   coRenderSignals([]);
   coRenderTargets({});
   coRenderTrackBriefing(null, null);
