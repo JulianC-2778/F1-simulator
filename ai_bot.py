@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import socket
 import sys
@@ -1438,6 +1439,30 @@ _turnaround = False   # module state: executing a wrong-way turn-around
 _ta_fwd     = 0       # module state: forward-leg frames remaining
 _ta_jam     = 0       # module state: consecutive jammed frames while reversing
 _ta_rev     = 0       # module state: consecutive frames in the current reverse leg
+
+# 2026-08-12: no-progress watchdog for the turn-around, same shape as
+# stabilize's (_stabilize_stuck_dist below).  Observed live: car off-track at
+# track_pos -1.65 facing backwards (angle -2.76 rad) wedged against scenery,
+# alternating turn-rev / turn-fwd for 900+ frames while dist_raced never left
+# 2627 m and angle moved 0.02 rad in total.  Neither leg noticed: _ta_jam only
+# counts during the reverse leg, and the forward leg burns _TA_FWD_FRAMES
+# unconditionally, so the two just handed off to each other forever.
+#
+# The escape is to STRAIGHTEN the wheels rather than to push harder.  Both
+# legs command full lock, and a car pinned against something with its wheels
+# at full lock cannot rotate — the tyres just scrub.  Straight wheels convert
+# the same throttle into the translation the rotation needs to start.
+_ta_stuck_dist   = None   # module state: dist_raced when progress was last seen
+_ta_stuck_frames = 0      # module state: consecutive frames without progress
+_TA_STUCK_FRAMES = 250    # 5 s @ 50 Hz before declaring the manoeuvre wedged.
+                          # Must stay well above _TA_REV_MAX_FRAMES (120) plus
+                          # _TA_FWD_FRAMES: this is the last resort, and firing
+                          # it before the normal reverse->forward escalation has
+                          # had a full cycle would pre-empt the mechanism that
+                          # handles the ordinary "blocked behind" case (caught
+                          # by test_reverse_leg_is_capped_and_forces_a_forward_leg
+                          # when this was first set to 100)
+_TA_STUCK_DIST   = 1.0    # m of dist_raced that counts as real progress
 _stuck_progress_dist   = None   # module state: dist_from_start when the current
                                 # no-progress watch window started (None = not watching)
 _stuck_progress_frames = 0      # module state: frames elapsed in that window
@@ -1521,6 +1546,9 @@ def _reset_driver_state() -> None:
     global _pit_docking, _pit_serviced, _pit_prev_angle, _pit_prev_angle
     global _fuel_last_lap_time, _fuel_at_lap_start, _fuel_per_lap_est
     global _stabilize_stuck_dist, _stabilize_stuck_frames
+    global _ta_stuck_dist, _ta_stuck_frames
+    _ta_stuck_dist = None
+    _ta_stuck_frames = 0
     _stuck_frames = 0
     _bursting = False
     _burst_frames = 0
@@ -1596,6 +1624,7 @@ def _recovery_control(state: dict[str, Any]) -> str:
         whose sensors read -1, and calmly drove off in the reverse direction.
     """
     global _turnaround, _ta_fwd, _ta_jam, _ta_rev
+    global _ta_stuck_dist, _ta_stuck_frames
 
     speed   = state.get("speed_x", 0.0)
     speed_y = state.get("speed_y", 0.0) / 3.6
@@ -1608,9 +1637,25 @@ def _recovery_control(state: dict[str, Any]) -> str:
     if abs(angle) > _WRONG_WAY:
         _turnaround = True
     if _turnaround:
+        # Progress watchdog, checked before either leg: both command full lock,
+        # and full lock is exactly what keeps a wedged car wedged.
+        dist_now = state.get("dist_raced", 0.0)
+        if _ta_stuck_dist is None or abs(dist_now - _ta_stuck_dist) >= _TA_STUCK_DIST:
+            _ta_stuck_dist   = dist_now
+            _ta_stuck_frames = 0
+        else:
+            _ta_stuck_frames += 1
+
         if abs(angle) < _TURNAROUND_EXIT:
             _turnaround = False              # aligned — fall through to re-entry
             _ta_fwd = _ta_jam = _ta_rev = 0
+            _ta_stuck_dist, _ta_stuck_frames = None, 0
+        elif _ta_stuck_frames >= _TA_STUCK_FRAMES:
+            # Wedged: straighten up and back out in a straight line.  Once the
+            # car has actually moved, the watchdog resets on its own and the
+            # normal three-point turn resumes from a position it can rotate in.
+            _dbg["mode"] = "turn-wedged"
+            return format_scr_control(accel=0.4, brake=0.0, gear=-1, steer=0.0)
         elif speed > 15.0:
             # Still rolling forward in the wrong direction — stop first.
             _dbg["mode"] = "turn-stop"
@@ -2868,11 +2913,39 @@ def _rear_gap(opponents: list[float]) -> float:
     return min(rear) if rear else 200.0
 
 
+# Which rule decided the active strategy, counted per frame.  "How much of
+# the driving is actually Granite's call?" was previously unanswerable: every
+# rule below returns a bare strategy name, so a NORMAL that Granite chose and
+# a NORMAL the damage rule forced look identical downstream and in the logs.
+# Counting them separates the two, which is the evidence base for any claim
+# about how much the model contributes — including the honest negative one.
+_strategy_sources: dict[str, int] = {}
+
+
+def _source(name: str, strategy: str) -> str:
+    """Attribute this frame's strategy to the rule that produced it."""
+    _strategy_sources[name] = _strategy_sources.get(name, 0) + 1
+    _dbg["strategy_source"] = name  # type: ignore[assignment]
+    return strategy
+
+
+def strategy_source_summary() -> dict[str, float]:
+    """Share of frames each rule decided, as percentages. Empty before any."""
+    total = sum(_strategy_sources.values())
+    if not total:
+        return {}
+    return {name: round(100.0 * count / total, 1)
+            for name, count in sorted(_strategy_sources.items(),
+                                      key=lambda item: -item[1])}
+
+
 def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
     """Map a Granite-supplied strategy to a safe strategy using hard rules.
 
-    Pure function — no I/O, no side effects.  Rules are checked in
-    descending priority; the first match wins and short-circuits the rest.
+    Rules are checked in descending priority; the first match wins and
+    short-circuits the rest.  No I/O and no effect on any caller's state —
+    the only writes are the _dbg / _strategy_sources bookkeeping that the
+    per-step log and the end-of-race attribution summary read back.
 
     Args:
         strategy: Raw strategy name from Granite, or None on timeout/error.
@@ -2889,7 +2962,7 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
     # BLOCK is system-only (see its definition) and must never be honoured
     # just because Granite happened to say the word.
     if strategy not in _GRANITE_STRATEGIES:
-        return NORMAL
+        return _source("fallback_invalid", NORMAL)
 
     # Priority 2 — almost out of fuel → pit, but only once actually close
     # enough to commit (_PIT_APPROACH_DIST) — see its comment above for why.
@@ -2911,7 +2984,8 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
             fuel_critical = fuel < 1.5 * cmpfuel and fuel < laps_left * cmpfuel
     near_pit = _near_pit_lane(state)
     if near_pit and (fuel_critical or strategy == PIT):
-        return PIT
+        return _source("granite" if strategy == PIT and not fuel_critical
+                       else "override_fuel", PIT)
     if strategy == PIT:
         # Granite (or the fuel-critical check above) wants to pit, but the
         # car isn't close enough yet — keep racing instead of crawling a
@@ -2920,15 +2994,15 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
 
     # Priority 3 — car is critically damaged → protect what's left
     if damage >= _DMG_DEFEND:
-        return DEFEND
+        return _source("override_damage", DEFEND)
 
     # Priority 4 — car is damaged but still drivable → no attacking
     if damage >= _DMG_NO_ATTACK and strategy == ATTACK:
-        return NORMAL
+        return _source("downgrade_damage", NORMAL)
 
     # Priority 5 — fuel running low → conserve, don't attack
     if _FUEL_CAUTION_ENABLED and fuel < _FUEL_CAUTION and strategy == ATTACK:
-        return NORMAL
+        return _source("downgrade_fuel", NORMAL)
 
     # Priority 6 — a car is closing in fast from directly behind and we're
     # otherwise healthy → hold the racing line against them instead of
@@ -2959,31 +3033,41 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
     if damage < _DMG_NO_ATTACK and fuel >= _FUEL_CAUTION:
         if state.get("dist_raced", 1e9) >= _START_CAUTION_DIST:
             if bgap < _BLOCK_TRIGGER_GAP:
-                return BLOCK
+                return _source("rule_block", BLOCK)
 
-    return strategy
+    # Nothing overrode it: this frame is driving on Granite's own choice.
+    return _source("granite", strategy)
 
 
 # ---------------------------------------------------------------------------
 # Step 6: Granite strategy caller
 # ---------------------------------------------------------------------------
 
-_STRATEGY_INTERVAL = 5.0    # seconds between Granite requests.  Measured
-                             # round-trip through midware -> LM Studio is ~5.2s
-                             # (granite-4.1-8b, reason capped at 8 words), so at
-                             # 5s the model is essentially busy back-to-back and
-                             # there is no idle margin.  That is deliberate: it
-                             # buys the fastest strategy switching (_STRATEGY_CONFIRM
-                             # = 1, so a strategy change lands on the next answer,
-                             # ~5s after the state that triggered it).
-                             # LatestTaskRunner keeps only the newest pending task,
-                             # so overlapping ticks are dropped, never queued.
-                             # Raise this if the machine has other load or a
-                             # slower model — watch execution_s in midware's log.
-_GRANITE_TIMEOUT   = 30.0   # seconds to wait for one strategy round-trip — must
-                             # exceed midware's own 30s model timeout budget plus
-                             # queue wait, or the bot gives up before the answer
-                             # arrives and every call looks like a failure.
+# Request pacing and timeout, both keyed off which midware prompt variant is
+# active (TORCS_BOT_PROMPT, see midware/bot_strategy.py).  They have to move
+# together: the rule-free variants ask the model to write reasoning rather
+# than a capped 8-word phrase, which takes several times longer to generate,
+# so a 30 s ceiling would turn every call into a timeout and a 5 s interval
+# would just pile up requests that LatestTaskRunner then throws away.
+#
+# legacy   5 s / 30 s — the measured numbers for the capped-phrase prompt
+#                       (~5.2 s round-trip through midware -> LM Studio on
+#                       granite-4.1-8b).  Unchanged, so nothing about the
+#                       repo's default behaviour moves.
+# reasoning / bare
+#          30 s / 110 s — midware allows the model 60-75 s and ModelBroker
+#                       adds 15 s on top, so the client has to outwait ~90 s
+#                       plus queue time or it gives up before the answer
+#                       lands and every call looks like a failure.
+#
+# The longer interval is a bonus rather than a cost: bot_strategy holds the
+# highest ModelBroker priority (10) with single concurrency, so polling every
+# 5 s starves the engineer/coach/commentary features sharing that queue.
+_PROMPT_MODE = os.getenv("TORCS_BOT_PROMPT", "legacy").strip().lower()
+_REASONING_PROMPT = _PROMPT_MODE in ("bare", "reasoning")
+
+_STRATEGY_INTERVAL = 30.0 if _REASONING_PROMPT else 5.0
+_GRANITE_TIMEOUT   = 180.0 if _REASONING_PROMPT else 30.0
 _STRATEGY_CONFIRM  = 1      # consecutive matching Granite answers required
                              # before switching the active strategy.  Was 2 (a
                              # debounce against a borderline reading flapping
@@ -3048,6 +3132,99 @@ def _build_strategy_prompt(state: dict[str, Any]) -> str:
     }
     import json as _json
     return _SYSTEM_PROMPT + "\n\nLive data:\n" + _json.dumps(payload, ensure_ascii=True)
+
+
+def build_situation(state: dict[str, Any],
+                    prev_lap_time: float = 0.0) -> dict[str, str]:
+    """Render the race state as short self-explanatory lines for the prompt.
+
+    The rule-free prompt variants (midware/bot_strategy.py) tell the model
+    what each strategy *does* but never when to pick one, so every number has
+    to arrive carrying its own meaning: ``8.2`` is unreadable without rules,
+    while "8.2 L left, burning 4.5 L/lap, ~9.0 L needed to finish" can be
+    reasoned about by anyone who understands racing.  That framing is the
+    whole reason the rule-free variants have a chance of working — it is
+    describing the situation, not prescribing the answer.
+
+    Every field degrades to an explicit "unknown" rather than a misleading
+    zero: a model told "0 laps remaining" will reason confidently and wrongly,
+    whereas one told the value is unavailable can say so.
+
+    Pure function — no I/O, no module state (``prev_lap_time`` is passed in by
+    the caller), so it can be unit tested and replayed offline.
+    """
+    out: dict[str, str] = {}
+
+    laps_left = state.get("laps_left", -1)
+    remaining = state.get("remaining_laps", -1)
+    if laps_left is not None and laps_left >= 0:
+        done = (remaining - laps_left) if remaining is not None and remaining >= 0 else None
+        out["lap"] = (f"{laps_left} lap(s) remaining"
+                      if done is None else
+                      f"{done} lap(s) done, {laps_left} remaining")
+    else:
+        out["lap"] = "lap count unknown"
+
+    race_pos = state.get("race_pos")
+    out["position"] = f"P{race_pos}" if race_pos else "position unknown"
+
+    fuel = float(state.get("fuel", 0.0))
+    per_lap = float(state.get("fuel_per_lap", 0.0)
+                    or state.get("expected_fuel_per_lap", 0.0) or 0.0)
+    if per_lap > 0.0 and laps_left is not None and laps_left >= 0:
+        needed = per_lap * laps_left
+        margin = fuel - needed
+        verdict = (f"about {abs(margin):.1f} L "
+                   f"{'spare' if margin >= 0 else 'SHORT of finishing'}")
+        out["fuel"] = (f"{fuel:.1f} L left, burning {per_lap:.1f} L/lap, "
+                       f"~{needed:.1f} L needed to finish — {verdict}")
+    elif per_lap > 0.0:
+        out["fuel"] = f"{fuel:.1f} L left, burning {per_lap:.1f} L/lap (race length unknown)"
+    else:
+        out["fuel"] = f"{fuel:.1f} L left (burn rate not measured yet)"
+
+    damage = float(state.get("damage", 0.0))
+    out["damage"] = (f"{damage:.0f} out of 10000 "
+                     f"({'heavily damaged' if damage >= 8000 else 'drivable'})")
+
+    speed_kmh = float(state.get("speed_x", 0.0))
+    out["speed"] = f"{speed_kmh:.0f} km/h"
+
+    opponents = state.get("opponents") or []
+    out["gap_ahead"] = _describe_gap(
+        min((opponents[i] for i in _FRONT_CONE if i < len(opponents)), default=200.0),
+        speed_kmh, "in front")
+    out["gap_behind"] = _describe_gap(_rear_gap(opponents), speed_kmh, "behind")
+
+    last_lap = float(state.get("last_lap_time", 0.0) or 0.0)
+    if last_lap > 0.0 and prev_lap_time > 0.0:
+        delta = last_lap - prev_lap_time
+        out["last_lap"] = (f"{last_lap:.1f} s (previous {prev_lap_time:.1f} s, "
+                           f"{abs(delta):.1f} s {'slower' if delta > 0 else 'faster'})")
+    elif last_lap > 0.0:
+        out["last_lap"] = f"{last_lap:.1f} s (no previous lap to compare)"
+    else:
+        out["last_lap"] = "no completed lap yet"
+
+    return out
+
+
+def _describe_gap(metres: float, speed_kmh: float, who: str) -> str:
+    """One gap sensor reading as a phrase, in metres and approximate seconds.
+
+    The 200 m default that the opponent sensors saturate at means "nobody
+    there", and saying so beats reporting a number the model might treat as a
+    real car sitting 200 m away.
+    """
+    if metres >= 190.0:
+        return f"no car {who} within sensor range"
+    # Below walking pace the seconds figure is meaningless and actively
+    # misleading — on the starting grid it rendered an 11 m gap as "~11.0 s",
+    # which the model duly quoted back as if it were a real time gap.  Metres
+    # alone are honest there.
+    if speed_kmh < 20.0:
+        return f"{metres:.0f} m {who}"
+    return f"{metres:.0f} m {who} (~{metres / (speed_kmh / 3.6):.1f} s at current speed)"
 
 
 def _parse_strategy_response(text: str) -> tuple[str, str]:
@@ -3120,6 +3297,15 @@ class GraniteStrategist:
         self._candidate_count:    int = 0
         self.fallback = False
         self.last_error = ""
+        # Lap-time bookkeeping for build_situation()'s "previous lap" line.
+        # Tracked here on the main loop rather than inside _call_granite,
+        # which runs on the worker thread and must not carry mutable state.
+        self._last_lap_seen:  float = 0.0
+        self._prev_lap_time:  float = 0.0
+        # Latest reasoning trace from the model, for the dashboard.  Empty
+        # unless the reasoning prompt variant is active.
+        self.last_considered: list[dict[str, Any]] = []
+        self.last_rejected:   dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
 
@@ -3129,9 +3315,12 @@ class GraniteStrategist:
         Submits a new Granite request if the interval has elapsed, then
         returns the most recent completed (strategy, reason) pair.
         """
+        self._note_lap_time(state)
         now = time.monotonic()
         if now - self._last_submit >= self._interval:
-            self._runner.submit({"state": state}, priority=0)
+            self._runner.submit(
+                {"state": state, "prev_lap_time": self._prev_lap_time}, priority=0,
+            )
             self._last_submit = now
 
         result = self._runner.pop_completed()
@@ -3143,7 +3332,11 @@ class GraniteStrategist:
             else:
                 self.fallback = False
                 self.last_error = ""
-                strategy, reason = result.output
+                strategy, reason, trace = result.output
+                # Assigned on the main loop (not in the worker) so the
+                # dashboard never reads a half-written trace.
+                self.last_considered = trace.get("considered", [])
+                self.last_rejected   = trace.get("rejected", {})
                 self._debounce(strategy, reason)
 
         return self._last_strategy, self._last_reason
@@ -3185,11 +3378,36 @@ class GraniteStrategist:
 
     # ------------------------------------------------------------------ #
 
+    def _note_lap_time(self, state: dict[str, Any]) -> None:
+        """Remember the lap time before the current one, for the prompt.
+
+        ``last_lap_time`` only changes when a lap completes, so a change is
+        the signal that the value we were holding has become the *previous*
+        lap.  Cheap enough to run every tick.
+        """
+        llt = float(state.get("last_lap_time", 0.0) or 0.0)
+        if llt > 0.0 and abs(llt - self._last_lap_seen) > 1e-3:
+            self._prev_lap_time = self._last_lap_seen
+            self._last_lap_seen = llt
+
     def _call_granite(self, task: dict[str, Any]) -> tuple[str, str]:
         """Worker: requests middleware Model Broker; never runs in control loop."""
         state  = task["state"]
+        # `situation` carries the human-readable framing the rule-free prompt
+        # variants need; `allowed_strategies` stops the prompt from offering
+        # an option this bot would silently discard (SAVE_FUEL is currently
+        # gated off, and midware has no way to know that on its own).
+        # Both live inside sensor_state, which is an open dict, so neither
+        # needs a schema change and the legacy prompt strips them back out.
+        sensor_state = {
+            **state,
+            "situation": build_situation(state, task.get("prev_lap_time", 0.0)),
+            "allowed_strategies": sorted(_GRANITE_STRATEGIES),
+        }
         payload = json.dumps(
-            {"bot_id": "default", "current_strategy": self._last_strategy, "sensor_state": state}
+            {"bot_id": "default",
+             "current_strategy": self._last_strategy,
+             "sensor_state": sensor_state}
         ).encode("utf-8")
         request = urllib.request.Request(
             f"{self._base_url}/api/bot/strategy",
@@ -3200,7 +3418,87 @@ class GraniteStrategist:
         with urllib.request.urlopen(request, timeout=_GRANITE_TIMEOUT) as response:
             result = json.loads(response.read().decode("utf-8"))
         decision = result.get("decision") or {}
-        return _parse_strategy_response(json.dumps(decision))
+        strategy, reason = _parse_strategy_response(json.dumps(decision))
+        # Only the reasoning prompt variant fills these; every other variant
+        # (and any malformed answer) leaves them empty, which the dashboard
+        # renders as "no trace" rather than failing.
+        trace = {
+            "considered": decision.get("considered") or [],
+            "rejected":   decision.get("rejected") or {},
+        }
+        return strategy, reason, trace
+
+
+class TraceRecorder:
+    """Append race states and Granite decisions to a JSONL file.
+
+    Two things depend on this existing:
+
+    - bot_replay.py's ``--states`` corpus.  Prompt variants are currently
+      compared over five states written by hand, which is enough to show a
+      difference but not enough to trust one; real states carry the awkward
+      cases synthetic ones never do (no fuel-burn data on lap 1, sensor
+      noise, mid-corner readings, ``laps_left`` of -1).
+    - the record of what the model actually said during a race, which is
+      what an honest write-up needs and what no amount of re-running can
+      reconstruct after the fact.
+
+    States are sampled on an interval rather than logged every frame: at
+    50 Hz a three-minute race is ~9000 near-identical rows, and a replay
+    corpus wants variety, not volume.  Decisions are always written — there
+    are only a handful per race and each one is the interesting part.
+
+    Never raises: a full disk or a bad path must not end a race.  Writes are
+    line-buffered and flushed per record so a crash still leaves usable data.
+    """
+
+    def __init__(self, path: str, state_interval: float = 2.0) -> None:
+        self._interval = state_interval
+        self._last_state = -state_interval
+        self._handle = None
+        try:
+            self._handle = open(path, "a", encoding="utf-8", buffering=1)
+            print(f"[trace] recording to {path}")
+        except OSError as exc:
+            print(f"[trace] disabled — could not open {path}: {exc}")
+
+    def _write(self, record: dict[str, Any]) -> None:
+        if self._handle is None:
+            return
+        try:
+            self._handle.write(json.dumps(record, ensure_ascii=True, default=str) + "\n")
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"[trace] write failed, disabling: {exc}")
+            self.close()
+
+    def sample_state(self, state: dict[str, Any]) -> None:
+        """Record the current state if the sampling interval has elapsed."""
+        now = time.monotonic()
+        if now - self._last_state < self._interval:
+            return
+        self._last_state = now
+        self._write({"kind": "state", "t": round(now, 2), "state": state})
+
+    def decision(self, strategy: str, reason: str, source: str,
+                 trace: dict[str, Any]) -> None:
+        """Record one Granite answer, plus which rule the frame ended up on."""
+        self._write({
+            "kind": "decision",
+            "t": round(time.monotonic(), 2),
+            "strategy": strategy,
+            "reason": reason,
+            "source": source,
+            "considered": trace.get("considered", []),
+            "rejected": trace.get("rejected", {}),
+        })
+
+    def close(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.close()
+            except OSError:
+                pass
+            self._handle = None
 
 
 class BotStatusReporter:
@@ -3314,6 +3612,13 @@ def run_bot(
 
     reporter = BotStatusReporter(config.MIDWARE_BASE_URL)
     atexit.register(reporter.close)
+    # Off unless asked for: a race started to check a driving change should
+    # not silently grow a log file.  Set TORCS_BOT_TRACE=<path> to collect a
+    # replay corpus (see TraceRecorder and bot_replay.py --states).
+    recorder = (TraceRecorder(os.environ["TORCS_BOT_TRACE"])
+                if os.getenv("TORCS_BOT_TRACE") else None)
+    if recorder is not None:
+        atexit.register(recorder.close)
     with (client if client is not None else ScrClient(host, port)) as client:
         client.connect()
         reporter.update(connected=True, strategy=strategy, immediate=True)
@@ -3400,9 +3705,21 @@ def run_bot(
                 )
 
                 # --- Step 7: Granite strategy update (non-blocking) ---
+                if recorder is not None:
+                    recorder.sample_state(state)
                 if strategist is not None:
+                    prev_reason = strategist._last_reason
                     raw_strategy, _reason = strategist.tick(state)
                     current_strategy = safety_filter(raw_strategy, state)
+                    # Log only when the model has actually answered again,
+                    # not on every frame that re-reads the cached answer.
+                    if recorder is not None and _reason != prev_reason:
+                        recorder.decision(
+                            raw_strategy, _reason,
+                            str(_dbg.get("strategy_source", "")),
+                            {"considered": strategist.last_considered,
+                             "rejected":   strategist.last_rejected},
+                        )
                 else:
                     current_strategy = safety_filter(strategy, state)
 
@@ -3525,6 +3842,19 @@ def run_bot(
 
     reporter.close()
     atexit.unregister(reporter.close)
+    if recorder is not None:
+        recorder.close()
+        atexit.unregister(recorder.close)
+
+    # The headline number for "how much of this race was Granite's call?".
+    # Printed unconditionally: it costs nothing, and a race run without it
+    # cannot be re-scored afterwards.
+    shares = strategy_source_summary()
+    if shares:
+        print("\n--- strategy attribution (share of frames) ---")
+        for name, percent in shares.items():
+            print(f"  {name:20s} {percent:5.1f}%")
+
     if client.is_shutdown:
         print("Server sent ***shutdown***.")
 
