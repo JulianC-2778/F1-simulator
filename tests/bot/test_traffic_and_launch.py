@@ -93,15 +93,27 @@ class SideTrafficAvoidanceTests(TrafficTestCase):
         # Live incident: a persistent 6-9 m side gap that never closed or
         # opened let avoid+barrier settle into a rub AT the track edge
         # instead of resolving.
-        opponents = [200.0] * 36
-        opponents[13] = 6.0  # left_gap = 6 m, well inside _AVOID_DIST
-        for _ in range(60):
-            compute_control(_cs(speed_x=100.0, track_pos=0.0, track=[200.0] * 19, opponents=opponents), NORMAL)
+        #
+        # 2026-08-09 update: the convergence gate above now zeroes `avoid`
+        # on its own once a side gap is confirmed stable, so a permanently
+        # STATIC opponent (the original 6 m fixed gap this test used) no
+        # longer reaches meaningful avoid authority at all -- there's
+        # nothing left for room taper to visibly taper. Use an actively,
+        # steadily closing opponent instead (same shape as the convergence
+        # gate test above) so the convergence gate stays satisfied and this
+        # test isolates room taper's own effect -- matches the fix already
+        # made to ai_bot.py's own built-in self-test for this exact scenario.
+        opponents_centre = [200.0] * 36
+        for i in range(60):
+            opponents_centre[13] = 14.0 - i * 0.1  # 14m -> ~8m, steadily closing
+            compute_control(_cs(speed_x=100.0, track_pos=0.0, track=[200.0] * 19, opponents=opponents_centre), NORMAL)
         avoid_centre = ai_bot._avoid_lp
         ai_bot._reset_driver_state()
 
-        for _ in range(60):
-            compute_control(_cs(speed_x=100.0, track_pos=-0.95, track=[200.0] * 19, opponents=opponents), NORMAL)
+        opponents_edge = [200.0] * 36
+        for i in range(60):
+            opponents_edge[13] = 14.0 - i * 0.1
+            compute_control(_cs(speed_x=100.0, track_pos=-0.95, track=[200.0] * 19, opponents=opponents_edge), NORMAL)
         avoid_edge = ai_bot._avoid_lp
 
         self.assertLess(avoid_centre, -0.05, "avoid should push meaningfully with room to spare")

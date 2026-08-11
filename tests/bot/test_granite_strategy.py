@@ -11,7 +11,6 @@ from ai_bot import (
     ATTACK,
     DEFEND,
     NORMAL,
-    SAVE_FUEL,
     _build_strategy_prompt,
     _next_debounced_strategy,
     _parse_strategy_response,
@@ -47,8 +46,13 @@ class ParseStrategyResponseTests(unittest.TestCase):
         self.assertEqual(strategy, NORMAL)
 
     def test_missing_reason_field_is_empty_string(self):
-        strategy, reason = _parse_strategy_response('{"strategy": "SAVE_FUEL"}')
-        self.assertEqual(strategy, SAVE_FUEL)
+        # DEFEND, not SAVE_FUEL: SAVE_FUEL's membership in _GRANITE_STRATEGIES
+        # is gated by a feature flag (currently disabled, see
+        # test_safety_filter.py's SaveFuelStrategyAvailabilityTests) that's
+        # orthogonal to what this test actually checks (a missing `reason`
+        # key defaults to ""), so use a strategy that's always valid.
+        strategy, reason = _parse_strategy_response('{"strategy": "DEFEND"}')
+        self.assertEqual(strategy, DEFEND)
         self.assertEqual(reason, "")
 
     def test_empty_text_falls_back_to_normal(self):
