@@ -2322,6 +2322,7 @@ def run_bot(
     use_granite: bool = False,
     track:      str | None = None,
     verbose:    bool  = True,
+    client:     "ScrClient | None" = None,
 ) -> None:
     """Connect to TORCS and drive.
 
@@ -2332,6 +2333,11 @@ def run_bot(
     ``track`` selects the pre-race map: a track name (``g-track-2``), a path
     to the track XML, or None to auto-detect from the TORCS raceman config.
     No map found → the bot drives on sensors alone, as before.
+
+    ``client``, if given, is used instead of constructing a new
+    ``ScrClient(host, port)`` — lets tests drive the loop with a fake/local
+    client without touching anything below this line. ``host``/``port`` are
+    then only used for the initial log line.
     """
     if strategy not in _ALL_STRATEGIES:
         print(f"Unknown strategy '{strategy}', falling back to NORMAL.")
@@ -2363,7 +2369,7 @@ def run_bot(
 
     reporter = BotStatusReporter(config.MIDWARE_BASE_URL)
     atexit.register(reporter.close)
-    with ScrClient(host, port) as client:
+    with (client if client is not None else ScrClient(host, port)) as client:
         client.connect()
         reporter.update(connected=True, strategy=strategy, immediate=True)
         _reset_driver_state()   # fresh race — clear recovery / target-speed state
