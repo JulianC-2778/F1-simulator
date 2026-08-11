@@ -192,6 +192,42 @@
 
   .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); margin-bottom: 10px; }
 
+  /* Engineer tab's collapsible "how to use this page" guide -- deliberately
+     styled as a prominent pill, not a plain .section-title toggle like
+     "Model connection"/"Voice / TTS" below, so it reads as help rather than
+     as another settings section to skip past. */
+  .eng-help { margin-bottom: 14px; }
+  .eng-help-toggle {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 8px 16px; border-radius: 999px; width: fit-content;
+    background: var(--accent-soft); color: var(--accent);
+    font-weight: 700; font-size: 0.82rem; list-style: none;
+  }
+  .eng-help-toggle::-webkit-details-marker { display: none; }
+  .eng-help-toggle:hover { background: rgba(15, 111, 255, 0.2); }
+  .eng-help-body {
+    margin-top: 10px; padding: 14px 16px; border-radius: var(--radius-sm);
+    background: var(--surface-muted); border: 1px solid var(--border);
+    font-size: 0.85rem; line-height: 1.55; color: var(--text-soft);
+  }
+  .eng-help-body ul { margin: 0; padding-left: 18px; }
+  .eng-help-body li { margin-bottom: 8px; }
+  .eng-help-body li:last-child { margin-bottom: 0; }
+
+  /* Undo toast for the answer-style switch (replaces a blocking confirm()
+     dialog -- UX research on destructive actions favours undo over
+     confirmation when the action is cheaply recoverable, since a
+     confirmation the driver reflexively dismisses doesn't actually prevent
+     anything). Auto-hides itself; see engShowUndoToast. */
+  .eng-undo-toast {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-bottom: 10px; padding: 8px 12px; border-radius: var(--radius-sm);
+    background: var(--surface-muted); border: 1px solid var(--border);
+    font-size: 0.82rem; color: var(--text-soft);
+  }
+  .eng-undo-toast[hidden] { display: none; }
+  .eng-undo-toast button { flex-shrink: 0; width: auto; padding: 4px 12px; font-size: 0.8rem; }
+
   .feed {
     height: 360px; overflow-y: auto; padding: 18px; border-radius: var(--radius-md);
     background: rgba(255,255,255,0.55); border: 1px solid rgba(17,24,39,0.05); display: flex; flex-direction: column; gap: 10px;
@@ -697,8 +733,8 @@
           <div class="field">
             <label>New event vs. current playback</label>
             <select id="cmInterruptMode">
-              <option value="interrupt">Interrupt immediately</option>
               <option value="queue">Queue — finish current sentence first</option>
+              <option value="interrupt">Interrupt immediately</option>
             </select>
           </div>
           <button id="cmApplyBtn" style="width:100%">Apply</button>
@@ -810,11 +846,35 @@
     <div class="disabled-note" id="note-engineer">Engineer is disabled — flip the switch above to ask questions.</div>
     <div class="grid-2">
       <div class="panel panel-pad">
+        <details class="eng-help">
+          <summary class="eng-help-toggle"><span aria-hidden="true">📖</span> How to use this page</summary>
+          <div class="eng-help-body">
+            <button id="engHelpReadBtn" class="secondary" type="button" style="margin-bottom:10px;width:auto;"><span aria-hidden="true">🔊</span> Read aloud</button>
+            <ul>
+              <li><strong>Ask a question</strong> — type below (e.g. "How are the tyres holding up?") and press Send or Enter.</li>
+              <li><strong><span aria-hidden="true">🎤</span> Voice input</strong> — click once to start recording, click again to stop. It transcribes into the text box for you to check before sending — nothing is sent automatically.</li>
+              <li><strong><span aria-hidden="true">🔔</span> Proactive alerts</strong> — off by default. Turn it on and the engineer will speak up on its own for urgent situations (off track, critical tires or fuel), without you having to ask.</li>
+              <li><strong>Answer style</strong> — "Professional" gives a few sentences with numbers and reasoning; "Concise" gives just the bare answer.</li>
+              <li><strong>Clear history / Export</strong> — "Clear history" resets the conversation; "Export conversation" downloads it as a file.</li>
+              <li><strong>Model connection</strong> — advanced settings, only needed if you're changing which AI backend is used.</li>
+              <li><strong>Voice / TTS</strong> — controls how the engineer's replies are read aloud, or turns voice replies off.</li>
+            </ul>
+          </div>
+        </details>
         <h2 class="card-title">Ask the race engineer</h2>
+        <button id="engAlertsToggle" class="secondary" style="font-size:0.8rem;padding:6px 10px;width:auto;"
+                title="When on, the engineer speaks up on its own for high-severity situations (off track, critical pit window) without being asked. Off by default.">
+          <span aria-hidden="true">🔔</span> <span id="engAlertsToggleLabel">Proactive alerts: off</span>
+        </button>
+        <div id="engAlertsNote" style="color:var(--text-faint);font-size:0.78rem;margin:4px 0 10px;">Off — the engineer only speaks when you ask.</div>
+        <div id="engUndoToast" class="eng-undo-toast" hidden>
+          <span id="engUndoToastText"></span>
+          <button id="engUndoToastBtn" type="button" class="secondary">Undo</button>
+        </div>
         <div class="feed" id="engFeed"><div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div></div>
         <div class="composer">
           <textarea id="engQuestion" placeholder="e.g. How are the tyres holding up?"></textarea>
-          <button class="mic-btn" id="engMicBtn" title="Voice input">🎤</button>
+          <button class="mic-btn" id="engMicBtn" title="Voice input" aria-label="Voice input">🎤</button>
           <button id="engSendBtn">Send</button>
         </div>
       </div>
@@ -834,12 +894,20 @@
               <label for="enStream" style="margin:0;text-transform:none;letter-spacing:0;">Streaming output</label>
             </div>
             <button id="enSaveModelBtn" class="secondary" style="width:100%">Save connection</button>
+            <div id="enTokenStatsAdvanced" style="margin-top:10px;color:var(--text-faint);font-size:0.76rem;">-- / -- tokens used</div>
           </details>
         </div>
         <div class="panel panel-pad">
           <div class="section-title">Conversation</div>
+          <div class="field"><label>Answer style</label>
+            <select id="engStyleSelect">
+              <option value="professional">Professional (up to 3-4 sentences)</option>
+              <option value="concise">Concise (one line per question)</option>
+            </select>
+          </div>
           <button class="secondary" id="engClearBtn" style="width:100%">Clear history</button>
-          <div id="engStats" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">-- / -- tokens</div>
+          <button class="secondary" id="engExportBtn" style="width:100%;margin-top:8px">Export conversation</button>
+          <div id="engStats" title="-- / -- tokens" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">Conversation memory: -- % used</div>
         </div>
         <div class="panel panel-pad">
           <div class="section-title">Voice input</div>
@@ -1053,7 +1121,10 @@ const State = {
   cmPlaybackTimer: null,
   cmPlaybackDoneReported: true,
   engStreaming: null,
+  engThinkingTimer: null,
   engRecording: false,
+  engAlertsEnabled: false,
+  engPreviousStyle: "professional",
   coSessionId: null,
   coChartHistory: {},
   botLogCommitted: "",   // full-log text already rendered as DOM lines
@@ -1378,6 +1449,20 @@ function routeWsMessage(msg) {
     case "event_detected":
       cmAppendSys(`Event: ${msg.event?.event_type || "?"} — ${msg.event?.reason || ""}`);
       break;
+    case "engineer_alert":
+      // Proactive radio alert (see _auto_engineer_alert_loop in runtime.py) --
+      // opt-in via the "Proactive alerts" toggle, so this only ever arrives
+      // when the driver turned it on. Rendered the same way as a normal
+      // answer, then spoken with whichever TTS provider the Engineer tab
+      // is already configured to use.
+      engOnStart();
+      engOnDone(msg.content);
+      {
+        const enProvider = cmTtsProvider("en");
+        if (enProvider === "browser") cmSpeakBrowser(msg.content, "en");
+        else if (enProvider === "kokoro") enSpeakKokoro(msg.content);
+      }
+      break;
     case "user_msg":
       if (source !== "engineer") {
         cmAppendUser(msg.content);
@@ -1699,7 +1784,7 @@ async function cmLoadConfig() {
     cmBuildFieldGrid();
     if (cfg.commentary) {
       $("cmMode").value = cfg.commentary.mode || "hybrid";
-      $("cmInterruptMode").value = cfg.commentary.interrupt_mode || "interrupt";
+      $("cmInterruptMode").value = cfg.commentary.interrupt_mode || "queue";
       $("cmInterval").value = cfg.commentary.baseline_interval ?? 10;
       $("cmWindow").value = cfg.commentary.window_seconds ?? 6;
       $("cmCooldown").value = cfg.commentary.event_cooldown ?? 1;
@@ -2025,26 +2110,63 @@ function engAppendUser(text) {
   $("engFeed").appendChild(el);
   $("engFeed").scrollTop = $("engFeed").scrollHeight;
 }
+function engStopThinkingTimer() {
+  if (State.engThinkingTimer) {
+    clearInterval(State.engThinkingTimer);
+    State.engThinkingTimer = null;
+  }
+}
+
 function engOnStart() {
   engClearEmpty();
   const el = document.createElement("div");
   el.className = "msg ai";
-  el.textContent = "…";
+  el.textContent = "Thinking…";
   $("engFeed").appendChild(el);
   State.engStreaming = { el, text: "" };
   $("engFeed").scrollTop = $("engFeed").scrollHeight;
+
+  // /api/engineer/ask doesn't stream (see runtime.py's ask_engineer --
+  // stream=False), so there's nothing to render token-by-token here; this
+  // is just a lightweight "still alive" ticker so a several-second wait
+  // doesn't read as a frozen page. engOnDone/engOnError clear it.
+  engStopThinkingTimer();
+  const startedAt = Date.now();
+  State.engThinkingTimer = setInterval(() => {
+    if (!State.engStreaming) { engStopThinkingTimer(); return; }
+    const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+    State.engStreaming.el.textContent = `Thinking… (${elapsedSeconds}s)`;
+  }, 1000);
 }
 function engOnDone(content) {
+  engStopThinkingTimer();
   if (!State.engStreaming) engOnStart();
   State.engStreaming.el.textContent = content || State.engStreaming.text;
   State.engStreaming = null;
   engLoadStats();
 }
+// Plain-language versions of the raw backend/browser error strings that
+// actually show up here -- NN/g's error-message guidelines: human-readable,
+// specific, tells the driver what to do next, not a bare technical string.
+// Anything not in this map still falls through to the raw message (better
+// than hiding an error you didn't anticipate) -- see engFriendlyError.
+const ENG_ERROR_MESSAGES = {
+  "engineer feature is disabled": "The AI Engineer is turned off -- flip the switch at the top of the page to ask questions.",
+  "Failed to fetch": "Couldn't reach the AI Engineer service -- check that the backend is running.",
+  "NetworkError when attempting to fetch resource.": "Couldn't reach the AI Engineer service -- check your connection.",
+  "Load failed": "Couldn't reach the AI Engineer service -- check that the backend is running.",
+};
+
+function engFriendlyError(rawMessage) {
+  return ENG_ERROR_MESSAGES[rawMessage] || rawMessage;
+}
+
 function engOnError(message) {
+  engStopThinkingTimer();
   engClearEmpty();
   const el = document.createElement("div");
   el.className = "msg err";
-  el.textContent = "Error: " + message;
+  el.textContent = "Error: " + engFriendlyError(message);
   $("engFeed").appendChild(el);
   State.engStreaming = null;
 }
@@ -2119,7 +2241,7 @@ async function enSpeakKokoro(text) {
     await audio.play();
   } catch (e) {
     console.warn("Engineer Kokoro TTS failed", e);
-    cmSetPlaybackStatus(`Engineer TTS failed: ${e.message}`, "error");
+    cmSetPlaybackStatus(`Engineer TTS failed: ${engFriendlyError(e.message)}`, "error");
   }
 }
 
@@ -2133,14 +2255,172 @@ $("engClearBtn").addEventListener("click", async () => {
   engLoadStats();
 });
 
+// On-demand only -- navigating here just triggers the browser's normal file
+// download (the backend sets Content-Disposition: attachment), nothing
+// auto-exports on its own.
+$("engExportBtn").addEventListener("click", () => {
+  window.location.href = "/api/engineer/export?fmt=markdown";
+});
+
+let engUndoToastTimer = null;
+
+// Undo, not a confirmation dialog: UX research on destructive actions
+// (NN/g "Confirmation Dialogs Can Prevent User Errors", and the broader
+// confirm-vs-undo literature) says that for a cheaply recoverable action,
+// undo is the better pattern -- a confirmation the driver reflexively
+// dismisses without reading doesn't actually prevent anything, and it
+// interrupts the flow every single time, not just the rare time it's
+// needed. onUndo is only called if the driver actually clicks Undo within
+// the window; otherwise the toast just quietly disappears.
+function engShowUndoToast(message, onUndo) {
+  clearTimeout(engUndoToastTimer);
+  const toast = $("engUndoToast");
+  $("engUndoToastText").textContent = message;
+  toast.hidden = false;
+  const btn = $("engUndoToastBtn");
+  const handleClick = async () => {
+    clearTimeout(engUndoToastTimer);
+    toast.hidden = true;
+    btn.removeEventListener("click", handleClick);
+    await onUndo();
+  };
+  btn.addEventListener("click", handleClick);
+  engUndoToastTimer = setTimeout(() => {
+    toast.hidden = true;
+    btn.removeEventListener("click", handleClick);
+  }, 8000);
+}
+
+$("engStyleSelect").addEventListener("change", async () => {
+  const select = $("engStyleSelect");
+  const hasConversation = !$("engFeed").querySelector(".feed-empty");
+  const feedSnapshot = $("engFeed").innerHTML;
+
+  // Switching style clears history server-side (see /api/engineer/style),
+  // which also snapshots it there for /api/engineer/style/undo -- the feed
+  // is reset here too to match, otherwise old-style answers would sit on
+  // screen even though the model no longer has them in context.
+  await fetch("/api/engineer/style", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ style: select.value }),
+  });
+  State.engPreviousStyle = select.value;
+  $("engFeed").innerHTML = '<div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div>';
+  engLoadStats();
+
+  if (hasConversation) {
+    engShowUndoToast("Conversation cleared for the new answer style.", async () => {
+      const r = await fetch("/api/engineer/style/undo", { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!data.ok) return; // snapshot already gone (e.g. undone once already) -- nothing to restore
+      select.value = data.style;
+      State.engPreviousStyle = data.style;
+      $("engFeed").innerHTML = feedSnapshot;
+      $("engFeed").scrollTop = $("engFeed").scrollHeight;
+      engLoadStats();
+    });
+  }
+});
+
 async function engLoadStats() {
   try {
     const r = await fetch("/api/engineer/history");
     const data = await r.json();
     const s = data.stats || {};
-    $("engStats").textContent = `${(s.history_tokens || 0) + (s.system_tokens || 0)} / ${s.max_context_tokens || "--"} tokens`;
+    const used = (s.history_tokens || 0) + (s.system_tokens || 0);
+    const max = s.max_context_tokens || 0;
+    const raw = `${used} / ${max || "--"} tokens`;
+    // "tokens" is an LLM implementation detail a driver has no reason to
+    // know -- the plain-language version (how full the engineer's memory
+    // of this conversation is) is the primary, always-visible label; the
+    // raw number is still reachable (hover here, or the Model connection
+    // section below) for anyone who wants it, just not the headline.
+    const pct = max > 0 ? Math.round((used / max) * 100) : 0;
+    $("engStats").textContent = `Conversation memory: ${pct}% used`;
+    $("engStats").title = raw;
+    const advanced = $("enTokenStatsAdvanced");
+    if (advanced) advanced.textContent = raw + " used";
+    if (data.style) { $("engStyleSelect").value = data.style; State.engPreviousStyle = data.style; }
   } catch (e) { /* ignore */ }
 }
+
+async function engApplyAlertsButton(enabled) {
+  State.engAlertsEnabled = enabled;
+  const btn = $("engAlertsToggle");
+  // Only the label span's text -- the emoji lives in its own aria-hidden
+  // span (see the HTML), so a screen reader doesn't announce "bell emoji"
+  // before the actual label. Using .textContent on the button itself would
+  // wipe out that span structure every time this runs.
+  $("engAlertsToggleLabel").textContent = enabled ? "Proactive alerts: on" : "Proactive alerts: off";
+  btn.classList.toggle("recording", enabled);
+  // Always-visible explanation, not hover-only -- a first-time user (or
+  // anyone on a touch device, where hover tooltips don't exist) should be
+  // able to tell what this does without discovering the title attribute.
+  $("engAlertsNote").textContent = enabled
+    ? "On — the engineer will speak up on its own for urgent situations (off track, critical tires or fuel), without you asking."
+    : "Off — the engineer only speaks when you ask.";
+}
+
+async function engCheckAlerts() {
+  try {
+    const r = await fetch("/api/engineer/alerts");
+    const data = await r.json();
+    engApplyAlertsButton(!!data.enabled);
+  } catch (e) { /* leave the button at its default "off" state */ }
+}
+
+$("engAlertsToggle").addEventListener("click", async () => {
+  const next = !State.engAlertsEnabled;
+  try {
+    const r = await fetch("/api/engineer/alerts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: next }),
+    });
+    const data = await r.json();
+    engApplyAlertsButton(!!data.enabled);
+  } catch (e) { /* leave the button as-is on failure */ }
+});
+
+// "How to use this page" narration -- spoken only when the driver presses
+// the button (not automatically on opening the panel, since auto-playing
+// audio the moment you open something is unwelcome, especially mid-drive).
+// A dedicated, plainly-worded script rather than reading the bullet HTML
+// verbatim (emoji and markup don't read naturally out loud).
+const ENG_HELP_NARRATION = (
+  "Here's how to use this page. To ask a question, type it in the box and press Send or Enter. " +
+  "The microphone button starts and stops voice recording -- it transcribes into the text box for you " +
+  "to check before it's sent, nothing sends automatically. " +
+  "Proactive alerts are off by default -- turn them on and the engineer will speak up on its own for " +
+  "urgent situations, without you asking. " +
+  "Answer style switches between a few sentences with reasoning, or just the bare answer. " +
+  "Clear history resets the conversation; export downloads it. " +
+  "Model connection is advanced, only needed if you're changing the AI backend. " +
+  "Voice and TTS settings control how replies are read aloud, or turn that off."
+);
+
+$("engHelpReadBtn").addEventListener("click", () => {
+  const provider = cmTtsProvider("en");
+  if (provider === "browser") cmSpeakBrowser(ENG_HELP_NARRATION, "en");
+  else if (provider === "kokoro") enSpeakKokoro(ENG_HELP_NARRATION);
+  else {
+    // "off"/"custom" -- respects the current Voice/TTS setting by not
+    // playing anything, but silently doing nothing looks like a broken
+    // button; say why instead.
+    cmSetPlaybackStatus(
+      provider === "off"
+        ? "Voice replies are off -- turn on Browser speech or Kokoro TTS in Voice / TTS below to hear this."
+        : "Read aloud isn't available for Custom HTTP TTS -- switch to Browser speech or Kokoro TTS in Voice / TTS below.",
+      "error"
+    );
+  }
+});
+
+// Closing the panel stops any in-progress narration -- a quick way to make
+// it stop talking without hunting for a separate stop control.
+document.querySelector(".eng-help").addEventListener("toggle", function () {
+  if (!this.open) cmStopAudio();
+});
 
 async function engCheckVoice() {
   try {
@@ -2163,11 +2443,11 @@ $("engMicBtn").addEventListener("click", async () => {
   if (!State.engRecording) {
     try {
       const r = await fetch("/api/engineer/voice/start", { method: "POST" });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); $("engVoiceNote").textContent = d.error || "Could not start recording."; return; }
+      if (!r.ok) { const d = await r.json().catch(() => ({})); $("engVoiceNote").textContent = engFriendlyError(d.error) || "Could not start recording."; return; }
       State.engRecording = true;
       $("engMicBtn").classList.add("recording");
       $("engVoiceNote").textContent = "Recording… click the mic again to stop (speak in English).";
-    } catch (e) { $("engVoiceNote").textContent = "Could not start recording: " + e.message; }
+    } catch (e) { $("engVoiceNote").textContent = "Could not start recording: " + engFriendlyError(e.message); }
     return;
   }
   State.engRecording = false;
@@ -2183,7 +2463,7 @@ $("engMicBtn").addEventListener("click", async () => {
     } else {
       $("engVoiceNote").textContent = "No speech recognized. Try again or type your question.";
     }
-  } catch (e) { $("engVoiceNote").textContent = "Transcription failed: " + e.message; }
+  } catch (e) { $("engVoiceNote").textContent = "Transcription failed: " + engFriendlyError(e.message); }
   $("engMicBtn").disabled = false;
 });
 
@@ -2604,6 +2884,7 @@ window.addEventListener("load", () => {
   fetch("/api/stats", { cache: "no-store" }).then(r => r.json()).then(cmUpdateStats).catch(() => {});
   engLoadStats();
   engCheckVoice();
+  engCheckAlerts();
   coRenderSignals([]);
   coRenderTargets({});
   coRenderTrackBriefing(null, null);

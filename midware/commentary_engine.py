@@ -46,7 +46,7 @@ PACE_SURGE_MIN_DELTA_KMH = 20.0
 @dataclass
 class CommentaryConfig:
     mode: str = "interval"  # off | interval | event | hybrid
-    interrupt_mode: str = "interrupt"  # interrupt | queue
+    interrupt_mode: str = "queue"  # interrupt | queue
     baseline_interval: float = 10.0
     event_cooldown: float = 1.0
     window_seconds: float = 6.0

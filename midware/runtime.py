@@ -21,6 +21,7 @@ import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,10 @@ if str(MIDWARE_DIR) not in sys.path:
 import config
 from telemetry_common import extract_json_object
 from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
-from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA
+from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
+from tire_strategy import RaceStrategyTracker, estimate_pit_window
+from engineer_events import IncidentTracker
+from engineer_priority import summarize_priority
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -114,12 +118,41 @@ ctx_cfg   = ContextConfig()
 ctx_mgr   = ContextManager(ctx_cfg)
 engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PERSONA))
 
+# -- Engineer answer style ("professional" default, or "concise") -- in-memory
+# only, resets to "professional" on process restart. Switched via
+# POST /api/engineer/style, which also swaps engineer_ctx_mgr's persona and
+# clears history (old-style answers left in history could otherwise pull the
+# model back toward the old style via few-shot imitation of its own past
+# turns, even after the system prompt changes).
+_ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSONA_CONCISE}
+_engineer_style = "professional"
+_engineer_style_undo_snapshot: dict | None = None  # see POST /api/engineer/style/undo
+engineer_strategy_tracker = RaceStrategyTracker()
+engineer_incident_tracker = IncidentTracker()
+
+# -- Proactive engineer radio alerts -- opt-in (off by default) so the
+# engineer stays silent-until-asked unless the driver explicitly turns this
+# on; see POST /api/engineer/alerts. _engineer_alert_active_key tracks which
+# top_priority we last alerted for, edge-triggered the same way
+# engineer_events.py's off-track detection is: fires once when severity
+# becomes "high", stays quiet while it remains that same priority, and
+# re-arms once severity drops back down.
+_engineer_proactive_alerts_enabled = False
+_engineer_alert_active_key: str | None = None
+
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
 # recorder because only one dashboard operator is expected to be recording
 # at a time; a second start attempt while one is in progress is rejected
 # rather than silently dropping the first recording.
 _engineer_voice_recorder: "voice_input.Recorder | None" = None
+_engineer_voice_recorder_started_at: float | None = None
+# Safety net, not a real use-case limit -- a real question takes a few
+# seconds to ask. This only exists to recover a recorder the client never
+# called /voice/stop on (closed tab, lost connection, driver got pulled
+# away mid-drive) -- without it, every future recording attempt gets stuck
+# returning 409 "already in progress" until the process is restarted.
+MAX_VOICE_RECORDING_SECONDS = 60.0
 
 # -- 遥测数据缓存（UDP 线程写入，主线程读） --
 telemetry_service = TelemetryService(port=config.TELEMETRY_UDP_PORT, window_seconds=30.0)
@@ -140,6 +173,7 @@ commentary_engine = CommentaryEngine(
     )
 )
 _auto_task: asyncio.Task | None = None
+_auto_engineer_alert_task: asyncio.Task | None = None
 _commentary_task: asyncio.Task | None = None
 _commentary_priority: int = 0
 # -- queue 模式（interrupt_mode == "queue"）状态 --
@@ -813,6 +847,81 @@ async def _auto_commentary_loop():
             log.warning(f"自动解说失败: {e}")
 
 
+# Alarm-fatigue research (aviation/medical HMI alert design) says alerts
+# should be told apart by kind, not lumped together just because they're
+# both "high severity" -- an immediate physical danger (off track) and a
+# strategic decision (pit now) don't warrant the same urgency of delivery.
+# This prefix is the cheapest version of that distinction: distinguishable
+# at a glance in the feed, and at least a different symbol for TTS engines
+# that do announce it, without touching the shared cmSpeakBrowser/
+# enSpeakKokoro playback functions themselves.
+_ALERT_CATEGORY_PREFIX = {"physical": "⚠️", "strategic": "\U0001f527"}
+
+
+def _next_engineer_alert(priority: dict, active_key: str | None) -> tuple[str | None, str | None]:
+    """Pure decision: given the current priority conclusion and what we last
+    alerted for, decide whether to fire a new proactive alert now.
+
+    Returns (alert_text_or_None, new_active_key). Edge-triggered the same
+    way engineer_events.py's off-track detection is: fires once when
+    severity becomes "high", stays quiet while it remains that same
+    priority, and re-arms once severity drops back down (see
+    _engineer_alert_active_key's docstring above).
+    """
+    if priority["severity"] != "high":
+        return None, None
+    if priority["top_priority"] == active_key:
+        return None, active_key
+    prefix = _ALERT_CATEGORY_PREFIX.get(priority.get("category"), "")
+    body = f"{priority['top_priority'].capitalize()} -- {priority['reason']}".rstrip(" -")
+    text = f"{prefix} {body}".strip()
+    return text, priority["top_priority"]
+
+
+async def _auto_engineer_alert_loop():
+    """Proactive radio alerts: unlike ask_engineer(), which only updates the
+    tire/incident trackers when the driver actually asks something, this
+    polls telemetry on its own so the engineer can speak up unprompted for
+    high-severity situations (currently off track, or a critical pit
+    window) -- opt-in via POST /api/engineer/alerts, off by default so it
+    never talks unless explicitly turned on. Reuses estimate_pit_window(),
+    engineer_incident_tracker, and summarize_priority() exactly as
+    ask_engineer() does -- same signals, same thresholds, no separate
+    "alert" logic to keep in sync with the Q&A path.
+    """
+    global _engineer_alert_active_key
+    while True:
+        await asyncio.sleep(1.0)
+        if not runtime_manager.is_enabled("engineer") or not _engineer_proactive_alerts_enabled:
+            _engineer_alert_active_key = None
+            continue
+
+        telemetry, _rankings = telemetry_store.latest()
+        if not telemetry:
+            continue
+
+        try:
+            car_state = telemetry_to_car_state(telemetry)
+            engineer_strategy_tracker.update(car_state)
+            car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
+            car_state["pit_window"] = estimate_pit_window(
+                car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
+                engineer_strategy_tracker.wear_per_lap,
+            )
+            engineer_incident_tracker.update(car_state)
+            recent_incidents = engineer_incident_tracker.recent_events
+            priority = summarize_priority(car_state, car_state["pit_window"], recent_incidents)
+
+            alert_text, _engineer_alert_active_key = _next_engineer_alert(priority, _engineer_alert_active_key)
+            if alert_text is None:
+                continue
+
+            engineer_ctx_mgr.add_assistant(alert_text)
+            await broadcast({"type": "engineer_alert", "content": alert_text, "priority": priority})
+        except Exception as e:
+            log.warning(f"proactive engineer alert failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # REST API
 # ---------------------------------------------------------------------------
@@ -1280,6 +1389,39 @@ def _first_sentence(text: str) -> str:
 # what gets displayed afterwards.
 _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 
+# Topics car_state (see race_analyzer.CAR_STATE_KEYS) categorically never
+# has -- TORCS's SCR telemetry doesn't report any of these, and neither do
+# this module's own heuristic additions (tire_wear_pct/pit_window/
+# recent_incidents). ENGINEER_PERSONA already tells the model "never invent
+# numbers", but that's asking an 8B local model to police itself; answering
+# these deterministically is the same "compute the real answer in Python,
+# don't trust the model to reason about it" pattern tire_strategy.py's
+# module docstring already uses for pit-window math. A question that
+# doesn't match any of these just falls through to the model as normal --
+# this never blocks or changes behavior for anything else.
+_UNAVAILABLE_DATA_TOPICS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bt[iy]re pressure\b", re.IGNORECASE), "tire pressure"),
+    (re.compile(r"\bt[iy]re temp(erature)?\b", re.IGNORECASE), "tire temperature"),
+    (re.compile(r"\bbrake temp(erature)?\b", re.IGNORECASE), "brake temperature"),
+    (re.compile(r"\b(engine|water) temp(erature)?\b", re.IGNORECASE), "engine temperature"),
+    (re.compile(r"\bweather\b|\braining\b|\btrack temp(erature)?\b", re.IGNORECASE), "weather or track temperature"),
+    (re.compile(r"\bsector\b|\bsplit time", re.IGNORECASE), "sector times"),
+    (re.compile(r"\bdrs\b|\bers\b|\bkers\b", re.IGNORECASE), "DRS/ERS/KERS systems"),
+    (
+        re.compile(r"\bhow many laps (are )?(left|remaining)\b|\blaps? (left|remaining) in the race\b", re.IGNORECASE),
+        "total race laps remaining",
+    ),
+]
+
+
+def _unavailable_data_topic(question: str) -> str | None:
+    """Short label naming a known TORCS/car_state data gap the question is
+    asking about, or None if it doesn't match one of those known gaps."""
+    for pattern, label in _UNAVAILABLE_DATA_TOPICS:
+        if pattern.search(question):
+            return label
+    return None
+
 
 @app.post("/api/engineer/ask")
 async def ask_engineer(body: dict):
@@ -1296,10 +1438,54 @@ async def ask_engineer(body: dict):
         telemetry, _rankings = telemetry_store.latest()
         car_state = telemetry_to_car_state(telemetry) if telemetry else empty_car_state()
 
+    # tire_strategy.py: TORCS reports neither tire wear nor a pit
+    # recommendation, so estimate both here (real math in Python, not left
+    # to the model to invent or get wrong) and fold them into car_state so
+    # format_car_state/format_engineer_prompt can hand them to the model
+    # the same way as any other telemetry field.
+    engineer_strategy_tracker.update(car_state)
+    car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
+    car_state["pit_window"] = estimate_pit_window(
+        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
+        engineer_strategy_tracker.wear_per_lap,
+    )
+
+    # engineer_events.py: car_state is only ever "this instant" (see
+    # car_state_source.py), so without this a driver asking "what just
+    # happened to me?" a few seconds after an incident gets nothing --
+    # by the time the question arrives the car may look normal again.
+    engineer_incident_tracker.update(car_state)
+    recent_incidents = engineer_incident_tracker.recent_events
+    if recent_incidents:
+        car_state["recent_incidents"] = recent_incidents
+
+    # engineer_priority.py: synthesizes the above (plus the off-track/
+    # near-edge problem labels race_analyzer.py already computed) into a
+    # single top-priority conclusion, instead of leaving an 8B local model
+    # to weigh tire/fuel urgency against a fresh incident against currently
+    # being off track on its own.
+    car_state["priority"] = summarize_priority(car_state, car_state["pit_window"], recent_incidents)
+
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()
     request_id = str(uuid.uuid4())
     await broadcast({"type": "ai_start", "source": "engineer", "request_id": request_id})
+
+    missing_topic = _unavailable_data_topic(question)
+    if missing_topic is not None:
+        answer = (
+            f"I don't have {missing_topic} data -- TORCS doesn't report that. "
+            "I can help with speed, fuel, damage, tire wear estimate, or pit strategy instead."
+        )
+        engineer_ctx_mgr.add_assistant(answer)
+        await broadcast({"type": "ai_done", "source": "engineer", "content": answer, "request_id": request_id})
+        return {
+            "ok": True,
+            "answer": answer,
+            "car_state": car_state,
+            "stats": engineer_ctx_mgr.stats(),
+        }
+
     try:
         answer = await call_model_for_feature(
             messages,
@@ -1307,11 +1493,17 @@ async def ask_engineer(body: dict):
             task="engineer",
             priority=MODEL_PRIORITIES["engineer"],
             temperature=0.4,
-            # Tight cap by default -- the persona now asks for a bare
-            # "Yes"/"No" or a short call, which needs almost no tokens.
-            # Only widen it when the driver actually asked for reasoning,
-            # so that path still has room to explain itself.
-            max_tokens=60 if _EXPLAIN_REQUEST_RE.search(question) else 12,
+            # Token budget depends on the current answer style: "concise"
+            # only ever needs a bare one-line answer per part asked, so it
+            # stays tight regardless of question type. "professional" scales
+            # up to 3-4 sentences with numbers/reasoning, so it needs a much
+            # larger budget -- widened further when the driver explicitly
+            # asked for reasoning, so that path still has room to explain
+            # itself instead of getting cut off mid-sentence.
+            max_tokens=(
+                40 if _engineer_style == "concise"
+                else (260 if _EXPLAIN_REQUEST_RE.search(question) else 200)
+            ),
             stream=False,
             # 45s was too tight for this local model with the full
             # telemetry-context prompt, especially while TORCS is also
@@ -1347,13 +1539,94 @@ async def get_engineer_history():
             for message in engineer_ctx_mgr.history
         ],
         "stats": engineer_ctx_mgr.stats(),
+        "style": _engineer_style,
     }
+
+
+def _render_engineer_export_markdown() -> str:
+    lines = ["# AI Race Engineer -- Conversation Export", ""]
+    if not engineer_ctx_mgr.history:
+        lines.append("(no messages yet)")
+    for message in engineer_ctx_mgr.history:
+        if message.role == "user":
+            lines.append(f"**Driver:** {message.content}")
+            lines.append("")
+        elif message.role == "assistant":
+            lines.append(f"**Engineer:** {message.content}")
+            lines.append("")
+        # system-role messages (the persona itself) aren't part of the
+        # conversation being exported, so they're skipped here on purpose.
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@app.get("/api/engineer/export")
+async def export_engineer_history(fmt: str = "markdown"):
+    """On-demand only -- this never runs on its own. Nothing calls this
+    endpoint except a user clicking Export in the dashboard (or hitting the
+    URL directly); there is no background job or auto-export anywhere."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if fmt == "json":
+        payload = {
+            "messages": [
+                {"role": m.role, "content": m.content, "tokens": m.tokens, "pinned": m.pinned}
+                for m in engineer_ctx_mgr.history
+            ],
+            "style": _engineer_style,
+            "exported_at_utc": timestamp,
+        }
+        return JSONResponse(
+            payload,
+            headers={"Content-Disposition": f'attachment; filename="engineer_conversation_{timestamp}.json"'},
+        )
+    return PlainTextResponse(
+        _render_engineer_export_markdown(),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="engineer_conversation_{timestamp}.md"'},
+    )
 
 
 @app.post("/api/engineer/clear")
 async def clear_engineer_history():
     engineer_ctx_mgr.clear_history()
     return {"ok": True, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.post("/api/engineer/style")
+async def set_engineer_style(body: dict):
+    global _engineer_style, _engineer_style_undo_snapshot
+    style = str(body.get("style") or "").strip().lower()
+    if style not in _ENGINEER_STYLES:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown style {style!r}, expected one of {sorted(_ENGINEER_STYLES)}"},
+            status_code=400,
+        )
+    # UX research on destructive actions favours undo over a blocking
+    # confirmation dialog when the action is cheaply recoverable (NN/g:
+    # "Confirmation Dialogs Can Prevent User Errors", but overused
+    # confirmations just get reflexively dismissed -- an undo affordance
+    # doesn't interrupt the flow at all until it's actually needed). This
+    # snapshot is what /api/engineer/style/undo restores from -- single
+    # slot, same pattern as _engineer_voice_recorder: only the most recent
+    # switch can be undone, a second switch overwrites it.
+    if style != _engineer_style:
+        _engineer_style_undo_snapshot = {"style": _engineer_style, "history": list(engineer_ctx_mgr.history)}
+    _engineer_style = style
+    engineer_ctx_mgr.config.commentator_persona = _ENGINEER_STYLES[style]
+    engineer_ctx_mgr.clear_history()
+    return {"ok": True, "style": _engineer_style, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.post("/api/engineer/style/undo")
+async def undo_engineer_style_change():
+    global _engineer_style, _engineer_style_undo_snapshot
+    snapshot = _engineer_style_undo_snapshot
+    _engineer_style_undo_snapshot = None
+    if snapshot is None:
+        return JSONResponse({"ok": False, "error": "nothing to undo"}, status_code=409)
+    _engineer_style = snapshot["style"]
+    engineer_ctx_mgr.config.commentator_persona = _ENGINEER_STYLES[_engineer_style]
+    engineer_ctx_mgr.history = snapshot["history"]
+    return {"ok": True, "style": _engineer_style, "stats": engineer_ctx_mgr.stats()}
 
 
 @app.get("/api/engineer/voice/available")
@@ -1369,11 +1642,23 @@ async def get_engineer_voice_available():
 
 @app.post("/api/engineer/voice/start")
 async def start_engineer_voice():
-    global _engineer_voice_recorder
+    global _engineer_voice_recorder, _engineer_voice_recorder_started_at
     if not runtime_manager.is_enabled("engineer"):
         return JSONResponse({"ok": False, "error": "engineer feature is disabled"}, status_code=409)
     if _engineer_voice_recorder is not None:
-        return JSONResponse({"ok": False, "error": "a recording is already in progress"}, status_code=409)
+        stale = (
+            _engineer_voice_recorder_started_at is not None
+            and time.monotonic() - _engineer_voice_recorder_started_at >= MAX_VOICE_RECORDING_SECONDS
+        )
+        if not stale:
+            return JSONResponse({"ok": False, "error": "a recording is already in progress"}, status_code=409)
+        # The previous client never called /voice/stop -- clean up its
+        # recorder instead of leaving every future request stuck on 409.
+        try:
+            await asyncio.to_thread(_engineer_voice_recorder.stop)
+        except Exception:
+            pass
+        _engineer_voice_recorder = None
     if not await asyncio.to_thread(voice_input.mic_available):
         return JSONResponse(
             {"ok": False, "error": "microphone not available (see docs/voice-input-setup.md)"},
@@ -1382,6 +1667,7 @@ async def start_engineer_voice():
     recorder = voice_input.Recorder()
     recorder.start()
     _engineer_voice_recorder = recorder
+    _engineer_voice_recorder_started_at = time.monotonic()
     return {"ok": True, "recording": True}
 
 
@@ -1391,9 +1677,10 @@ async def stop_engineer_voice():
     in a worker thread (faster-whisper is a blocking CPU call) so it never
     stalls the event loop that the other three features' model calls and
     the WebSocket broadcast share."""
-    global _engineer_voice_recorder
+    global _engineer_voice_recorder, _engineer_voice_recorder_started_at
     recorder = _engineer_voice_recorder
     _engineer_voice_recorder = None
+    _engineer_voice_recorder_started_at = None
     if recorder is None:
         return JSONResponse({"ok": False, "error": "no recording in progress"}, status_code=409)
     wav_path = await asyncio.to_thread(recorder.stop)
@@ -1401,6 +1688,22 @@ async def stop_engineer_voice():
         return {"ok": True, "text": ""}
     text = await asyncio.to_thread(voice_input.transcribe, wav_path)
     return {"ok": True, "text": text}
+
+
+@app.get("/api/engineer/alerts")
+async def get_engineer_alerts_enabled():
+    return {"enabled": _engineer_proactive_alerts_enabled}
+
+
+@app.post("/api/engineer/alerts")
+async def set_engineer_alerts_enabled(body: dict):
+    """Opt-in toggle for _auto_engineer_alert_loop -- off by default, see
+    that function's docstring."""
+    global _engineer_proactive_alerts_enabled, _engineer_alert_active_key
+    _engineer_proactive_alerts_enabled = bool(body.get("enabled"))
+    if not _engineer_proactive_alerts_enabled:
+        _engineer_alert_active_key = None
+    return {"ok": True, "enabled": _engineer_proactive_alerts_enabled}
 
 
 @app.get("/api/bot/status")
@@ -1763,15 +2066,16 @@ async def startup():
     log.info(f"UDP 监听器启动 0.0.0.0:{config.TELEMETRY_UDP_PORT}")
 
     # 启动自动解说循环
-    global _auto_task
+    global _auto_task, _auto_engineer_alert_task
     _auto_task = asyncio.create_task(_auto_commentary_loop())
+    _auto_engineer_alert_task = asyncio.create_task(_auto_engineer_alert_loop())
     log.info(f"服务启动完成 → {config.MIDWARE_BASE_URL}")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _auto_task, _commentary_task
-    for task in (_auto_task, _commentary_task):
+    global _auto_task, _commentary_task, _auto_engineer_alert_task
+    for task in (_auto_task, _commentary_task, _auto_engineer_alert_task):
         if task and not task.done():
             task.cancel()
     telemetry_service.stop()
