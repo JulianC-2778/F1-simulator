@@ -45,6 +45,13 @@ def summarize_priority(car_state: dict, pit_window: dict, recent_incidents: list
             "top_priority": "get back on track",
             "severity": "high",
             "reason": "car is currently off track / near the edge",
+            # "physical" = an immediate driving-correction danger, distinct
+            # from "strategic" (a pit-stop decision) -- alarm-fatigue research
+            # (aviation/medical HMI) says alerts should be told apart by kind,
+            # not just severity, so a proactive alert can treat these
+            # differently instead of announcing both the same way (see
+            # _next_engineer_alert in runtime.py).
+            "category": "physical",
         }
 
     urgency = pit_window.get("urgency")
@@ -53,12 +60,14 @@ def summarize_priority(car_state: dict, pit_window: dict, recent_incidents: list
             "top_priority": "pit now",
             "severity": "high",
             "reason": ", ".join(pit_window.get("reasons") or []) or "pit window",
+            "category": "strategic",
         }
     if urgency == "medium":
         return {
             "top_priority": "plan a pit stop soon",
             "severity": "medium",
             "reason": ", ".join(pit_window.get("reasons") or []) or "pit window",
+            "category": "strategic",
         }
 
     fresh = [
@@ -70,10 +79,12 @@ def summarize_priority(car_state: dict, pit_window: dict, recent_incidents: list
             "top_priority": "no urgent action, but note a recent incident",
             "severity": "low",
             "reason": fresh[0].get("detail", ""),
+            "category": "informational",
         }
 
     return {
         "top_priority": "no urgent priority -- car is in good shape",
         "severity": "low",
         "reason": "",
+        "category": "informational",
     }
