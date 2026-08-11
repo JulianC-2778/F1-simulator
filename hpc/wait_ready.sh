@@ -17,12 +17,20 @@ LOGIN_HOST="${LOGIN_HOST:-bp1-login.acrc.bris.ac.uk}"
 echo "watching for granite-serve jobs (Ctrl+C to stop, jobs keep running)"
 
 while true; do
-    # Newest granite-serve* job still in the queue, whatever partition.
+    # Pick a granite-serve* job to follow. RUNNING always wins over PENDING:
+    # racing a gpu_short job against a gpu one is the normal way to get a card,
+    # and picking by job id alone would make us sit on a queued job while its
+    # twin is already serving.
+    #
     # %N must come LAST: it is empty while the job is PENDING, and a trailing
     # empty field is harmless whereas an empty one in the middle shifts every
     # column after it and loses the job name.
-    read -r jobid state node <<<"$(squeue -h -u "$USER" -o "%i %T %j %N" \
-        | awk '$3 ~ /^granite-serve/ {print $1, $2, $4}' | sort -rn | head -1)"
+    candidates="$(squeue -h -u "$USER" -o "%i %T %j %N" \
+        | awk '$3 ~ /^granite-serve/ {print $1, $2, $4}')"
+    read -r jobid state node <<<"$(
+        { grep RUNNING <<<"$candidates" | sort -rn
+          sort -rn <<<"$candidates"; } | head -1
+    )"
 
     if [[ -z "${jobid:-}" ]]; then
         echo "no granite-serve job in the queue -- submit one:"

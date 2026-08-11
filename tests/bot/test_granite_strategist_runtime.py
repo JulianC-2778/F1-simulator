@@ -11,6 +11,13 @@ Rather than relying on real background-thread timing, most tests here push
 a WorkerResult directly into GraniteStrategist's LatestTaskRunner queue
 (the same queue tick() drains via pop_completed()) — this keeps the tests
 deterministic instead of racing a real worker thread.
+
+_call_granite()'s output is (strategy, reason, trace).  The trace holds the
+model's "considered"/"rejected" reasoning fields and is empty for every
+prompt variant that does not ask for them; it rides along with the decision
+rather than being stashed on the strategist by the worker thread so that a
+displayed trace can never belong to a request whose result was discarded as
+stale.
 """
 
 import json
@@ -33,7 +40,7 @@ class GraniteStrategistTickTests(unittest.TestCase):
         strategist.fallback = True
         strategist.last_error = "stale error from a previous failure"
         strategist._runner._results.put(
-            WorkerResult(task={}, output=(ATTACK, "clear track"))
+            WorkerResult(task={}, output=(ATTACK, "clear track", {}))
         )
         strategy, reason = strategist.tick({})
         self.assertEqual(strategy, ATTACK)
@@ -47,7 +54,7 @@ class GraniteStrategistTickTests(unittest.TestCase):
         # under whatever strategy was last confirmed, not crash or freeze.
         strategist = GraniteStrategist(interval=999.0)
         strategist._runner._results.put(
-            WorkerResult(task={}, output=(DEFEND, "opponent close"))
+            WorkerResult(task={}, output=(DEFEND, "opponent close", {}))
         )
         strategist.tick({})
         self.assertEqual(strategist.last_strategy(), DEFEND)
@@ -65,7 +72,7 @@ class GraniteStrategistTickTests(unittest.TestCase):
         strategist.tick({})
         self.assertTrue(strategist.fallback)
 
-        strategist._runner._results.put(WorkerResult(task={}, output=(ATTACK, "recovered")))
+        strategist._runner._results.put(WorkerResult(task={}, output=(ATTACK, "recovered", {})))
         strategist.tick({})
         self.assertFalse(strategist.fallback)
         self.assertEqual(strategist.last_error, "")
@@ -83,7 +90,7 @@ class GraniteStrategistTickTests(unittest.TestCase):
         # proposal that differs from the active strategy switches
         # immediately with no smoothing delay.
         strategist = GraniteStrategist(interval=999.0)
-        strategist._runner._results.put(WorkerResult(task={}, output=(ATTACK, "go")))
+        strategist._runner._results.put(WorkerResult(task={}, output=(ATTACK, "go", {})))
         strategy, _ = strategist.tick({})
         self.assertEqual(strategy, ATTACK)
 
@@ -106,20 +113,29 @@ class CallGraniteHttpLayerTests(unittest.TestCase):
         strategist = GraniteStrategist(base_url="http://127.0.0.1:9999", interval=999.0)
         response_body = json.dumps({"decision": {"strategy": "ATTACK", "reason": "clear"}}).encode()
         with patch("urllib.request.urlopen", return_value=self._FakeUrlopenResponse(response_body)) as mock_urlopen:
-            strategy, reason = strategist._call_granite({"state": {"fuel": 40.0}})
+            strategy, reason, trace = strategist._call_granite({"state": {"fuel": 40.0}})
         self.assertEqual(strategy, ATTACK)
         self.assertEqual(reason, "clear")
+        # No considered/rejected in this reply, so the trace is empty rather
+        # than absent — downstream reads it unconditionally.
+        self.assertEqual(trace, {"considered": [], "rejected": {}})
         request = mock_urlopen.call_args[0][0]
         self.assertEqual(request.full_url, "http://127.0.0.1:9999/api/bot/strategy")
         body = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(body["sensor_state"], {"fuel": 40.0})
+        # The raw state is forwarded as-is, alongside two derived fields the
+        # rule-free prompt variants need: `situation` (the same numbers
+        # rendered as self-explanatory phrases) and `allowed_strategies` (so
+        # the prompt never offers an option this bot would discard).
+        self.assertEqual(body["sensor_state"]["fuel"], 40.0)
+        self.assertIn("situation", body["sensor_state"])
+        self.assertIn("allowed_strategies", body["sensor_state"])
         self.assertIn("current_strategy", body)
 
     def test_malformed_decision_falls_back_to_normal(self):
         strategist = GraniteStrategist(base_url="http://127.0.0.1:9999", interval=999.0)
         response_body = json.dumps({"decision": {}}).encode()
         with patch("urllib.request.urlopen", return_value=self._FakeUrlopenResponse(response_body)):
-            strategy, _ = strategist._call_granite({"state": {}})
+            strategy, _, _ = strategist._call_granite({"state": {}})
         self.assertEqual(strategy, NORMAL)
 
     def test_network_failure_propagates_as_an_exception_for_the_runner_to_catch(self):
