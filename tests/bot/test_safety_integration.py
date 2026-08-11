@@ -17,7 +17,7 @@ class SafetyFilterOverridesGraniteTests(unittest.TestCase):
     def test_safety_filter_downgrades_granites_attack_when_car_is_critically_damaged(self):
         strategist = GraniteStrategist(interval=999.0)
         strategist._runner._results.put(
-            WorkerResult(task={}, output=(ATTACK, "opponent is slow, push now"))
+            WorkerResult(task={}, output=(ATTACK, "opponent is slow, push now", {}))
         )
         state = {"fuel": 50.0, "damage": 9999.0}  # far past _DMG_DEFEND (9500)
 
@@ -44,7 +44,9 @@ class BlockIsSystemOnlyEndToEndTests(unittest.TestCase):
         from ai_bot import _parse_strategy_response
 
         sanitised_strategy, _ = _parse_strategy_response('{"strategy": "BLOCK", "reason": "defending"}')
-        strategist._runner._results.put(WorkerResult(task={}, output=(sanitised_strategy, "defending")))
+        strategist._runner._results.put(
+            WorkerResult(task={}, output=(sanitised_strategy, "defending", {}))
+        )
 
         healthy_state = {"fuel": 50.0, "damage": 0.0}
         raw_strategy, _reason = strategist.tick(healthy_state)

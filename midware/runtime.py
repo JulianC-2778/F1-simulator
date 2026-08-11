@@ -51,6 +51,7 @@ from midware.shared.model_gateway import OpenAICompatibleGateway
 from midware.services.model_broker import MODEL_PRIORITIES, ModelBroker
 from midware.schemas.bot import BotStrategyRequest, Strategy, StrategyDecision
 from midware.schemas.bot import BotStatusUpdate
+from midware import bot_strategy
 from midware.services.bot_status_service import BotStatusService
 from midware.services.process_manager import ProcessRegistry
 from midware.shared.output_bus import ALLOWED_SOURCES, normalize_outbound_message
@@ -1742,59 +1743,45 @@ async def request_bot_strategy(body: dict):
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
-    # 2026-08-08: with no decision criteria at all, Granite had nothing to
-    # reason from except a wall of raw sensor floats plus current_strategy
-    # sitting right there in the input — the path of least resistance is to
-    # just echo current_strategy back. Verified live: 130/130 successful
-    # completions, 0 errors, 100% NORMAL over a 5-minute healthy-car race
-    # (damage 0, fuel ~93 L) that should have picked ATTACK. The fix is an
-    # explicit guide keyed off scalar fields already in sensor_state (damage,
-    # fuel) — not the raw opponents/track arrays, which are too much to ask
-    # an 8B model to parse reliably in 160 output tokens. Thresholds are
-    # deliberately a proactive judgement call in the space safety_filter
-    # doesn't hard-code (safety_filter still has the final word: it forces
-    # PIT under 5 L, forces DEFEND above 9500 damage, downgrades ATTACK back
-    # to NORMAL above 8000 damage or under 15 L, and forces BLOCK on a close
-    # rear threat regardless of what Granite says here — see ai_bot.py).
-    prompt = (
-        "You are a TORCS race strategist. Return JSON only with strategy and reason. "
-        "strategy must be ATTACK, NORMAL, DEFEND, SAVE_FUEL, or PIT. "
-        # Without an explicit cap Granite writes a full paragraph of reasoning,
-        # which ran past max_tokens and truncated the JSON mid-string.
-        "reason must be a single phrase of at most 8 words.\n"
-        "Re-evaluate from scratch every time — do not just repeat current_strategy out of habit.\n"
-        "Guide (a downstream safety layer already forces PIT/DEFEND/BLOCK in "
-        "emergencies, so pick the best proactive choice for the state below):\n"
-        "- ATTACK: damage under 4000 and fuel over 20 — push the pace for a better position.\n"
-        "- DEFEND: damage between 4000 and 9000 — protect the car, avoid further risk.\n"
-        "- SAVE_FUEL: fuel under 20 but above 5 — conserve for the rest of the race.\n"
-        "- NORMAL: none of the above clearly applies — steady pace.\n"
-        + json.dumps(request.model_dump(mode="json"), ensure_ascii=True)
-    )
+    # Prompt text, per-variant model settings and response parsing all live in
+    # midware/bot_strategy.py — including the history of why the prompt looks
+    # the way it does (the 130/130-NORMAL echo failure and what it did and did
+    # not prove).  Kept out of this file so iterating on the bot prompt does
+    # not churn the module three other features share.
+    # `prompt_mode` in the body overrides the server-wide default for this one
+    # request.  BotStrategyRequest ignores the unknown key, so it is read off
+    # the raw body: it exists so bot_replay.py can put all three variants
+    # through the same recorded states in one run, with no restart between
+    # them (a restart would also mean a cold model, making the timings
+    # incomparable).  Absent — i.e. every request the bot itself makes — the
+    # env-var default applies.
+    mode = bot_strategy.resolve_mode(body.get("prompt_mode"))
+    payload = request.model_dump(mode="json")
+    if mode != "legacy":
+        # Rule-free variants must not see their own previous answer: echoing
+        # it back is the cheapest completion available and is what sank the
+        # earlier no-rules attempt.  See bot_strategy.py's module docstring.
+        payload.pop("current_strategy", None)
+    settings = bot_strategy.model_settings(mode)
     try:
         text = await call_model_for_feature(
-            [{"role": "user", "content": prompt}],
+            [{"role": "user", "content": bot_strategy.build_prompt(payload, mode)}],
             source="bot",
             task="bot_strategy",
             priority=MODEL_PRIORITIES["bot_strategy"],
-            temperature=0.1,
-            # 80 was not enough headroom: Granite emits a ```json fence plus a
-            # verbose reason, and the object got cut off before its closing
-            # brace, so nothing downstream could parse it.
-            max_tokens=160,
-            # granite-4.1-8b measured at 11.7-12.5s for this prompt on the
-            # local LM Studio server, so the previous 10s ceiling timed out
-            # on every single call (execution_s=10.010 status=error).
-            timeout=30,
+            **settings,
         )
         # Granite wraps its answer in a ```json fence, which bare json.loads
         # chokes on; extract_json_object() falls back to the outermost {...}.
         parsed = extract_json_object(text)
         if parsed is None:
             raise ValueError(f"model returned no parsable JSON object: {text[:200]!r}")
+        fields = bot_strategy.parse_decision(parsed)
         decision = StrategyDecision(
-            strategy=Strategy(str(parsed.get("strategy", "NORMAL")).upper()),
-            reason=str(parsed.get("reason", "")),
+            strategy=Strategy(fields["strategy"]),
+            reason=fields["reason"],
+            considered=fields["considered"],
+            rejected=fields["rejected"],
         )
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
