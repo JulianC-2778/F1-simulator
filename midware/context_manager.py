@@ -9,7 +9,7 @@ SillyTavern 的核心思路：
 
 import re
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 # ---------------------------------------------------------------------------
 # Token 估算（无需 tiktoken 依赖）
@@ -45,23 +45,48 @@ class Message:
 # `/api/config/context` 调用）的 API 契约的一部分，改名会牵连前端。
 # ---------------------------------------------------------------------------
 
-ENGINEER_PERSONA = (
+# Shared across both engineer answer styles below: identity, no invented
+# data, off-topic handling, and the closing no-rambling/English-only rules.
+# Keeping this in one place means a future prompt tweak only has to happen
+# once instead of drifting between the two variants.
+_ENGINEER_PERSONA_BASE = (
     "You are a professional, direct-talking AI racing engineer on the radio with a TORCS driver. "
     "Answer only using the live telemetry and detected issues provided below -- never invent numbers "
-    "that were not given. Sound like a real pit-wall radio call: give the decision, not a lecture. "
-    "Never explain your reasoning and never mention any number (track position, speed, fuel, lap time, "
-    "etc.) in a normal answer -- not even briefly -- unless the driver's question explicitly asks you to "
-    "explain or asks why. "
-    "If the driver's question is a yes/no question (e.g. 'should I push now?', 'should I pit?'), your "
-    "entire answer must be exactly one word: 'Yes' or 'No'. Nothing before it, nothing after it, no "
-    "restatement of the call, no punctuation beyond a period. For other questions, default to a single "
-    "short sentence -- just the call to make (e.g. 'Box this lap.'), with no reasoning attached. "
-    "If the driver asks about several things at once, keep each part to a "
-    "short call and answer them in order of importance to the race, not necessarily the order they were "
-    "asked. If a question has nothing to do with the car, the race, or the data provided, deprioritize it "
+    "or facts that were not given. "
+)
+
+_ENGINEER_PERSONA_TAIL = (
+    "Only recommend a pit stop for fuel or damage issues. If the only detected issue is about track "
+    "position, speed, rpm, or gear, that is a driving correction, not something a pit stop fixes -- say "
+    "so plainly (e.g. 'get back on track') instead of recommending a pit. "
+    "If a 'Top priority' line is given below and the question is general or open-ended (e.g. asking how "
+    "things are going, what to watch out for, or what to focus on), lead your answer with it. For a "
+    "specific factual question (e.g. asking about fuel, speed, or a particular system), just answer what "
+    "was asked -- don't force the top priority in if it isn't relevant to that question. "
+    "If a question has nothing to do with the car, the race, or the data provided, deprioritize it "
     "-- answer it last and briefly, or skip it if it doesn't matter. Never pad, ramble, or repeat yourself. "
     "Always answer in English."
 )
+
+# "Professional" style: scales to what was actually asked, can include
+# numbers and a bit of reasoning. This is the default.
+ENGINEER_PERSONA = _ENGINEER_PERSONA_BASE + (
+    "Scale your answer to what was actually asked: a single question gets up to three or four "
+    "sentences, including relevant numbers (track position, speed, fuel, lap time, etc.) and a bit of "
+    "reasoning when it's useful -- not just a bare fact. If the driver asks about several things at "
+    "once, keep each part brief so the whole answer doesn't balloon, and answer them in order of "
+    "importance to the race, not necessarily the order they were asked. "
+) + _ENGINEER_PERSONA_TAIL
+
+# "Concise" style: every part of the question still gets answered, but each
+# part is compressed to the bare answer/fact only, no elaboration.
+ENGINEER_PERSONA_CONCISE = _ENGINEER_PERSONA_BASE + (
+    "Give only the bare answer or fact for each thing asked -- no elaboration, no reasoning, no extra "
+    "detail. If the driver asks about several things at once, answer every part, but keep each part to "
+    "the bare minimum (a few words or one short clause) rather than skipping any of them. "
+    "If the question is a yes/no question, still include the single key reason in that same short answer "
+    "(e.g. 'Yes, fuel low.' or 'No, car is fine.') -- never answer with just 'Yes' or 'No' alone. "
+) + _ENGINEER_PERSONA_TAIL
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +146,23 @@ def format_event_fields(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _safe_number(value: Any, default: float = 0.0) -> float:
+    """Coerce a car_state field to a float for display formatting.
+
+    A caller-supplied car_state (e.g. a test harness or a malformed request)
+    can put the wrong type in a numeric field -- e.g. fuel as the string
+    "low" instead of a number. Without this, an f-string format spec like
+    f"{value:.1f}" raises an uncaught TypeError, and since format_car_state()
+    runs before ask_engineer()'s try/except block starts, that crash isn't
+    handled gracefully at all. Falls back to `default` for anything that
+    can't be interpreted as a number, instead of raising.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def format_car_state(car_state: dict) -> str:
     """Render a car_state dict (see car_state_source.py) as a short status block."""
     problems = car_state.get("problems") or []
@@ -132,16 +174,69 @@ def format_car_state(car_state: dict) -> str:
         problem_text = "None -- car is on track and under control."
     else:
         problem_text = ", ".join(problems)
-    return (
-        f"Speed: {car_state.get('speed', 0):.0f} km/h\n"
-        f"RPM: {car_state.get('rpm', 0):.0f}\n"
-        f"Gear: {car_state.get('gear', 0)}\n"
-        f"Track position: {car_state.get('track_pos', 0):.2f} (0 = center line, closer to +/-1 = closer to the track edge)\n"
-        f"Damage: {car_state.get('damage', 0):.0f}\n"
-        f"Fuel remaining: {car_state.get('fuel', 0):.1f} L\n"
-        f"Current lap time: {car_state.get('lap_time', 0):.1f} s\n"
-        f"Detected issues: {problem_text}"
-    )
+    lines = [
+        f"Speed: {_safe_number(car_state.get('speed')):.0f} km/h",
+        f"RPM: {_safe_number(car_state.get('rpm')):.0f}",
+        f"Gear: {car_state.get('gear', 0)}",
+        f"Track position: {_safe_number(car_state.get('track_pos')):.2f} (0 = center line, closer to +/-1 = closer to the track edge)",
+        f"Damage: {_safe_number(car_state.get('damage')):.0f}",
+        f"Fuel remaining: {_safe_number(car_state.get('fuel')):.1f} L",
+        f"Current lap time: {_safe_number(car_state.get('lap_time')):.1f} s",
+        f"Detected issues: {problem_text}",
+    ]
+
+    # tire_wear_pct / pit_window are optional -- only present when
+    # runtime.py's ask_engineer has run them through tire_strategy.py's
+    # RaceStrategyTracker first. TORCS itself never reports tire wear (see
+    # tire_strategy.py's module docstring), so this is an estimate, and is
+    # labelled as one so the model doesn't present it as a measured value.
+    if "tire_wear_pct" in car_state:
+        lines.append(
+            f"Estimated tire wear: {_safe_number(car_state.get('tire_wear_pct')):.0f}% "
+            "(0 = fresh, 100 = worn out; heuristic estimate, TORCS does not report this directly)"
+        )
+    if "pit_window" in car_state:
+        pit = car_state["pit_window"]
+        laps_left = pit.get("laps_of_fuel_left")
+        laps_left_text = "unknown" if laps_left is None else f"{laps_left:.1f}"
+        tire_laps_left = pit.get("laps_of_tire_left")
+        tire_laps_left_text = "unknown" if tire_laps_left is None else f"{tire_laps_left:.1f}"
+        overall_left = pit.get("estimated_laps_remaining")
+        overall_left_text = "unknown" if overall_left is None else f"{overall_left:.1f}"
+        reasons_text = ", ".join(pit.get("reasons") or []) or "none"
+        lines.append(
+            f"Pit window analysis: recommend pit = {'yes' if pit.get('recommend_pit') else 'no'}, "
+            f"urgency = {pit.get('urgency', 'low')}, reasons = {reasons_text}, "
+            f"estimated laps of fuel left = {laps_left_text}, "
+            f"estimated laps until critical tire wear = {tire_laps_left_text}, "
+            f"estimated laps remaining before a pit is needed = {overall_left_text}"
+        )
+
+    # recent_incidents is optional -- only present when runtime.py's
+    # ask_engineer has run car_state through engineer_events.py's
+    # IncidentTracker and it found at least one incident this session.
+    if car_state.get("recent_incidents"):
+        incidents_text = "; ".join(
+            f"{incident.get('detail', '')} ({_safe_number(incident.get('seconds_ago')):.0f}s ago)"
+            for incident in car_state["recent_incidents"]
+        )
+        lines.append(f"Recent incidents this session: {incidents_text}")
+
+    # priority is optional -- only present when runtime.py's ask_engineer
+    # has run car_state through engineer_priority.py's summarize_priority(),
+    # which synthesizes tire/fuel urgency, off-track state, and recent
+    # incidents into a single top-priority conclusion instead of leaving
+    # that judgment call to the model.
+    if "priority" in car_state:
+        priority = car_state["priority"]
+        reason = priority.get("reason")
+        reason_text = f" ({reason})" if reason else ""
+        lines.append(
+            f"Top priority: {priority.get('top_priority', 'unknown')} "
+            f"[{priority.get('severity', 'low')}]{reason_text}"
+        )
+
+    return "\n".join(lines)
 
 
 @dataclass
