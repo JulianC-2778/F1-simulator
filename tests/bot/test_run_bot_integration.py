@@ -138,10 +138,30 @@ class RunBotOrchestrationTests(unittest.TestCase):
         # is that a critically damaged car does not floor the throttle.
         self.assertNotIn("(accel 1.000)", client.sent_controls[0])
 
-    def test_low_fuel_forces_pit_meta_flag_through_the_full_loop(self):
-        client = _FakeScrClient([_frame(fuel=2.0, speed_x=5.0, rpm=800.0, gear=1), None])
+    def test_low_fuel_far_from_pit_lane_keeps_racing_through_the_full_loop(self):
+        # 2026-08-09 pit-system rework: without pit-lane telemetry,
+        # _near_pit_lane() is unconditionally False, so a fuel-critical car
+        # is downgraded to ATTACK rather than crawling to PIT's ~50 km/h cap
+        # a lap early -- see test_safety_filter.py's PriorityTwoFuelPitTests.
+        client = _FakeScrClient([_frame(fuel=2.0, speed_x=200.0, rpm=5000.0, gear=5), None])
         run_bot(strategy=ATTACK, client=client, verbose=False, track="off")
-        self.assertIn("(meta 1)", client.sent_controls[0])
+        self.assertIn("(accel 1.000)", client.sent_controls[0])
+
+    def test_low_fuel_near_pit_lane_resolves_to_pit_through_the_full_loop(self):
+        client = _FakeScrClient([
+            _frame(fuel=2.0, speed_x=5.0, rpm=800.0, gear=1,
+                   dist_from_start=990.0, track_length=2000.0, pit_entry=1000.0, pit_exit=1050.0),
+            None,
+        ])
+        run_bot(strategy=ATTACK, client=client, verbose=False, track="off")
+        out = client.sent_controls[0]
+        # PIT's own accel_limit (_PARAMS[PIT] = 0.30) caps throttle well
+        # below a healthy ATTACK/NORMAL full-throttle reading.
+        self.assertNotIn("(accel 1.000)", out)
+        # Real bug fix (see test_control_logic.py's
+        # test_pit_never_sets_meta_even_at_low_speed): meta=1 is a race
+        # restart signal, never a pit-please signal, regardless of strategy.
+        self.assertNotIn("(meta 1)", out)
 
     def test_unknown_initial_strategy_falls_back_to_normal_without_raising(self):
         client = _FakeScrClient([_frame(), None])

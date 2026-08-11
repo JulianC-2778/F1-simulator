@@ -11,6 +11,20 @@ docstring) — the boundary tests below probe T-eps/T/T+eps around every
 threshold constant in ai_bot.py, plus the priority-interaction cases the
 built-in ``_run_tests()`` self-test already covered (ported here so they run
 under pytest/CI instead of only via ``python ai_bot.py``).
+
+Updated 2026-08-12 after merging in a same-day upstream pit-system rework
+(commits "avoid"/"avoid speed"/"avoid reverse frame-by-frame calculation"/
+"pit"/"fix pit-lane docking") that changed real behaviour here:
+``_FUEL_PIT`` moved 5.0 -> 10.0, PIT now only actually engages once
+``_near_pit_lane()`` says the car is close to a real pit lane (otherwise a
+fuel-critical/PIT-requesting car is downgraded to ATTACK and keeps racing —
+see ``_PIT_APPROACH_DIST``'s comment), and two feature flags
+(``_SAVE_FUEL_ENABLED``, ``_FUEL_CAUTION_ENABLED``) were added, both
+currently ``False`` per an explicit "TEMP (pit-system testing, 2026-08-09)
+... flip back to True to restore normal behaviour" comment in ai_bot.py.
+Tests that depend on those two flags read the live value from ``ai_bot``
+instead of hardcoding an assumption, so they stay correct either way the
+flags end up set.
 """
 
 import unittest
@@ -50,32 +64,72 @@ class PriorityOneUnknownStrategyTests(unittest.TestCase):
         self.assertEqual(safety_filter(BLOCK, self.base), NORMAL)
 
     def test_known_healthy_strategies_pass_through_unchanged(self):
+        # PIT and SAVE_FUEL deliberately excluded here: PIT's pass-through is
+        # now conditional on pit-lane proximity (see PriorityTwoFuelPitTests)
+        # and SAVE_FUEL's availability is gated by a feature flag (see
+        # SaveFuelStrategyAvailabilityTests) — neither is a plain "healthy ->
+        # unchanged" case anymore.
         self.assertEqual(safety_filter(ATTACK, self.base), ATTACK)
         self.assertEqual(safety_filter(NORMAL, self.base), NORMAL)
-        self.assertEqual(safety_filter(SAVE_FUEL, self.base), SAVE_FUEL)
-        self.assertEqual(safety_filter(PIT, self.base), PIT)
         self.assertEqual(safety_filter(DEFEND, self.base), DEFEND)
 
 
-class PriorityTwoFuelPitTests(unittest.TestCase):
-    """Priority 2: fuel < _FUEL_PIT (5.0) -> PIT, beats everything Granite said."""
+class SaveFuelStrategyAvailabilityTests(unittest.TestCase):
+    """SAVE_FUEL's availability is gated by ``_SAVE_FUEL_ENABLED`` (2026-08-09
+    pit-system rework: disabled by default so low fuel resolves straight to
+    PIT instead of Granite hedging with economical driving first — see the
+    "TEMP (pit-system testing...)" comment above SAVE_FUEL's definition).
+    Reads the live flag so this test stays correct either way it's set."""
 
-    def test_below_threshold_forces_pit_regardless_of_strategy(self):
-        state = {"fuel": ai_bot._FUEL_PIT - _EPS, "damage": 0.0}
+    def test_save_fuel_matches_the_current_flag_state(self):
+        result = safety_filter(SAVE_FUEL, {"fuel": 50.0, "damage": 0.0})
+        if ai_bot._SAVE_FUEL_ENABLED:
+            self.assertEqual(result, SAVE_FUEL)
+        else:
+            self.assertEqual(result, NORMAL, "disabled -> not in _GRANITE_STRATEGIES -> priority 1 -> NORMAL")
+
+
+class PriorityTwoFuelPitTests(unittest.TestCase):
+    """Priority 2: fuel < _FUEL_PIT -> PIT, but ONLY once the car is
+    actually near a real pit lane (``_near_pit_lane()``); far from one, a
+    fuel-critical car (or one where Granite itself asked for PIT) is
+    downgraded to ATTACK and keeps racing instead of crawling a lap early at
+    PIT's ~50 km/h cap for nothing — see ai_bot.py's 2026-08-09
+    _PIT_APPROACH_DIST/_near_pit_lane comments."""
+
+    @staticmethod
+    def _near_pit_state(**overrides):
+        # 10 m before a pit entry on a 2000 m track -- inside
+        # _PIT_APPROACH_DIST (150 m), so _near_pit_lane() is True.
+        state = {"fuel": 50.0, "damage": 0.0, "dist_from_start": 990.0,
+                 "track_length": 2000.0, "pit_entry": 1000.0, "pit_exit": 1050.0}
+        state.update(overrides)
+        return state
+
+    def test_below_threshold_and_near_pit_lane_forces_pit(self):
+        state = self._near_pit_state(fuel=ai_bot._FUEL_PIT - _EPS)
         self.assertEqual(safety_filter(ATTACK, state), PIT)
         self.assertEqual(safety_filter(NORMAL, state), PIT)
 
-    def test_exactly_at_threshold_does_not_trigger(self):
-        # `fuel < _FUEL_PIT` is a strict less-than: fuel == 5.0 is NOT low
-        # enough to force PIT per the code as written. Checked with NORMAL
-        # (not ATTACK) so priority 5's separate "fuel < _FUEL_CAUTION"
-        # ATTACK-downgrade rule — which DOES still apply at fuel=5.0, since
-        # 5.0 < 15.0 — can't be confused with this rule's own boundary.
-        state = {"fuel": ai_bot._FUEL_PIT, "damage": 0.0}
+    def test_exactly_at_threshold_does_not_trigger_even_near_pit(self):
+        # `fuel < _FUEL_PIT` is a strict less-than.
+        state = self._near_pit_state(fuel=ai_bot._FUEL_PIT)
         self.assertEqual(safety_filter(NORMAL, state), NORMAL)
 
     def test_just_above_threshold_does_not_trigger(self):
-        state = {"fuel": ai_bot._FUEL_PIT + _EPS, "damage": 0.0}
+        state = self._near_pit_state(fuel=ai_bot._FUEL_PIT + _EPS)
+        self.assertEqual(safety_filter(NORMAL, state), NORMAL)
+
+    def test_granite_requesting_pit_near_the_lane_is_honoured_regardless_of_fuel(self):
+        state = self._near_pit_state(fuel=50.0)
+        self.assertEqual(safety_filter(PIT, state), PIT)
+
+    def test_below_threshold_but_far_from_pit_lane_keeps_racing(self):
+        # No pit-lane telemetry at all -- _near_pit_lane() is unconditionally
+        # False -- so neither a fuel-critical car nor Granite's own PIT
+        # request actually engages PIT; both fall back to ATTACK.
+        state = {"fuel": ai_bot._FUEL_PIT - 1.0, "damage": 0.0}
+        self.assertEqual(safety_filter(PIT, state), ATTACK)
         self.assertEqual(safety_filter(NORMAL, state), NORMAL)
 
 
@@ -121,17 +175,25 @@ class PriorityFourNoAttackOnDamageTests(unittest.TestCase):
 
 
 class PriorityFiveNoAttackOnLowFuelTests(unittest.TestCase):
-    """Priority 5: fuel < _FUEL_CAUTION (15.0) disallows ATTACK -> NORMAL."""
+    """Priority 5: fuel < _FUEL_CAUTION (15.0) disallows ATTACK -> NORMAL,
+    but ONLY while ``_FUEL_CAUTION_ENABLED`` is True. As of the 2026-08-09
+    pit-system rework this flag defaults to False ("the car now commits to
+    ATTACK everywhere except right at the pit lane") — these tests read the
+    live flag value so they stay correct whichever way it's set."""
 
-    def test_below_threshold_downgrades_attack_to_normal(self):
+    def test_below_threshold_matches_the_current_flag_state(self):
         state = {"fuel": ai_bot._FUEL_CAUTION - _EPS, "damage": 0.0}
-        self.assertEqual(safety_filter(ATTACK, state), NORMAL)
+        result = safety_filter(ATTACK, state)
+        if ai_bot._FUEL_CAUTION_ENABLED:
+            self.assertEqual(result, NORMAL)
+        else:
+            self.assertEqual(result, ATTACK)
 
-    def test_exactly_at_threshold_does_not_trigger(self):
+    def test_exactly_at_threshold_never_triggers_regardless_of_flag(self):
         state = {"fuel": ai_bot._FUEL_CAUTION, "damage": 0.0}
         self.assertEqual(safety_filter(ATTACK, state), ATTACK)
 
-    def test_just_above_threshold_leaves_attack_alone(self):
+    def test_just_above_threshold_never_triggers_regardless_of_flag(self):
         state = {"fuel": ai_bot._FUEL_CAUTION + _EPS, "damage": 0.0}
         self.assertEqual(safety_filter(ATTACK, state), ATTACK)
 
@@ -158,9 +220,16 @@ class PrioritySixBlockOnRearThreatTests(unittest.TestCase):
         self.assertEqual(safety_filter(ATTACK, state), NORMAL)
 
     def test_low_fuel_car_does_not_attempt_block_even_with_rear_threat(self):
+        # Priority 6's own gate (`fuel >= _FUEL_CAUTION`) blocks BLOCK for a
+        # low-fuel car regardless of _FUEL_CAUTION_ENABLED; whether ATTACK
+        # itself gets downgraded to NORMAL first (priority 5) still depends
+        # on that flag.
         state = {"fuel": ai_bot._FUEL_CAUTION - 1.0, "damage": 0.0,
                   "opponents": _rear_close_opponents(), "dist_raced": 1000.0}
-        self.assertEqual(safety_filter(ATTACK, state), NORMAL)
+        result = safety_filter(ATTACK, state)
+        expected = NORMAL if ai_bot._FUEL_CAUTION_ENABLED else ATTACK
+        self.assertEqual(result, expected)
+        self.assertNotEqual(result, BLOCK, "a low-fuel car must never attempt BLOCK")
 
     def test_launch_window_suppresses_block_even_at_close_rear_gap(self):
         # Regression (live on-track, 2026-08-07): a standing two-row grid
@@ -198,9 +267,25 @@ class PrioritySixBlockOnRearThreatTests(unittest.TestCase):
 class PriorityInteractionTests(unittest.TestCase):
     """Higher-priority rules must win when multiple conditions are true at once."""
 
-    def test_pit_beats_defend_when_both_fuel_and_damage_are_critical(self):
-        state = {"fuel": ai_bot._FUEL_PIT - 1.0, "damage": ai_bot._DMG_DEFEND + 100.0}
+    def test_pit_beats_defend_when_both_fuel_and_damage_are_critical_and_near_pit(self):
+        # Priority 2's near-pit-lane PIT check runs before priority 3's
+        # damage check, and is unconditional on damage -- so PIT still wins
+        # over DEFEND even for a critically damaged car, as long as the car
+        # is actually near a pit lane.
+        state = {
+            "fuel": ai_bot._FUEL_PIT - 1.0, "damage": ai_bot._DMG_DEFEND + 100.0,
+            "dist_from_start": 990.0, "track_length": 2000.0,
+            "pit_entry": 1000.0, "pit_exit": 1050.0,
+        }
         self.assertEqual(safety_filter(ATTACK, state), PIT)
+
+    def test_defend_wins_over_pit_downgrade_when_far_from_pit_lane(self):
+        # Without pit-lane telemetry, PIT never actually engages (see
+        # PriorityTwoFuelPitTests) -- a critically damaged, fuel-critical car
+        # far from the pits falls through to DEFEND (protect what's left)
+        # instead of PIT.
+        state = {"fuel": ai_bot._FUEL_PIT - 1.0, "damage": ai_bot._DMG_DEFEND + 100.0}
+        self.assertEqual(safety_filter(ATTACK, state), DEFEND)
 
     def test_defend_beats_no_attack_downgrade_when_damage_is_critical(self):
         state = {"fuel": 50.0, "damage": ai_bot._DMG_DEFEND + 100.0}

@@ -255,11 +255,17 @@ class ComputeControlPhysicsOverrideTests(BotTestCase):
 
 
 class ComputeControlPitTests(BotTestCase):
-    def test_pit_below_10kmh_sets_meta_flag(self):
+    def test_pit_never_sets_meta_even_at_low_speed(self):
+        # Real bug fix (2026-08-09, see the self-test's own comment at this
+        # exact scenario): `meta=1` means RACE RESTART to scr_server
+        # (CarControl::META_RESTART), not "pit please". The old code reused
+        # meta as a fake pit signal and would have restarted the race the
+        # moment PIT strategy slowed the car below 10 km/h -- this asserts
+        # the fix, not the old (buggy) behaviour.
         track = [150.0] * 9 + [180.0] + [150.0] * 9
         state = {"speed_x": 5.0, "rpm": 800.0, "gear": 1, "angle": 0.0, "track_pos": 0.0, "track": track}
         out = compute_control(state, PIT)
-        self.assertIn("(meta 1)", out)
+        self.assertNotIn("(meta 1)", out)
 
 
 if __name__ == "__main__":
