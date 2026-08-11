@@ -71,6 +71,30 @@ class SummarizePriorityTests(unittest.TestCase):
         result = summarize_priority({"problems": []}, _pit_window(), stale)
         self.assertEqual(result["top_priority"], "no urgent priority -- car is in good shape")
 
+    def test_off_track_is_categorized_as_physical(self):
+        # Distinct from "strategic" (pit decisions) -- alarm-fatigue design
+        # (aviation/medical HMI) treats immediate physical danger differently
+        # from a strategy reminder; see _next_engineer_alert in runtime.py.
+        result = summarize_priority({"problems": ["off track"]}, _pit_window(), [])
+        self.assertEqual(result["category"], "physical")
+
+    def test_high_pit_urgency_is_categorized_as_strategic(self):
+        result = summarize_priority({"problems": []}, _pit_window("high", ["tires"]), [])
+        self.assertEqual(result["category"], "strategic")
+
+    def test_medium_pit_urgency_is_categorized_as_strategic(self):
+        result = summarize_priority({"problems": []}, _pit_window("medium", ["fuel"]), [])
+        self.assertEqual(result["category"], "strategic")
+
+    def test_fresh_incident_with_nothing_urgent_is_categorized_as_informational(self):
+        fresh = [{"type": "damage", "detail": "took damage (+300)", "seconds_ago": 1.0}]
+        result = summarize_priority({"problems": []}, _pit_window(), fresh)
+        self.assertEqual(result["category"], "informational")
+
+    def test_all_clear_is_categorized_as_informational(self):
+        result = summarize_priority({"problems": []}, _pit_window(), [])
+        self.assertEqual(result["category"], "informational")
+
     def test_most_recent_fresh_incident_is_used_when_several_are_fresh(self):
         # recent_events from engineer_events.py is newest-first.
         incidents = [

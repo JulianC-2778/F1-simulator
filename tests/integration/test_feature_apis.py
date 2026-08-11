@@ -71,6 +71,50 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         self.assertLess(plain_max_tokens, explain_max_tokens)
         self.client.post("/api/engineer/clear")
 
+    def test_switching_style_clears_history_but_snapshots_it_for_undo(self):
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes, push.")):
+            self.client.post("/api/engineer/ask", json={"question": "should I push now?"})
+        self.assertGreater(len(self.client.get("/api/engineer/history").json()["messages"]), 0)
+
+        r = self.client.post("/api/engineer/style", json={"style": "concise"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["style"], "concise")
+        self.assertEqual(self.client.get("/api/engineer/history").json()["messages"], [])
+
+        undo = self.client.post("/api/engineer/style/undo")
+        self.assertEqual(undo.status_code, 200)
+        self.assertEqual(undo.json()["style"], "professional")
+        restored = self.client.get("/api/engineer/history").json()["messages"]
+        self.assertGreater(len(restored), 0)
+        self.assertTrue(any("should I push now?" in m["content"] for m in restored))
+        self.client.post("/api/engineer/clear")
+        self.client.post("/api/engineer/style", json={"style": "professional"})
+        self.client.post("/api/engineer/clear")
+
+    def test_undo_with_nothing_to_undo_returns_409(self):
+        # A fresh style switch (in the test above) already consumed its
+        # snapshot via undo -- a second undo call has nothing left to restore.
+        response = self.client.post("/api/engineer/style/undo")
+        self.assertEqual(response.status_code, 409)
+
+    def test_switching_to_the_same_style_does_not_overwrite_the_undo_snapshot(self):
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes.")):
+            self.client.post("/api/engineer/ask", json={"question": "should I push?"})
+        self.client.post("/api/engineer/style", json={"style": "concise"})  # snapshot A: professional + 1 exchange
+
+        # Re-selecting the same style it's already on: nothing to clear, and
+        # must not clobber snapshot A with an empty one.
+        r = self.client.post("/api/engineer/style", json={"style": "concise"})
+        self.assertEqual(r.status_code, 200)
+
+        undo = self.client.post("/api/engineer/style/undo")
+        self.assertEqual(undo.json()["style"], "professional")
+        restored = self.client.get("/api/engineer/history").json()["messages"]
+        self.assertGreater(len(restored), 0)
+        self.client.post("/api/engineer/clear")
+        self.client.post("/api/engineer/style", json={"style": "professional"})
+        self.client.post("/api/engineer/clear")
+
     def test_export_with_no_history_is_still_a_valid_downloadable_file(self):
         self.client.post("/api/engineer/clear")
         response = self.client.get("/api/engineer/export")
@@ -155,6 +199,32 @@ class FeatureApiIntegrationTests(unittest.TestCase):
     def test_voice_stop_without_a_prior_start_returns_409(self):
         response = self.client.post("/api/engineer/voice/stop")
         self.assertEqual(response.status_code, 409)
+
+    def test_voice_start_recovers_a_stale_recorder_the_client_never_stopped(self):
+        # e.g. the driver started recording then closed the tab / lost
+        # connection / got pulled away mid-drive before calling /voice/stop
+        # -- must not leave every future recording attempt stuck on 409
+        # forever (see MAX_VOICE_RECORDING_SECONDS in runtime.py).
+        first_recorder = MagicMock()
+        second_recorder = MagicMock()
+        with patch("voice_input.mic_available", return_value=True), \
+             patch("voice_input.Recorder", side_effect=[first_recorder, second_recorder]):
+            first = self.client.post("/api/engineer/voice/start")
+            self.assertEqual(first.status_code, 200)
+            # Simulate the client having vanished a long time ago by
+            # backdating the recorder's start time directly, rather than
+            # waiting MAX_VOICE_RECORDING_SECONDS for real or patching the
+            # global time.monotonic -- the latter is unsafe here since
+            # asyncio's own event loop (driving this async test client)
+            # relies on a real, monotonically-advancing clock for its
+            # internal scheduling and hangs if that's replaced.
+            runtime._engineer_voice_recorder_started_at -= (runtime.MAX_VOICE_RECORDING_SECONDS + 1)
+            second = self.client.post("/api/engineer/voice/start")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        first_recorder.stop.assert_called_once()  # the stale one was cleaned up, not left dangling
+        second_recorder.stop.return_value = None
+        self.client.post("/api/engineer/voice/stop")
 
     def test_each_disabled_feature_changes_real_api_behavior(self):
         cases = {
