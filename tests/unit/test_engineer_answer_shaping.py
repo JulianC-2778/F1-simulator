@@ -97,8 +97,8 @@ class UnavailableDataTopicDetectionTests(unittest.TestCase):
         self.assertIsNone(_unavailable_data_topic("how much fuel do I have left?"))
 
 
-def _priority(top_priority="pit now", severity="high", reason="tires"):
-    return {"top_priority": top_priority, "severity": severity, "reason": reason}
+def _priority(top_priority="pit now", severity="high", reason="tires", category="strategic"):
+    return {"top_priority": top_priority, "severity": severity, "reason": reason, "category": category}
 
 
 class NextEngineerAlertTests(unittest.TestCase):
@@ -112,9 +112,31 @@ class NextEngineerAlertTests(unittest.TestCase):
         self.assertIsNone(text)
 
     def test_high_severity_fires_an_alert(self):
-        text, key = _next_engineer_alert(_priority(top_priority="pit now", severity="high", reason="tires"), None)
-        self.assertEqual(text, "Pit now -- tires")
+        text, key = _next_engineer_alert(
+            _priority(top_priority="pit now", severity="high", reason="tires", category="strategic"), None
+        )
+        self.assertEqual(text, "🔧 Pit now -- tires")
         self.assertEqual(key, "pit now")
+
+    def test_physical_and_strategic_categories_get_different_prefixes(self):
+        # Alarm-fatigue design (aviation/medical HMI): an immediate physical
+        # danger (off track) shouldn't be announced identically to a
+        # strategic reminder (pit now) -- see _ALERT_CATEGORY_PREFIX.
+        physical_text, _ = _next_engineer_alert(
+            _priority(top_priority="get back on track", reason="off track", category="physical"), None
+        )
+        strategic_text, _ = _next_engineer_alert(
+            _priority(top_priority="pit now", reason="tires", category="strategic"), None
+        )
+        self.assertTrue(physical_text.startswith("⚠️"))
+        self.assertTrue(strategic_text.startswith("🔧"))
+        self.assertNotEqual(physical_text[0], strategic_text[0])
+
+    def test_unknown_category_gets_no_prefix(self):
+        text, _ = _next_engineer_alert(
+            _priority(top_priority="pit now", reason="tires", category="informational"), None
+        )
+        self.assertEqual(text, "Pit now -- tires")
 
     def test_same_active_priority_does_not_fire_again(self):
         # Edge-triggered: still "pit now" from last tick -- stay quiet.
@@ -125,10 +147,10 @@ class NextEngineerAlertTests(unittest.TestCase):
     def test_a_different_high_priority_fires_a_new_alert(self):
         # e.g. was alerting "pit now", now it's "get back on track" instead.
         text, key = _next_engineer_alert(
-            _priority(top_priority="get back on track", severity="high", reason="off track"),
+            _priority(top_priority="get back on track", severity="high", reason="off track", category="physical"),
             active_key="pit now",
         )
-        self.assertEqual(text, "Get back on track -- off track")
+        self.assertEqual(text, "⚠️ Get back on track -- off track")
         self.assertEqual(key, "get back on track")
 
     def test_dropping_below_high_clears_the_active_key(self):
@@ -146,8 +168,10 @@ class NextEngineerAlertTests(unittest.TestCase):
         self.assertEqual(key, "pit now")
 
     def test_alert_text_has_no_trailing_dash_when_reason_is_empty(self):
-        text, _ = _next_engineer_alert(_priority(top_priority="pit now", severity="high", reason=""), None)
-        self.assertEqual(text, "Pit now")
+        text, _ = _next_engineer_alert(
+            _priority(top_priority="pit now", severity="high", reason="", category="strategic"), None
+        )
+        self.assertEqual(text, "🔧 Pit now")
 
 
 if __name__ == "__main__":
