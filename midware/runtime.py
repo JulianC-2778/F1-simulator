@@ -126,6 +126,7 @@ engineer_ctx_mgr = ContextManager(ContextConfig(commentator_persona=ENGINEER_PER
 # turns, even after the system prompt changes).
 _ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSONA_CONCISE}
 _engineer_style = "professional"
+_engineer_style_undo_snapshot: dict | None = None  # see POST /api/engineer/style/undo
 engineer_strategy_tracker = RaceStrategyTracker()
 engineer_incident_tracker = IncidentTracker()
 
@@ -145,6 +146,13 @@ _engineer_alert_active_key: str | None = None
 # at a time; a second start attempt while one is in progress is rejected
 # rather than silently dropping the first recording.
 _engineer_voice_recorder: "voice_input.Recorder | None" = None
+_engineer_voice_recorder_started_at: float | None = None
+# Safety net, not a real use-case limit -- a real question takes a few
+# seconds to ask. This only exists to recover a recorder the client never
+# called /voice/stop on (closed tab, lost connection, driver got pulled
+# away mid-drive) -- without it, every future recording attempt gets stuck
+# returning 409 "already in progress" until the process is restarted.
+MAX_VOICE_RECORDING_SECONDS = 60.0
 
 # -- 遥测数据缓存（UDP 线程写入，主线程读） --
 telemetry_service = TelemetryService(port=config.TELEMETRY_UDP_PORT, window_seconds=30.0)
@@ -839,6 +847,17 @@ async def _auto_commentary_loop():
             log.warning(f"自动解说失败: {e}")
 
 
+# Alarm-fatigue research (aviation/medical HMI alert design) says alerts
+# should be told apart by kind, not lumped together just because they're
+# both "high severity" -- an immediate physical danger (off track) and a
+# strategic decision (pit now) don't warrant the same urgency of delivery.
+# This prefix is the cheapest version of that distinction: distinguishable
+# at a glance in the feed, and at least a different symbol for TTS engines
+# that do announce it, without touching the shared cmSpeakBrowser/
+# enSpeakKokoro playback functions themselves.
+_ALERT_CATEGORY_PREFIX = {"physical": "⚠️", "strategic": "\U0001f527"}
+
+
 def _next_engineer_alert(priority: dict, active_key: str | None) -> tuple[str | None, str | None]:
     """Pure decision: given the current priority conclusion and what we last
     alerted for, decide whether to fire a new proactive alert now.
@@ -853,7 +872,9 @@ def _next_engineer_alert(priority: dict, active_key: str | None) -> tuple[str | 
         return None, None
     if priority["top_priority"] == active_key:
         return None, active_key
-    text = f"{priority['top_priority'].capitalize()} -- {priority['reason']}".rstrip(" -")
+    prefix = _ALERT_CATEGORY_PREFIX.get(priority.get("category"), "")
+    body = f"{priority['top_priority'].capitalize()} -- {priority['reason']}".rstrip(" -")
+    text = f"{prefix} {body}".strip()
     return text, priority["top_priority"]
 
 
@@ -1572,16 +1593,39 @@ async def clear_engineer_history():
 
 @app.post("/api/engineer/style")
 async def set_engineer_style(body: dict):
-    global _engineer_style
+    global _engineer_style, _engineer_style_undo_snapshot
     style = str(body.get("style") or "").strip().lower()
     if style not in _ENGINEER_STYLES:
         return JSONResponse(
             {"ok": False, "error": f"unknown style {style!r}, expected one of {sorted(_ENGINEER_STYLES)}"},
             status_code=400,
         )
+    # UX research on destructive actions favours undo over a blocking
+    # confirmation dialog when the action is cheaply recoverable (NN/g:
+    # "Confirmation Dialogs Can Prevent User Errors", but overused
+    # confirmations just get reflexively dismissed -- an undo affordance
+    # doesn't interrupt the flow at all until it's actually needed). This
+    # snapshot is what /api/engineer/style/undo restores from -- single
+    # slot, same pattern as _engineer_voice_recorder: only the most recent
+    # switch can be undone, a second switch overwrites it.
+    if style != _engineer_style:
+        _engineer_style_undo_snapshot = {"style": _engineer_style, "history": list(engineer_ctx_mgr.history)}
     _engineer_style = style
     engineer_ctx_mgr.config.commentator_persona = _ENGINEER_STYLES[style]
     engineer_ctx_mgr.clear_history()
+    return {"ok": True, "style": _engineer_style, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.post("/api/engineer/style/undo")
+async def undo_engineer_style_change():
+    global _engineer_style, _engineer_style_undo_snapshot
+    snapshot = _engineer_style_undo_snapshot
+    _engineer_style_undo_snapshot = None
+    if snapshot is None:
+        return JSONResponse({"ok": False, "error": "nothing to undo"}, status_code=409)
+    _engineer_style = snapshot["style"]
+    engineer_ctx_mgr.config.commentator_persona = _ENGINEER_STYLES[_engineer_style]
+    engineer_ctx_mgr.history = snapshot["history"]
     return {"ok": True, "style": _engineer_style, "stats": engineer_ctx_mgr.stats()}
 
 
@@ -1598,11 +1642,23 @@ async def get_engineer_voice_available():
 
 @app.post("/api/engineer/voice/start")
 async def start_engineer_voice():
-    global _engineer_voice_recorder
+    global _engineer_voice_recorder, _engineer_voice_recorder_started_at
     if not runtime_manager.is_enabled("engineer"):
         return JSONResponse({"ok": False, "error": "engineer feature is disabled"}, status_code=409)
     if _engineer_voice_recorder is not None:
-        return JSONResponse({"ok": False, "error": "a recording is already in progress"}, status_code=409)
+        stale = (
+            _engineer_voice_recorder_started_at is not None
+            and time.monotonic() - _engineer_voice_recorder_started_at >= MAX_VOICE_RECORDING_SECONDS
+        )
+        if not stale:
+            return JSONResponse({"ok": False, "error": "a recording is already in progress"}, status_code=409)
+        # The previous client never called /voice/stop -- clean up its
+        # recorder instead of leaving every future request stuck on 409.
+        try:
+            await asyncio.to_thread(_engineer_voice_recorder.stop)
+        except Exception:
+            pass
+        _engineer_voice_recorder = None
     if not await asyncio.to_thread(voice_input.mic_available):
         return JSONResponse(
             {"ok": False, "error": "microphone not available (see docs/voice-input-setup.md)"},
@@ -1611,6 +1667,7 @@ async def start_engineer_voice():
     recorder = voice_input.Recorder()
     recorder.start()
     _engineer_voice_recorder = recorder
+    _engineer_voice_recorder_started_at = time.monotonic()
     return {"ok": True, "recording": True}
 
 
@@ -1620,9 +1677,10 @@ async def stop_engineer_voice():
     in a worker thread (faster-whisper is a blocking CPU call) so it never
     stalls the event loop that the other three features' model calls and
     the WebSocket broadcast share."""
-    global _engineer_voice_recorder
+    global _engineer_voice_recorder, _engineer_voice_recorder_started_at
     recorder = _engineer_voice_recorder
     _engineer_voice_recorder = None
+    _engineer_voice_recorder_started_at = None
     if recorder is None:
         return JSONResponse({"ok": False, "error": "no recording in progress"}, status_code=409)
     wav_path = await asyncio.to_thread(recorder.stop)
