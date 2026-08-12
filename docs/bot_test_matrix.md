@@ -225,23 +225,38 @@ Per `bot_test_plan.md` §1's working principle ("if a piece of functionality
 isn't covered, say so — don't fabricate a passing result"), the following
 are known gaps, not silently skipped:
 
-- **Work packages B, C, D** (real driving-performance/strategy-accuracy
-  data, control-loop and Granite round-trip latency measurement, endurance
-  + fault-injection runs) — all require a real TORCS + LM Studio stack this
-  environment does not have. See `bot_test_plan.md` §5–§7 for their design;
-  none of it has been run, and no numbers from it should be assumed to
-  exist yet. This is now the **only** remaining gap from the original
-  work-package-A scope; everything else tracked in §4 is done.
+- **Work packages B, C, D full designs** — real driving-performance data
+  (2 tracks × 3 sessions, human-driven ground truth), full t0–t5 latency
+  breakdown, and endurance + fault-injection runs. A real TORCS + LM Studio
+  stack became available later in this same session (see
+  [`docs/bot_real_experiment_20260812.md`](bot_real_experiment_20260812.md))
+  and produced one real 17.4-minute bot-autonomous data point covering a
+  partial slice of B and a decision-cadence proxy for C — **not** the full
+  designs, which still need a second track, human-driven ground-truth
+  sessions, code-level first-token timestamps, and D (endurance/fault
+  injection) has not been attempted at all. This is now the **only**
+  remaining gap from the original work-package-A scope; everything else
+  tracked in §4 is done.
 
 ## 7. What changed in the repository
 
-- `tests/bot/` (new, 186 pytest tests across 12 files): `__init__.py`,
+- `tests/bot/` (new, 219 pytest tests across 13 files): `__init__.py`,
   `test_scr_protocol.py`, `test_control_logic.py`, `test_recovery.py`,
   `test_safety_filter.py`, `test_granite_strategy.py`,
   `test_granite_strategist_runtime.py`, `test_status_reporter.py`,
   `test_safety_integration.py`, `test_run_bot_integration.py`,
   `test_track_map_lookahead.py`, `test_traffic_and_launch.py`,
-  `test_scr_client_network.py`.
+  `test_scr_client_network.py`, `test_granite_prompt_context.py` (the last
+  one added after the PR #37 "Granite strategy integration" merge — see its
+  own docstring; covers `build_situation`/`_describe_gap`/lap-time
+  tracking/reasoning-trace population, none of which existed before that
+  merge).
+- `evaluation/bot/` (new): `results/real_experiment_bot_drive_20260812.jsonl`
+  (raw `TraceRecorder` output, 620 records) and
+  `scripts/analyse_bot_trace.py` (computes the work-package-B/C-proxy
+  numbers from it) — see
+  [`docs/bot_real_experiment_20260812.md`](bot_real_experiment_20260812.md)
+  for the write-up.
 - `tools/smoke_test_bot_status.py` (new, not a pytest file): a black-box
   script mirroring `tools/smoke_test_commentary_queue.py`'s approach —
   spawns a real `python -m midware.app` subprocess plus a tiny fake
@@ -272,9 +287,13 @@ are known gaps, not silently skipped:
    started it) and re-run `tests/integration` to get a clean full-suite
    baseline — the only observed issue left that isn't this report's own
    scope to fix.
-2. Once a TORCS + LM Studio stack is available, execute work packages
-   B/C/D per `bot_test_plan.md` §5–§7, following the same
-   `evaluation/<direction>/` + CSV-schema + `SAMPLE`-vs-`real_experiment`
+2. Work packages B/C now have one real data point
+   ([`docs/bot_real_experiment_20260812.md`](bot_real_experiment_20260812.md))
+   but not the full designs — see that report's §5 for exactly what's
+   missing (second track, human-driven ground truth, code-level first-token
+   timestamps, repeat runs). Work package D (endurance + fault injection)
+   has not been attempted. Continue per `bot_test_plan.md` §5–§7, following
+   the same `evaluation/<direction>/` + CSV-schema + `SAMPLE`-vs-`real_experiment`
    discipline already established for commentary in `evaluation/commentary/`.
    This is the only work-package-A-adjacent item left; work package A
    itself (§4) is now fully closed.
