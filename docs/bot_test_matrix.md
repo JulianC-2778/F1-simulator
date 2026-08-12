@@ -109,6 +109,7 @@ gap is what this report covers.
 | **Forced regression: `safety_filter` overrides Granite's raw output end-to-end** | `safety_filter` + `GraniteStrategist.tick` | none | `tests/bot/test_safety_integration.py::SafetyFilterOverridesGraniteTests` | done |
 | **Forced regression: `BLOCK` is unreachable from any Granite text, at both the parse layer and the filter layer** | `_parse_strategy_response` + `safety_filter` | none | `tests/bot/test_safety_integration.py::BlockIsSystemOnlyEndToEndTests` | done |
 | `run_bot()` main-loop orchestration (handshake once, one control per real frame, timeout frames don't resend, `None` ends the loop cleanly, `KeyboardInterrupt` handled, reporter closed + atexit hook unregistered) | `run_bot` | none | `tests/bot/test_run_bot_integration.py` (9 tests) | done — required a minimal production-code change, see §7 |
+| `run_bot()` gives up after a sustained run of `receive_state()` timeouts instead of idling forever (`_CONNECTION_LOST_FRAMES` watchdog) | `run_bot` (`timeout_streak` counter) | none | `tests/bot/test_run_bot_integration.py::test_gives_up_after_a_sustained_run_of_receive_timeouts` + `test_a_single_recovered_timeout_does_not_count_toward_the_watchdog` | done — real bug found via live RB-05 fault injection, see `docs/bot_fault_injection_20260812.md` §4; fixed same day |
 | Pre-race track-map lookahead (map-ahead braking cap, entry-line bias, brake-point mode, 5-gate trust system) | `compute_control` (map branch) | `track_model.py`'s own self-test (separately, partial) | `tests/bot/test_track_map_lookahead.py` (10 tests) | done — skipped automatically if `track_model.py` isn't importable |
 | Side-traffic avoidance (incl. convergence gate, room taper, standoff breaker), start-of-race launch caution + clutch ramp, front-opponent following/overtake (incl. cone-boundary-jump rejection, next-corner tiebreak), `BLOCK` steering-bias, boxed-in follow cap | `compute_control` | none | `tests/bot/test_traffic_and_launch.py` (25 tests) | done |
 | `BotStatusReporter`/`GraniteStrategist` against a **real** `midware.app` process (not mocked HTTP): status round trip, close()'s final disconnect, a real Granite success round trip through the real `/api/bot/strategy` → fake-model chain, a real HTTP-failure round trip, and the `bot`-feature-disabled fail-closed path | `BotStatusReporter`, `GraniteStrategist`, `midware/runtime.py`'s bot endpoints | none | `tools/smoke_test_bot_status.py` (8 checks, black-box, real subprocess + real HTTP — not part of `tests/bot/`'s pytest count) | done — see §7 for why this is a separate script, not a pytest file |
@@ -235,16 +236,19 @@ are known gaps, not silently skipped:
   - 6 real fault-injection trials (RB-01/02/03/04/10, 1 each) against the
     live stack — see
     [`docs/bot_fault_injection_20260812.md`](bot_fault_injection_20260812.md),
-    which also surfaces one **real, unfixed availability gap**: a
-    hard-killed TORCS process doesn't reliably trigger `ConnectionRefusedError`
-    in this WSL2 setup, so the bot idles forever instead of exiting, and
-    `BotStatusReporter`'s background thread keeps re-sending a stale
-    "healthy" heartbeat throughout.
+    which also surfaced and then **fixed the same day** one real
+    availability gap: a hard-killed TORCS process didn't reliably trigger
+    `ConnectionRefusedError` in this WSL2 setup, so the bot idled forever
+    instead of exiting, while `BotStatusReporter`'s background thread kept
+    re-sending a stale "healthy" heartbeat throughout. Now bounded by a
+    `_CONNECTION_LOST_FRAMES` watchdog in `run_bot()` (see §4's new row);
+    regression-tested in
+    `tests/bot/test_run_bot_integration.py::test_gives_up_after_a_sustained_run_of_receive_timeouts`.
 
   Still not done: a second track, human-driven ground-truth sessions,
   code-level first-token timestamps, the 3×20-minute endurance runs, and
-  RB-05's follow-up (repeat trials, and deciding whether/how to fix the
-  frozen-loop gap). This is now the **only** remaining gap from the
+  repeating RB-05 (currently only 1 trial ran against the fix, not the 5
+  the full design asks for). This is now the **only** remaining gap from the
   original work-package-A scope; everything else tracked in §4 is done.
 
 ## 7. What changed in the repository
