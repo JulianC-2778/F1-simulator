@@ -227,16 +227,25 @@ are known gaps, not silently skipped:
 
 - **Work packages B, C, D full designs** — real driving-performance data
   (2 tracks × 3 sessions, human-driven ground truth), full t0–t5 latency
-  breakdown, and endurance + fault-injection runs. A real TORCS + LM Studio
-  stack became available later in this same session (see
-  [`docs/bot_real_experiment_20260812.md`](bot_real_experiment_20260812.md))
-  and produced one real 17.4-minute bot-autonomous data point covering a
-  partial slice of B and a decision-cadence proxy for C — **not** the full
-  designs, which still need a second track, human-driven ground-truth
-  sessions, code-level first-token timestamps, and D (endurance/fault
-  injection) has not been attempted at all. This is now the **only**
-  remaining gap from the original work-package-A scope; everything else
-  tracked in §4 is done.
+  breakdown, and 3×20-minute endurance runs. A real TORCS + LM Studio
+  stack became available later in this same session and produced:
+  - one real 17.4-minute bot-autonomous data point covering a partial
+    slice of B and a decision-cadence proxy for C — see
+    [`docs/bot_real_experiment_20260812.md`](bot_real_experiment_20260812.md);
+  - 6 real fault-injection trials (RB-01/02/03/04/10, 1 each) against the
+    live stack — see
+    [`docs/bot_fault_injection_20260812.md`](bot_fault_injection_20260812.md),
+    which also surfaces one **real, unfixed availability gap**: a
+    hard-killed TORCS process doesn't reliably trigger `ConnectionRefusedError`
+    in this WSL2 setup, so the bot idles forever instead of exiting, and
+    `BotStatusReporter`'s background thread keeps re-sending a stale
+    "healthy" heartbeat throughout.
+
+  Still not done: a second track, human-driven ground-truth sessions,
+  code-level first-token timestamps, the 3×20-minute endurance runs, and
+  RB-05's follow-up (repeat trials, and deciding whether/how to fix the
+  frozen-loop gap). This is now the **only** remaining gap from the
+  original work-package-A scope; everything else tracked in §4 is done.
 
 ## 7. What changed in the repository
 
