@@ -74,7 +74,16 @@ class OpenAICompatibleGateway:
     ) -> str:
         url = f"{self.base_url}/chat/completions"
         full_text = ""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        # Connecting and generating need very different patience. `timeout` is
+        # sized for the slowest legitimate generation (the bot's reasoning
+        # prompt allows 150 s), but applying that to the TCP connect means a
+        # server that simply is not running — LM Studio closed, or its local
+        # server not started — takes the full 150 s to report, during which
+        # uvicorn logs nothing (it logs on completion) and the dashboard shows
+        # "thinking". A refused connection is knowable in milliseconds, so cap
+        # that phase separately and let the read phase keep the long budget.
+        timeout = httpx.Timeout(self.timeout, connect=min(5.0, self.timeout))
+        async with httpx.AsyncClient(timeout=timeout) as client:
             if self.stream:
                 async with client.stream(
                     "POST",

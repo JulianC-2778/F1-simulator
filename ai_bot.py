@@ -633,8 +633,18 @@ BLOCK     = "BLOCK"   # position-defence — see _GRANITE_STRATEGIES below
 
 # TEMP (pit-system testing, 2026-08-09): SAVE_FUEL disabled so low fuel always
 # resolves to PIT instead of Granite hedging with economical driving first.
-# Flip back to True to restore normal behaviour.
-_SAVE_FUEL_ENABLED = False
+#
+# 2026-08-12: kept off by default so that pit testing is unaffected, but made
+# switchable, because the two uses genuinely conflict. Pit work wants low fuel
+# to go straight to PIT; a prompt experiment wants to know whether the model
+# can pick between conserving and stopping at all, and with SAVE_FUEL removed
+# from _GRANITE_STRATEGIES the model is never offered the choice — a low-fuel
+# race can then only ever demonstrate three of the four strategies, no matter
+# how it drives.
+#
+#   TORCS_SAVE_FUEL=1   enable, for prompt/strategy experiments
+#   (unset)             disabled, unchanged behaviour for everyone else
+_SAVE_FUEL_ENABLED = os.getenv("TORCS_SAVE_FUEL", "").strip().lower() in ("1", "true", "yes")
 
 # Strategies Granite is allowed to freely choose. BLOCK is deliberately
 # excluded: it is a deterministic, per-frame reflex (triggered in
@@ -3074,8 +3084,13 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
 # for a demo where three decisions a lap looks too static, or to deliberately
 # reproduce the saturation case above.  Values under 8 s cannot be answered
 # in time by the reasoning prompt and will mostly be discarded.
-_PROMPT_MODE = os.getenv("TORCS_BOT_PROMPT", "legacy").strip().lower()
-_REASONING_PROMPT = _PROMPT_MODE in ("bare", "reasoning")
+# Default matches midware/bot_strategy.py's — see the comment there for why it
+# is no longer legacy.  Both files read the same variable so a single export
+# keeps client pacing and server prompt in step; they get out of step when only
+# one terminal exports it, which costs a race (the reasoning prompt answered at
+# legacy's 5 s pacing saturates the model and drops most of its own requests).
+_PROMPT_MODE = os.getenv("TORCS_BOT_PROMPT", "reasoning").strip().lower()
+_REASONING_PROMPT = _PROMPT_MODE in ("bare", "reasoning", "concise")
 
 
 def _interval_from_env(default: float) -> float:
@@ -3099,7 +3114,12 @@ def _interval_from_env(default: float) -> float:
     return value
 
 
-_STRATEGY_INTERVAL = _interval_from_env(15.0 if _REASONING_PROMPT else 5.0)
+# concise polls faster than the other rule-free variants because that is the
+# entire point of it: it emits about half the tokens, so the same "model idle
+# roughly half the time" budget buys a shorter gap between answers.
+_STRATEGY_INTERVAL = _interval_from_env(
+    10.0 if _PROMPT_MODE == "concise" else (15.0 if _REASONING_PROMPT else 5.0)
+)
 _GRANITE_TIMEOUT   = 180.0 if _REASONING_PROMPT else 30.0
 _STRATEGY_CONFIRM  = 1      # consecutive matching Granite answers required
                              # before switching the active strategy.  Was 2 (a
