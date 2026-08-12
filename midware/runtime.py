@@ -943,7 +943,15 @@ async def dashboard():
     `/feature2` (feature2_service.py), which keep working unchanged."""
     html_path = STATIC_DIR / "dashboard.html"
     if html_path.exists():
-        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+        # The file is re-read per request so edits show up without a server
+        # restart, but that only helps if the browser actually asks for it —
+        # without these headers it serves its cached copy and the page silently
+        # stays on old JS while the API returns new fields, which reads as "the
+        # change didn't work" rather than "the page is stale".
+        return HTMLResponse(
+            html_path.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
     return HTMLResponse("<h1>找不到 dashboard.html，请检查 midware/static/ 目录</h1>")
 
 

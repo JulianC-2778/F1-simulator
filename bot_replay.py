@@ -107,6 +107,15 @@ def load_states(path: str | None) -> list[dict[str, Any]]:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # A trace mixes "state" and "decision" records.  Decision records
+            # have no `state` key, so an unguarded .get(..., record) fallback
+            # silently promotes them to states and feeds strategy/reason text
+            # to the prompt as if it were telemetry — invisible corruption of
+            # the sample.  Skip anything that is not a state record; only a
+            # file with no `kind` field at all is treated as bare states.
+            kind = record.get("kind")
+            if kind is not None and kind != "state":
+                continue
             state = record.get("state", record)
             if isinstance(state, dict) and state:
                 state.setdefault("_label", f"trace @ {state.get('dist_raced', 0):.0f} m")
