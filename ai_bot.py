@@ -3675,6 +3675,14 @@ class BotStatusReporter:
 # Main drive loop
 # ---------------------------------------------------------------------------
 
+# 2026-08-12 (RB-05 fault-injection finding): consecutive {} (recv timeout)
+# reads before giving up on the connection. At _STEP_TIMEOUT=0.1s per read,
+# 50 frames is ~5s of sustained silence -- long enough that this is not a
+# normal WSLg rendering stall (those delay/batch real packets, they don't
+# stop them arriving entirely), short enough that an operator isn't left
+# staring at a car that's actually frozen for a long time first.
+_CONNECTION_LOST_FRAMES = 50
+
 def run_bot(
     host:       str   = "localhost",
     port:       int   = config.SCR_UDP_PORT,
@@ -3754,6 +3762,8 @@ def run_bot(
         prev_dist        = -1.0                   # distFromStart last frame
         close_hold       = 0                      # frames left of high-rate logging
                                                    # (see CLOSE_LOG_* below)
+        timeout_streak   = 0                      # consecutive {} reads (see
+                                                   # _CONNECTION_LOST_FRAMES below)
 
         try:
             while True:
@@ -3770,7 +3780,29 @@ def run_bot(
                     # server's queue then runs permanently behind, and the car
                     # spends the first ~30 s of the race executing stale
                     # launch-phase commands (the 1st↔2nd gear ghost-flap).
+                    #
+                    # 2026-08-12 real fault-injection finding (RB-05, see
+                    # docs/bot_fault_injection_20260812.md): a hard-killed
+                    # TORCS process does not reliably deliver the
+                    # ConnectionRefusedError this loop otherwise relies on to
+                    # notice the peer is gone (observed: 35+ seconds of
+                    # silent {} with no exception, in a WSL2 environment).
+                    # Without a bound this loop idles forever — and
+                    # BotStatusReporter's own background thread keeps
+                    # re-POSTing the last real snapshot on its own timer the
+                    # whole time, so external heartbeat monitoring alone
+                    # cannot tell the difference between "still driving" and
+                    # "frozen". Give up after a sustained silence instead.
+                    timeout_streak += 1
+                    if timeout_streak >= _CONNECTION_LOST_FRAMES:
+                        print(
+                            f"No data from TORCS for "
+                            f"{_CONNECTION_LOST_FRAMES * _STEP_TIMEOUT:.1f}s "
+                            f"— assuming the connection is dead. Exiting loop."
+                        )
+                        break
                     continue
+                timeout_streak = 0  # got a real frame — connection is alive
 
                 # Practice-lap odometer calibration: the XML geometry can be
                 # ~1% long (spiral-corner approximation) and the error is

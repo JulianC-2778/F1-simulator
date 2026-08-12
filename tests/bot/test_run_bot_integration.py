@@ -179,6 +179,38 @@ class RunBotOrchestrationTests(unittest.TestCase):
         run_bot(strategy=NORMAL, client=client, verbose=False, track="off")  # must not propagate
         self.assertTrue(client._closed)
 
+    def test_gives_up_after_a_sustained_run_of_receive_timeouts(self):
+        # Real finding, 2026-08-12 fault injection (RB-05, see
+        # docs/bot_fault_injection_20260812.md): killing the TORCS process
+        # mid-session did not reliably produce the ConnectionRefusedError ->
+        # None path this loop otherwise relies on to exit -- receive_state()
+        # just kept returning {} (timeout, "keep waiting") forever, verified
+        # empirically to hang 35+ real seconds with no exception. Before the
+        # _CONNECTION_LOST_FRAMES watchdog this fed, this exact scenario
+        # (a client that only ever returns {}) made run_bot() spin forever;
+        # a raw (non-pytest) repro script confirmed the pre-fix hang
+        # directly, since threading a bounded watcher *inside* this pytest
+        # process turned out to hit unrelated pytest/thread-scheduling
+        # interference in this environment and is not used here. Instead,
+        # this test is fully synchronous: it feeds exactly enough {} frames
+        # to cross the watchdog threshold and asserts the loop returns
+        # (rather than needing more frames it would never get if the fix
+        # regressed) — deterministic, no timing, no thread.
+        client = _FakeScrClient([{}] * ai_bot._CONNECTION_LOST_FRAMES)
+        run_bot(client=client, verbose=False, track="off")  # must return, not hang
+        self.assertTrue(client._closed)
+        self.assertEqual(len(client.sent_controls), 0, "no real frame ever arrived to control")
+
+    def test_a_single_recovered_timeout_does_not_count_toward_the_watchdog(self):
+        # The streak must reset on any real frame -- a normal brief WSLg
+        # stall (delayed, not lost, packets) must not accumulate toward the
+        # same threshold across unrelated gaps.
+        frames = [{}] * (ai_bot._CONNECTION_LOST_FRAMES - 1) + [_frame()] + [{}] * (ai_bot._CONNECTION_LOST_FRAMES - 1) + [None]
+        client = _FakeScrClient(frames)
+        run_bot(client=client, verbose=False, track="off")  # must reach the trailing None, not the watchdog
+        self.assertEqual(len(client.sent_controls), 1)
+        self.assertTrue(client.is_shutdown)
+
     def test_reporter_is_closed_and_atexit_hook_unregistered(self):
         # Regression guard for a resource leak: run_bot registers
         # reporter.close via atexit for the crash case, but on a normal
