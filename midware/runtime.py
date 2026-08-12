@@ -1771,12 +1771,34 @@ async def request_bot_strategy(body: dict):
         # earlier no-rules attempt.  See bot_strategy.py's module docstring.
         payload.pop("current_strategy", None)
     settings = bot_strategy.model_settings(mode)
+
+    # Stream the rule-free variants so the dashboard can show the reasoning
+    # building up instead of nothing for seven seconds and then everything at
+    # once.  The JSON schema puts `considered` first precisely so the factors
+    # arrive before the verdict, which makes progressive rendering meaningful
+    # rather than a wall of half-written syntax.
+    #
+    # Streaming does not change what this endpoint returns: the gateway
+    # accumulates the same full text either way, and parsing still happens on
+    # the complete response below.  So a dropped WebSocket, a client that
+    # ignores tokens, or the WSL powershell transport (which has no streaming
+    # path and silently answers in one go) all degrade to today's behaviour.
+    #
+    # legacy stays unstreamed — it is the untouched control arm, and its
+    # answer is one short phrase with nothing to progressively reveal.
+    do_stream = mode != "legacy"
+    request_id = str(uuid.uuid4())
+    if do_stream:
+        await broadcast({"type": "ai_start", "source": "bot",
+                         "request_id": request_id, "mode": mode})
     try:
         text = await call_model_for_feature(
             [{"role": "user", "content": bot_strategy.build_prompt(payload, mode)}],
             source="bot",
             task="bot_strategy",
             priority=MODEL_PRIORITIES["bot_strategy"],
+            stream=do_stream,
+            request_id=request_id,
             **settings,
         )
         # Granite wraps its answer in a ```json fence, which bare json.loads
@@ -1792,7 +1814,17 @@ async def request_bot_strategy(body: dict):
             rejected=fields["rejected"],
         )
     except Exception as exc:
+        # Close the stream on the way out too, or a failed request leaves the
+        # dashboard rendering a half-finished trace forever with no way to
+        # tell it apart from a slow one.
+        if do_stream:
+            await broadcast({"type": "error", "source": "bot",
+                             "request_id": request_id, "message": str(exc)})
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    if do_stream:
+        await broadcast({"type": "ai_done", "source": "bot",
+                         "request_id": request_id,
+                         "content": decision.model_dump(mode="json")})
     return {"ok": True, "decision": decision.model_dump(mode="json")}
 
 

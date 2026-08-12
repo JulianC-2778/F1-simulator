@@ -54,11 +54,16 @@ import os
 from typing import Any
 
 
-# Selected once at import.  Default "legacy" keeps the repo's existing
-# behaviour for everyone who is not deliberately running the experiment.
-PROMPT_MODE = os.getenv("TORCS_BOT_PROMPT", "legacy").strip().lower()
+# Selected once at import.  Default flipped legacy -> reasoning on 2026-08-12
+# once the real-corpus comparison settled it: over 25 states sampled from an
+# 8-lap race, legacy answered ATTACK to every single one and did not react to
+# the sensitivity probe either (docs/bot_prompt_comparison_race3.md).  A
+# threshold table in the prompt does not make the model cautious, it stops it
+# reading the state at all, so shipping it as the default was shipping the
+# broken variant.  legacy stays selectable as the control arm.
+PROMPT_MODE = os.getenv("TORCS_BOT_PROMPT", "reasoning").strip().lower()
 
-VALID_MODES = ("legacy", "bare", "reasoning")
+VALID_MODES = ("legacy", "bare", "reasoning", "concise")
 
 # Per-variant model settings.  legacy keeps its measured-and-tuned numbers;
 # the rule-free variants need room to actually write reasoning (160 tokens
@@ -76,6 +81,13 @@ MODEL_SETTINGS: dict[str, dict[str, Any]] = {
     "legacy":    {"temperature": 0.1, "max_tokens": 160, "timeout": 30},
     "bare":      {"temperature": 0.2, "max_tokens": 300, "timeout": 60},
     "reasoning": {"temperature": 0.2, "max_tokens": 700, "timeout": 150},
+    # Same structure as reasoning, roughly half the words. Generation time
+    # on a local model scales with tokens emitted, and reasoning measured a
+    # 7.6 s median (docs/bot_prompt_comparison_race3.md) — enough that the
+    # dashboard sits still between answers. This trades the third factor and
+    # some phrasing room for responsiveness; use reasoning when the quality
+    # of the trace matters more than how often it refreshes.
+    "concise":   {"temperature": 0.2, "max_tokens": 350, "timeout": 90},
 }
 
 # Fallback list, used only when the bot did not tell us what it accepts.
@@ -127,6 +139,24 @@ _BARE_TAIL = (
     '"reason": "<one or two sentences>"}\n'
 )
 
+# Same shape as _REASONING_TAIL, deliberately halved. The factor count drops
+# to two and every free-text field gets a tighter cap; `rejected` survives the
+# cut because naming the option being turned down is the part that shows the
+# model weighed alternatives rather than pattern-matched one.
+_CONCISE_TAIL = (
+    "Decide which strategy the car should run for the next lap.\n\n"
+    "Work in this order:\n"
+    "1. List the 2 factors that matter most right now, with their values.\n"
+    "2. Name one strategy you are ruling out, and why.\n"
+    "3. Give your decision.\n\n"
+    "Be very brief: at most 5 words per value, per implication and per why;\n"
+    "one short sentence for reason. No markdown, no text outside the JSON.\n\n"
+    "Return JSON only, with the fields in exactly this order:\n"
+    '{"considered": [{"factor": "...", "value": "...", "implication": "..."}], '
+    '"rejected": {"option": "...", "why": "..."}, '
+    '"strategy": "...", "reason": "..."}\n'
+)
+
 _REASONING_TAIL = (
     "Decide which strategy the car should run for the next lap.\n\n"
     "Work in this order:\n"
@@ -148,10 +178,24 @@ _REASONING_TAIL = (
 )
 
 
+DEFAULT_MODE = "reasoning"
+
+
 def resolve_mode(mode: str | None = None) -> str:
-    """Normalise a prompt-mode name, falling back to legacy on anything odd."""
-    candidate = (mode or PROMPT_MODE or "legacy").strip().lower()
-    return candidate if candidate in VALID_MODES else "legacy"
+    """Normalise a prompt-mode name, falling back to the default on anything odd.
+
+    The fallback is deliberately *not* legacy: a typo in TORCS_BOT_PROMPT
+    would otherwise silently select the one variant measured to mode-collapse,
+    and it would do so invisibly — same 200 response, plausible-looking text,
+    just no longer reading the state.  Landing on the default instead means a
+    misspelling costs nothing.
+    """
+    candidate = (mode or PROMPT_MODE or DEFAULT_MODE).strip().lower()
+    if candidate in VALID_MODES:
+        return candidate
+    print(f"[bot_strategy] unknown prompt mode {candidate!r}; "
+          f"using {DEFAULT_MODE} (valid: {', '.join(VALID_MODES)})")
+    return DEFAULT_MODE
 
 
 def model_settings(mode: str | None = None) -> dict[str, Any]:
@@ -237,7 +281,8 @@ def build_prompt(request_payload: dict[str, Any], mode: str | None = None) -> st
         "",
         _render_situation(sensor_state),
         "",
-        _REASONING_TAIL if resolved == "reasoning" else _BARE_TAIL,
+        {"reasoning": _REASONING_TAIL,
+         "concise":   _CONCISE_TAIL}.get(resolved, _BARE_TAIL),
     ]
     return "\n".join(lines)
 
