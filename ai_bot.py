@@ -3743,6 +3743,11 @@ def run_bot(
                     last_control={"wire": control},
                     fallback=fallback_active,
                     error=strategist.last_error if strategist else "",
+                    details=(
+                        {"reasoning": {"considered": strategist.last_considered,
+                                       "rejected":   strategist.last_rejected}}
+                        if strategist is not None else {}
+                    ),
                 )
                 step += 1
 
