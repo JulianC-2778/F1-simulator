@@ -116,7 +116,14 @@ class ScrClientHandshakeTests(unittest.TestCase):
         # for this target port, then confirm a second "instance" fails fast
         # with a message that names the problem instead of hanging or
         # silently splitting the packet stream with the first client.
-        target_port = 40001
+        #
+        # target_port % 100 deliberately avoids 1 (config.SCR_UDP_PORT's
+        # default 3001 % 100 == 1): a real ai_bot.py process may genuinely be
+        # running against the default port on this machine, and colliding
+        # with ITS guard port here would fail this test for an unrelated
+        # reason (a real process already holding it) rather than the thing
+        # actually under test.
+        target_port = 40002
         guard_port = ai_bot._LOCAL_PORT_BASE + (target_port % 100)
         blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         blocker.bind(("", guard_port))
