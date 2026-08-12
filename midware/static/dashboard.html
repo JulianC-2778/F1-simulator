@@ -112,6 +112,19 @@
   .bot-reasoning[hidden] { display: none; }
   .bot-reasoning-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
   .bot-reasoning-head strong { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+  /* A reasoning answer lands roughly every 15 s, so without a liveness cue
+     the card sits unchanged long enough to read as broken. This shows which
+     part of the poll cycle we are in: thinking, or an answer N seconds old. */
+  .bot-reasoning-live { margin-right: auto; font-size: 0.72rem; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .bot-reasoning-live.is-thinking { color: var(--text-soft); }
+  .bot-reasoning-live.is-thinking::before {
+    content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px;
+    border-radius: 50%; background: currentColor; animation: bot-reasoning-pulse 1s ease-in-out infinite;
+  }
+  @keyframes bot-reasoning-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .bot-reasoning-live.is-thinking::before { animation: none; opacity: 1; }
+  }
   .bot-reasoning-decision {
     display: inline-flex; padding: 3px 10px; border-radius: 999px; font-size: 0.68rem;
     font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
@@ -682,6 +695,7 @@
       <div class="bot-reasoning" id="botReasoning" hidden>
         <div class="bot-reasoning-head">
           <strong>Granite reasoning</strong>
+          <span class="bot-reasoning-live" id="botReasoningLive"></span>
           <span class="bot-reasoning-decision" id="botReasoningDecision">—</span>
         </div>
         <div id="botReasoningConsidered"></div>
@@ -1362,21 +1376,74 @@ async function fetchBotLog() {
   } catch (e) { /* keep last state */ }
 }
 
+// Liveness is re-rendered on a local 1 s timer, not only when /api/bot/status
+// is polled: the poll runs every 2 s and an answer only lands every ~15 s, so
+// driving the counter off poll responses alone makes it jump in 2 s steps and
+// still look stalled. The bot's reported age is anchored to the moment we
+// received it, then advanced locally.
+let botLive = null;      // { thinking, age_s, next_in_s, receivedAt }
+
+function renderBotLiveness() {
+  const el = $("botReasoningLive");
+  if (!el) return;
+  if (!botLive) { el.textContent = ""; el.className = "bot-reasoning-live"; return; }
+  const drift = (Date.now() - botLive.receivedAt) / 1000;
+  if (botLive.thinking) {
+    el.className = "bot-reasoning-live is-thinking";
+    el.textContent = "thinking…";
+    return;
+  }
+  el.className = "bot-reasoning-live";
+  const parts = [];
+  if (botLive.age_s !== null && botLive.age_s !== undefined) {
+    parts.push(`${(botLive.age_s + drift).toFixed(0)}s ago`);
+  }
+  const next = (botLive.next_in_s ?? 0) - drift;
+  if (next > 0) parts.push(`next in ${next.toFixed(0)}s`);
+  el.textContent = parts.join(" · ");
+}
+
 function renderBotReasoning(s) {
   const reasoning = (s.details && s.details.reasoning) || {};
   const considered = Array.isArray(reasoning.considered) ? reasoning.considered : [];
   const rejected = reasoning.rejected || {};
   const box = $("botReasoning");
 
-  if (!s.connected || !considered.length) {
+  // `interval_s` is present whenever a Granite strategist exists, even before
+  // its first answer has landed. Keying visibility off that rather than off
+  // `considered.length` means the card appears the moment the bot starts
+  // asking — the first reply can take 30-60 s while the model cold-starts,
+  // and a card that stays hidden through that reads as "the feature is
+  // broken" instead of "the first answer is still generating".
+  const live = reasoning.interval_s !== undefined;
+  if (!s.connected || (!considered.length && !live)) {
     box.hidden = true;
+    botLive = null;
+    renderBotLiveness();
     return;
   }
   box.hidden = false;
+  botLive = {
+    thinking: !!reasoning.thinking,
+    age_s: reasoning.age_s,
+    next_in_s: reasoning.next_in_s,
+    receivedAt: Date.now(),
+  };
+  renderBotLiveness();
   $("botReasoningDecision").textContent = s.strategy || "NORMAL";
 
   const considerBox = $("botReasoningConsidered");
   considerBox.innerHTML = "";
+  if (!considered.length) {
+    // Pre-first-answer state. Says which strategy is driving meanwhile, so
+    // it is clear the car is not waiting on the model to move.
+    const wait = document.createElement("div");
+    wait.className = "bot-reasoning-implication";
+    wait.textContent =
+      "Waiting for Granite's first answer — the model is cold-starting. "
+      + "The car is already driving on " + (s.strategy || "NORMAL") + ".";
+    considerBox.appendChild(wait);
+  }
   considered.forEach((item) => {
     const row = document.createElement("div");
     row.className = "bot-reasoning-row";
@@ -2980,7 +3047,8 @@ window.addEventListener("load", () => {
   pollHealth();
 
   setInterval(pollHealth, 2000);
-  setInterval(pollBot, 2000);
+  setInterval(pollBot, 1000);
+  setInterval(renderBotLiveness, 1000);
   setInterval(coLoadDashboard, 500);
 });
 </script>
