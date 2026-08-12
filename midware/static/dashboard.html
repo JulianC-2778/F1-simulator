@@ -105,6 +105,32 @@
   .bot-status-line { color: var(--text-soft); font-size: 0.84rem; flex: 1; min-width: 220px; }
   .bot-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .bot-caption { width: 100%; margin-top: 4px; color: var(--text-faint); font-size: 0.72rem; line-height: 1.5; }
+  .bot-reasoning {
+    width: 100%; margin-top: 10px; padding: 12px 14px; border-radius: 12px;
+    background: rgba(17,24,39,0.04); border: 1px solid rgba(17,24,39,0.06);
+  }
+  .bot-reasoning[hidden] { display: none; }
+  .bot-reasoning-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .bot-reasoning-head strong { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+  .bot-reasoning-decision {
+    display: inline-flex; padding: 3px 10px; border-radius: 999px; font-size: 0.68rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    background: rgba(14,159,140,0.14); color: var(--teal);
+  }
+  .bot-reasoning-row {
+    display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px;
+    padding: 6px 0; font-size: 0.8rem; align-items: baseline;
+  }
+  .bot-reasoning-row + .bot-reasoning-row { border-top: 1px dashed rgba(17,24,39,0.08); }
+  .bot-reasoning-factor { color: var(--text-soft); }
+  .bot-reasoning-value { color: var(--text); font-weight: 600; text-align: right; white-space: nowrap; }
+  .bot-reasoning-implication { grid-column: 1 / -1; color: var(--text-faint); font-size: 0.74rem; }
+  .bot-reasoning-rejected {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(17,24,39,0.08);
+    font-size: 0.78rem; color: var(--text-soft); line-height: 1.5;
+  }
+  .bot-reasoning-rejected[hidden] { display: none; }
+  .bot-reasoning-rejected strong { color: var(--red); font-weight: 700; text-decoration: line-through; }
 
   .switch { position: relative; display: inline-block; width: 40px; height: 23px; flex-shrink: 0; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -652,6 +678,14 @@
         The switch above only controls whether ai_bot.py can request new Granite strategy and report a heartbeat —
         its local steering/throttle/brake safety controller runs independently and keeps driving either way.
         To actually stop the car, use <strong>Stop ai_bot.py</strong>, which ends the process.
+      </div>
+      <div class="bot-reasoning" id="botReasoning" hidden>
+        <div class="bot-reasoning-head">
+          <strong>Granite reasoning</strong>
+          <span class="bot-reasoning-decision" id="botReasoningDecision">—</span>
+        </div>
+        <div id="botReasoningConsidered"></div>
+        <div class="bot-reasoning-rejected" id="botReasoningRejected" hidden></div>
       </div>
       <details class="log-toggle" id="botLogDetails">
         <summary>
@@ -1328,6 +1362,54 @@ async function fetchBotLog() {
   } catch (e) { /* keep last state */ }
 }
 
+function renderBotReasoning(s) {
+  const reasoning = (s.details && s.details.reasoning) || {};
+  const considered = Array.isArray(reasoning.considered) ? reasoning.considered : [];
+  const rejected = reasoning.rejected || {};
+  const box = $("botReasoning");
+
+  if (!s.connected || !considered.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  $("botReasoningDecision").textContent = s.strategy || "NORMAL";
+
+  const considerBox = $("botReasoningConsidered");
+  considerBox.innerHTML = "";
+  considered.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "bot-reasoning-row";
+    const factor = document.createElement("span");
+    factor.className = "bot-reasoning-factor";
+    factor.textContent = item.factor || "";
+    const value = document.createElement("span");
+    value.className = "bot-reasoning-value";
+    value.textContent = item.value || "";
+    row.appendChild(factor);
+    row.appendChild(value);
+    if (item.implication) {
+      const implication = document.createElement("span");
+      implication.className = "bot-reasoning-implication";
+      implication.textContent = "→ " + item.implication;
+      row.appendChild(implication);
+    }
+    considerBox.appendChild(row);
+  });
+
+  const rejectedBox = $("botReasoningRejected");
+  if (rejected.option) {
+    rejectedBox.hidden = false;
+    rejectedBox.innerHTML = "";
+    const opt = document.createElement("strong");
+    opt.textContent = rejected.option;
+    rejectedBox.appendChild(opt);
+    if (rejected.why) rejectedBox.appendChild(document.createTextNode(" — " + rejected.why));
+  } else {
+    rejectedBox.hidden = true;
+  }
+}
+
 async function pollBot() {
   try {
     const r = await fetch("/api/bot/status", { cache: "no-store" });
@@ -1338,6 +1420,7 @@ async function pollBot() {
       ? `Connected · strategy ${s.strategy || "NORMAL"} · ${Number(s.speed_kmh || 0).toFixed(0)} km/h${s.error ? " · " + s.error : ""}`
       : (s.error || "Not connected. TORCS must already be running in SCR mode.");
     $("botStatusLine").textContent = line;
+    renderBotReasoning(s);
   } catch (e) { /* keep last line */ }
 
   try {
