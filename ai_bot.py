@@ -25,6 +25,8 @@ import time
 import urllib.error
 import urllib.request
 import atexit
+import uuid
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -3346,6 +3348,20 @@ class GraniteStrategist:
         # would starve the other features sharing the ModelBroker queue).
         self.thinking: bool = False
         self._answered_at: float | None = None
+        # Increments once per completed model round trip, answer or error.
+        # The trace used to log a decision only when the reason *text* changed,
+        # which silently merged consecutive answers that happened to be worded
+        # the same — and since this model is verbally repetitive, that turned
+        # a real 15 s cadence into apparent 30-50 s gaps in the analysis (see
+        # docs/bot_real_experiment_20260812.md §4, which had to caveat its own
+        # latency numbers because of it). A counter records what actually
+        # happened; de-duplicating is the analysis step's job, not the
+        # recorder's.
+        self.answer_seq: int = 0
+        # Seconds the last completed HTTP round trip took.  Written on the
+        # worker thread and read on the main loop; a stale read costs nothing
+        # because it is only reported, never acted on.
+        self.last_round_trip_s: float | None = None
 
     # ------------------------------------------------------------------ #
 
@@ -3371,6 +3387,7 @@ class GraniteStrategist:
             # timeout would leave the dashboard saying "thinking" forever.
             self.thinking = False
             self._answered_at = now
+            self.answer_seq += 1
             if result.error:
                 self.fallback = True
                 self.last_error = str(result.error)
@@ -3436,6 +3453,7 @@ class GraniteStrategist:
                       else round(now - self._answered_at, 1)),
             "next_in_s": max(0.0, round(self._interval - (now - self._last_submit), 1)),
             "interval_s": self._interval,
+            "round_trip_s": self.last_round_trip_s,
         }
 
     # ------------------------------------------------------------------ #
@@ -3477,8 +3495,16 @@ class GraniteStrategist:
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
+        # Round-trip timing, measured here rather than inferred from the gap
+        # between log lines.  Decision-to-decision spacing conflates model
+        # speed with the poll interval and with answers that were dropped as
+        # stale, which is why the first experiment report had to caveat its
+        # own latency figures (docs/bot_real_experiment_20260812.md §4).  This
+        # is the one number that is actually "how long the model took".
+        sent_at = time.monotonic()
         with urllib.request.urlopen(request, timeout=_GRANITE_TIMEOUT) as response:
             result = json.loads(response.read().decode("utf-8"))
+        self.last_round_trip_s = round(time.monotonic() - sent_at, 3)
         decision = result.get("decision") or {}
         strategy, reason = _parse_strategy_response(json.dumps(decision))
         # Only the reasoning prompt variant fills these; every other variant
@@ -3518,15 +3544,33 @@ class TraceRecorder:
         self._interval = state_interval
         self._last_state = -state_interval
         self._handle = None
+        # `t` is time.monotonic(), which on Linux counts from boot and is
+        # therefore shared by every process on the machine — appending two
+        # runs to one file produced a 32000 s jump that looked like a
+        # 54-minute session when only 17 minutes were driven, and the analysis
+        # script had to guess where the seam was from sample spacing. Each run
+        # now stamps its own id and wall-clock start, so segments are
+        # identified rather than inferred, and `t` stays as the high-precision
+        # within-run clock it is good at.
+        self._session = uuid.uuid4().hex[:8]
+        self._started_wall = time.time()
         try:
             self._handle = open(path, "a", encoding="utf-8", buffering=1)
-            print(f"[trace] recording to {path}")
+            print(f"[trace] recording to {path}  (session {self._session})")
+            self._write({
+                "kind": "session_start",
+                "wall": round(self._started_wall, 3),
+                "iso": datetime.fromtimestamp(self._started_wall).isoformat(timespec="seconds"),
+                "prompt_mode": _PROMPT_MODE,
+                "interval_s": _STRATEGY_INTERVAL,
+            })
         except OSError as exc:
             print(f"[trace] disabled — could not open {path}: {exc}")
 
     def _write(self, record: dict[str, Any]) -> None:
         if self._handle is None:
             return
+        record.setdefault("session", self._session)
         try:
             self._handle.write(json.dumps(record, ensure_ascii=True, default=str) + "\n")
         except (OSError, TypeError, ValueError) as exc:
@@ -3539,14 +3583,26 @@ class TraceRecorder:
         if now - self._last_state < self._interval:
             return
         self._last_state = now
-        self._write({"kind": "state", "t": round(now, 2), "state": state})
+        self._write({"kind": "state", "t": round(now, 2),
+                     "wall": round(time.time(), 3), "state": state})
 
     def decision(self, strategy: str, reason: str, source: str,
-                 trace: dict[str, Any]) -> None:
-        """Record one Granite answer, plus which rule the frame ended up on."""
+                 trace: dict[str, Any], seq: int = 0,
+                 round_trip_s: float | None = None) -> None:
+        """Record one completed Granite round trip.
+
+        Called once per answer — including answers identical to the previous
+        one. `seq` is the strategist's answer counter, so a reader can tell a
+        genuinely repeated answer from a dropped record.  `round_trip_s` is
+        the measured request duration, which is the honest latency figure;
+        the spacing between these records is not.
+        """
         self._write({
             "kind": "decision",
             "t": round(time.monotonic(), 2),
+            "wall": round(time.time(), 3),
+            "seq": seq,
+            "round_trip_s": round_trip_s,
             "strategy": strategy,
             "reason": reason,
             "source": source,
@@ -3770,17 +3826,23 @@ def run_bot(
                 if recorder is not None:
                     recorder.sample_state(state)
                 if strategist is not None:
-                    prev_reason = strategist._last_reason
+                    prev_seq = strategist.answer_seq
                     raw_strategy, _reason = strategist.tick(state)
                     current_strategy = safety_filter(raw_strategy, state)
-                    # Log only when the model has actually answered again,
-                    # not on every frame that re-reads the cached answer.
-                    if recorder is not None and _reason != prev_reason:
+                    # One record per completed round trip, keyed off the
+                    # answer counter rather than off the reason text: tick()
+                    # returns the cached answer on every one of the 50 frames
+                    # per second, but answer_seq only moves when the model
+                    # actually replied.  Comparing the text instead silently
+                    # dropped answers whose wording repeated.
+                    if recorder is not None and strategist.answer_seq != prev_seq:
                         recorder.decision(
                             raw_strategy, _reason,
                             str(_dbg.get("strategy_source", "")),
                             {"considered": strategist.last_considered,
                              "rejected":   strategist.last_rejected},
+                            seq=strategist.answer_seq,
+                            round_trip_s=strategist.last_round_trip_s,
                         )
                 else:
                     current_strategy = safety_filter(strategy, state)
