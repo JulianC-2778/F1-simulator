@@ -1400,50 +1400,95 @@ function renderBotLiveness() {
   }
   const next = (botLive.next_in_s ?? 0) - drift;
   if (next > 0) parts.push(`next in ${next.toFixed(0)}s`);
+  // Measured request duration, not the gap between answers — the two differ
+  // whenever a poll is skipped or an answer is dropped as stale.
+  if (botLive.round_trip_s) parts.push(`took ${botLive.round_trip_s.toFixed(1)}s`);
   el.textContent = parts.join(" · ");
 }
 
-function renderBotReasoning(s) {
-  const reasoning = (s.details && s.details.reasoning) || {};
-  const considered = Array.isArray(reasoning.considered) ? reasoning.considered : [];
-  const rejected = reasoning.rejected || {};
+// ---- streaming reasoning ---------------------------------------------------
+// The strategy JSON is emitted `considered` first (see bot_strategy.py's field
+// ordering), so factors can be shown as they complete rather than all at once
+// when the request finishes ~7 s later. Purely presentational: the decision the
+// car acts on still comes from the parsed complete response over HTTP, and if
+// no tokens ever arrive — WebSocket down, or the WSL powershell transport,
+// which has no streaming path — the poll-driven render below is unaffected.
+let botStream = null;   // { requestId, buffer } while a stream is open
+
+function botOnStart(requestId) {
+  botStream = { requestId, buffer: "", startedAt: Date.now() };
   const box = $("botReasoning");
-
-  // `interval_s` is present whenever a Granite strategist exists, even before
-  // its first answer has landed. Keying visibility off that rather than off
-  // `considered.length` means the card appears the moment the bot starts
-  // asking — the first reply can take 30-60 s while the model cold-starts,
-  // and a card that stays hidden through that reads as "the feature is
-  // broken" instead of "the first answer is still generating".
-  const live = reasoning.interval_s !== undefined;
-  if (!s.connected || (!considered.length && !live)) {
-    box.hidden = true;
-    botLive = null;
-    renderBotLiveness();
-    return;
-  }
-  box.hidden = false;
-  botLive = {
-    thinking: !!reasoning.thinking,
-    age_s: reasoning.age_s,
-    next_in_s: reasoning.next_in_s,
-    receivedAt: Date.now(),
-  };
-  renderBotLiveness();
-  $("botReasoningDecision").textContent = s.strategy || "NORMAL";
-
+  if (box) box.hidden = false;
   const considerBox = $("botReasoningConsidered");
-  considerBox.innerHTML = "";
-  if (!considered.length) {
-    // Pre-first-answer state. Says which strategy is driving meanwhile, so
-    // it is clear the car is not waiting on the model to move.
+  if (considerBox) {
+    // The first factor only completes a couple of seconds in; without this
+    // the rows are blank until then, which looks the same as a stall.
+    considerBox.innerHTML = "";
     const wait = document.createElement("div");
     wait.className = "bot-reasoning-implication";
-    wait.textContent =
-      "Waiting for Granite's first answer — the model is cold-starting. "
-      + "The car is already driving on " + (s.strategy || "NORMAL") + ".";
+    wait.textContent = "Granite is working through the situation…";
     considerBox.appendChild(wait);
   }
+  const rejectedBox = $("botReasoningRejected");
+  if (rejectedBox) rejectedBox.hidden = true;
+}
+
+function botOnToken(requestId, text) {
+  // Ignore tokens from a superseded request: ai_bot drops stale answers, so
+  // two streams can briefly overlap and interleaving them would render a
+  // factor list that never existed.
+  if (!botStream || botStream.requestId !== requestId) return;
+  botStream.buffer += text || "";
+  const factors = botExtractFactors(botStream.buffer);
+  // Leave the "working through it" placeholder up until the first factor is
+  // complete, rather than blanking the card while the opening braces stream.
+  if (factors.length) botRenderRows(factors);
+}
+
+function botOnDone(requestId) {
+  if (botStream && botStream.requestId !== requestId) return;
+  // Hand the card back to the poller, which will replace this with the
+  // authoritative parsed decision on its next tick (within 1 s).
+  botStream = null;
+}
+
+// Pull complete objects out of a partially-received `considered` array.
+// Quote-aware, because an implication like `fuel 8.2 L {low}` would otherwise
+// throw the brace depth off and drop every factor after it.
+function botExtractFactors(buf) {
+  const key = buf.indexOf('"considered"');
+  if (key < 0) return [];
+  const arrStart = buf.indexOf("[", key);
+  if (arrStart < 0) return [];
+  const out = [];
+  let depth = 0, objStart = -1, inStr = false, esc = false;
+  for (let i = arrStart + 1; i < buf.length; i++) {
+    const c = buf[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "{") { if (depth === 0) objStart = i; depth++; continue; }
+    if (c === "}") {
+      depth--;
+      if (depth === 0 && objStart >= 0) {
+        try { out.push(JSON.parse(buf.slice(objStart, i + 1))); } catch (_) { /* partial */ }
+        objStart = -1;
+      }
+      continue;
+    }
+    if (c === "]" && depth === 0) break;
+  }
+  return out;
+}
+
+function botRenderRows(considered) {
+  const considerBox = $("botReasoningConsidered");
+  if (!considerBox) return;
+  considerBox.innerHTML = "";
   considered.forEach((item) => {
     const row = document.createElement("div");
     row.className = "bot-reasoning-row";
@@ -1463,6 +1508,75 @@ function renderBotReasoning(s) {
     }
     considerBox.appendChild(row);
   });
+}
+
+// A stream that never gets its ai_done — WebSocket dropped, midware
+// restarted mid-request, request cancelled server-side — would otherwise own
+// the card forever and freeze it, with the poll path returning early on every
+// tick. Two independent releases, because this failure is invisible: the card
+// just stops updating and looks like the model died.
+//   1. the bot's own `thinking` flag is authoritative about whether a request
+//      is actually in flight, and it arrives on every 1 s poll;
+//   2. a hard age cap, in case status stops arriving at all.
+const BOT_STREAM_MAX_MS = 200000;   // > the longest configured model timeout
+
+function botReleaseStaleStream(reasoning) {
+  if (!botStream) return;
+  const tooOld = Date.now() - botStream.startedAt > BOT_STREAM_MAX_MS;
+  const botIdle = reasoning && reasoning.thinking === false;
+  if (tooOld || botIdle) botStream = null;
+}
+
+function renderBotReasoning(s) {
+  const reasoning = (s.details && s.details.reasoning) || {};
+  botReleaseStaleStream(reasoning);
+  // Liveness is updated before the streaming early-return below: it comes
+  // from the poll, not from the stream, and leaving it stale was why the
+  // header went blank whenever a stream was open.
+  if (reasoning.interval_s !== undefined) {
+    botLive = {
+      thinking: !!reasoning.thinking,
+      age_s: reasoning.age_s,
+      next_in_s: reasoning.next_in_s,
+      round_trip_s: reasoning.round_trip_s,
+      receivedAt: Date.now(),
+    };
+    renderBotLiveness();
+  }
+  // A stream is mid-flight and owns the rows; overwriting them from the 1 s
+  // poll would flick the card back to the previous answer between tokens.
+  if (botStream) return;
+  const considered = Array.isArray(reasoning.considered) ? reasoning.considered : [];
+  const rejected = reasoning.rejected || {};
+  const box = $("botReasoning");
+
+  // `interval_s` is present whenever a Granite strategist exists, even before
+  // its first answer has landed. Keying visibility off that rather than off
+  // `considered.length` means the card appears the moment the bot starts
+  // asking — the first reply can take 30-60 s while the model cold-starts,
+  // and a card that stays hidden through that reads as "the feature is
+  // broken" instead of "the first answer is still generating".
+  const live = reasoning.interval_s !== undefined;
+  if (!s.connected || (!considered.length && !live)) {
+    box.hidden = true;
+    botLive = null;
+    renderBotLiveness();
+    return;
+  }
+  box.hidden = false;
+  $("botReasoningDecision").textContent = s.strategy || "NORMAL";
+
+  botRenderRows(considered);
+  if (!considered.length) {
+    // Pre-first-answer state. Says which strategy is driving meanwhile, so
+    // it is clear the car is not waiting on the model to move.
+    const wait = document.createElement("div");
+    wait.className = "bot-reasoning-implication";
+    wait.textContent =
+      "Waiting for Granite's first answer — the model is cold-starting. "
+      + "The car is already driving on " + (s.strategy || "NORMAL") + ".";
+    $("botReasoningConsidered").appendChild(wait);
+  }
 
   const rejectedBox = $("botReasoningRejected");
   if (rejected.option) {
@@ -1625,13 +1739,20 @@ function routeWsMessage(msg) {
     // still arrives even if the WebSocket happened to be mid-reconnect.
     // The server still broadcasts those messages too, but that copy exists
     // for overlay-app's engineer caption window, not for this dashboard.
+    // "bot" is checked before the commentary fallback below: that fallback
+    // treats every non-engineer source as commentary, so without this the
+    // strategy JSON would stream into the commentary feed as if it were
+    // spoken race commentary.
     case "ai_start":
-      if (source !== "engineer") cmOnStart(msg.request_id);
+      if (source === "bot") botOnStart(msg.request_id);
+      else if (source !== "engineer") cmOnStart(msg.request_id);
       break;
     case "token":
-      if (source !== "engineer" && cmMessageIsCurrent(msg)) cmOnToken(msg.text);
+      if (source === "bot") botOnToken(msg.request_id, msg.text);
+      else if (source !== "engineer" && cmMessageIsCurrent(msg)) cmOnToken(msg.text);
       break;
     case "ai_done":
+      if (source === "bot") { botOnDone(msg.request_id); break; }
       if (source !== "engineer" && cmMessageIsCurrent(msg)) {
         if (msg.duplicate) {
           // Backend suppressed this reply as a near-duplicate of recently
@@ -1660,6 +1781,7 @@ function routeWsMessage(msg) {
       }
       break;
     case "error":
+      if (source === "bot") { botOnDone(msg.request_id); break; }
       if (source !== "engineer" && cmMessageIsCurrent(msg)) {
         cmStopAudio();
         cmOnError(msg.message);
