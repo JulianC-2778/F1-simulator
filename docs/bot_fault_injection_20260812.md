@@ -19,7 +19,7 @@
 | RB-04 | `midware.app` restarted | ✅ Pass — automatic reconnect, no bot restart |
 | RB-10 | `bot` feature disabled | ✅ Pass — fails closed, keeps driving, no crash |
 | RB-10 restore | `bot` feature re-enabled | ✅ Pass — automatic recovery |
-| RB-05 | TORCS process hard-killed mid-session | ⚠️ **Real gap found** — see §2 |
+| RB-05 | TORCS process hard-killed mid-session | ⚠️→✅ **Real gap found, fixed same day** — see §4 |
 
 ## 1. RB-01/02 — Granite unavailable / restored
 
@@ -106,7 +106,7 @@ same code path).
 **Observed** (8s later): `health:"healthy"`, `heartbeat_age_s:0.469`,
 `fallback:false` — immediate recovery, no restart.
 
-## 4. RB-05 — TORCS hard-killed mid-session: a real gap
+## 4. RB-05 — TORCS hard-killed mid-session: a real gap, fixed same day
 
 **Inject** (13:51:16): `kill -9 <torcs-bin pid>` while the bot was
 mid-drive (`dmg=3759` from an earlier real collision, `strategy=DEFEND`,
@@ -155,12 +155,37 @@ suggests it either isn't, or takes longer than the ~35s observed here.
 **This is not a crash** (no unhandled exception, no corrupted state) but it
 is a real availability gap: the bot neither keeps driving usefully nor
 exits — it idles forever, and the one signal an operator would likely
-check (`/api/bot/status`'s heartbeat) actively hides the problem. Filed
-here as a finding, not fixed — deciding the right fix (e.g., a watchdog
-timeout on "no real state received in N seconds" independent of the
-heartbeat reporter, or having `BotStatusReporter` refuse to re-send an
-unchanged snapshot past some age) is a product decision, not a testing one,
-per this project's own testing principles.
+check (`/api/bot/status`'s heartbeat) actively hides the problem.
+
+**Fixed same day**, minimal change (`ai_bot.py`, `run_bot()`): a
+`timeout_streak` counter now tracks consecutive `{}` reads; once it
+reaches `_CONNECTION_LOST_FRAMES` (50, ≈5s of sustained silence at
+`_STEP_TIMEOUT=0.1s` per read — long enough not to fire on a normal
+WSLg rendering stall, short enough not to leave an operator staring at a
+frozen car for long), the loop prints `"No data from TORCS for 5.0s —
+assuming the connection is dead. Exiting loop."` and breaks, same as the
+existing `state is None` path — which also means `reporter.close()` runs
+and sends the final `connected:false` heartbeat, so the "fake healthy"
+symptom resolves as a side effect of the loop actually exiting. The streak
+resets to 0 on any real frame, so a brief, recovered stall never
+accumulates toward the threshold.
+
+Regression test:
+`tests/bot/test_run_bot_integration.py::test_gives_up_after_a_sustained_run_of_receive_timeouts`
+(feeds exactly `_CONNECTION_LOST_FRAMES` timeout frames, asserts
+`run_bot()` returns rather than needing more it would never get if this
+regresses) plus
+`test_a_single_recovered_timeout_does_not_count_toward_the_watchdog` (a
+single recovered stall must not count toward an unrelated later streak).
+Both are fully synchronous — no thread/real-time wait — because a
+thread-plus-timeout version of this test (watching a genuinely infinite
+`{}` client from a second thread with `join(timeout=...)`) reliably
+reproduced the pre-fix hang in a standalone script but hit unrelated
+pytest/thread-scheduling interference inside the test suite itself in this
+environment; the synchronous version is deterministic and avoids that
+entirely. Full `tests/bot/` suite (221 tests) and the built-in
+`python ai_bot.py` self-test were both re-run clean after the fix on both
+checkouts touched today.
 
 ## 5. What's still not covered from the RB-01..RB-10 catalog
 
