@@ -3055,18 +3055,49 @@ def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
 #                       granite-4.1-8b).  Unchanged, so nothing about the
 #                       repo's default behaviour moves.
 # reasoning / bare
-#          30 s / 110 s — midware allows the model 60-75 s and ModelBroker
-#                       adds 15 s on top, so the client has to outwait ~90 s
-#                       plus queue time or it gives up before the answer
-#                       lands and every call looks like a failure.
+#          15 s / 180 s — a reasoning answer measured 7.6 s median
+#                       (docs/bot_prompt_comparison_race3.md), so 15 s leaves
+#                       the model idle about half the time.  That headroom is
+#                       the point: bot_strategy holds the highest ModelBroker
+#                       priority (10) with single concurrency, so a bot that
+#                       polls faster than it can be answered starves the
+#                       engineer/coach/commentary features sharing that queue
+#                       — observed in the 2026-08-12 session, which ran the
+#                       reasoning prompt at legacy's 5 s pacing and spent the
+#                       whole race with a request in flight.
+#                       The long client timeout must outwait midware's own
+#                       150 s ceiling plus ModelBroker's 15 s grace.
 #
-# The longer interval is a bonus rather than a cost: bot_strategy holds the
-# highest ModelBroker priority (10) with single concurrency, so polling every
-# 5 s starves the engineer/coach/commentary features sharing that queue.
+# TORCS_BOT_INTERVAL overrides the interval (seconds) without a code edit —
+# for a demo where three decisions a lap looks too static, or to deliberately
+# reproduce the saturation case above.  Values under 8 s cannot be answered
+# in time by the reasoning prompt and will mostly be discarded.
 _PROMPT_MODE = os.getenv("TORCS_BOT_PROMPT", "legacy").strip().lower()
 _REASONING_PROMPT = _PROMPT_MODE in ("bare", "reasoning")
 
-_STRATEGY_INTERVAL = 30.0 if _REASONING_PROMPT else 5.0
+
+def _interval_from_env(default: float) -> float:
+    """Read TORCS_BOT_INTERVAL, falling back to the per-mode default.
+
+    Never raises and never returns something absurd: a typo in an env var
+    must not silently give the bot a 0 s poll (which would hammer the model
+    broker flat out) or a negative one.
+    """
+    raw = os.getenv("TORCS_BOT_INTERVAL")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"[bot] ignoring TORCS_BOT_INTERVAL={raw!r} (not a number)")
+        return default
+    if value < 1.0:
+        print(f"[bot] ignoring TORCS_BOT_INTERVAL={value} (must be >= 1 s)")
+        return default
+    return value
+
+
+_STRATEGY_INTERVAL = _interval_from_env(15.0 if _REASONING_PROMPT else 5.0)
 _GRANITE_TIMEOUT   = 180.0 if _REASONING_PROMPT else 30.0
 _STRATEGY_CONFIRM  = 1      # consecutive matching Granite answers required
                              # before switching the active strategy.  Was 2 (a
@@ -3306,6 +3337,15 @@ class GraniteStrategist:
         # unless the reasoning prompt variant is active.
         self.last_considered: list[dict[str, Any]] = []
         self.last_rejected:   dict[str, Any] = {}
+        # Liveness, for the dashboard only — never read by the control loop.
+        # A reasoning answer arrives every ~15 s, so a card that just shows
+        # the last trace looks frozen for most of that window even though
+        # everything is working.  Publishing "a request is in flight" and
+        # "this answer is N seconds old" makes the wait legible instead of
+        # looking like a hang, without asking the model any more often (which
+        # would starve the other features sharing the ModelBroker queue).
+        self.thinking: bool = False
+        self._answered_at: float | None = None
 
     # ------------------------------------------------------------------ #
 
@@ -3322,9 +3362,15 @@ class GraniteStrategist:
                 {"state": state, "prev_lap_time": self._prev_lap_time}, priority=0,
             )
             self._last_submit = now
+            self.thinking = True
 
         result = self._runner.pop_completed()
         if result is not None:
+            # Whatever came back — answer or failure — the request is no
+            # longer in flight.  An error must clear it too, or a single
+            # timeout would leave the dashboard saying "thinking" forever.
+            self.thinking = False
+            self._answered_at = now
             if result.error:
                 self.fallback = True
                 self.last_error = str(result.error)
@@ -3375,6 +3421,22 @@ class GraniteStrategist:
 
     def last_strategy(self) -> str:
         return self._last_strategy
+
+    def liveness(self) -> dict[str, Any]:
+        """Dashboard-only view of where the model is in its poll cycle.
+
+        ``age_s`` is None before the first answer lands; ``next_in_s`` is
+        clamped at 0 rather than going negative while a request is in flight
+        and the interval has already elapsed.
+        """
+        now = time.monotonic()
+        return {
+            "thinking": self.thinking,
+            "age_s": (None if self._answered_at is None
+                      else round(now - self._answered_at, 1)),
+            "next_in_s": max(0.0, round(self._interval - (now - self._last_submit), 1)),
+            "interval_s": self._interval,
+        }
 
     # ------------------------------------------------------------------ #
 
@@ -3745,7 +3807,8 @@ def run_bot(
                     error=strategist.last_error if strategist else "",
                     details=(
                         {"reasoning": {"considered": strategist.last_considered,
-                                       "rejected":   strategist.last_rejected}}
+                                       "rejected":   strategist.last_rejected,
+                                       **strategist.liveness()}}
                         if strategist is not None else {}
                     ),
                 )
