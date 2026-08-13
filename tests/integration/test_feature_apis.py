@@ -37,6 +37,58 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         self.assertGreater(len(self.client.get("/api/engineer/history").json()["messages"]), 0)
         self.assertEqual(self.client.post("/api/engineer/clear").status_code, 200)
 
+    def test_engineer_prompt_no_longer_includes_tire_wear_or_pit_window(self):
+        # A teammate found the model sometimes trusted the computed
+        # pit_window conclusion over the raw telemetry facts in the same
+        # prompt, even when they contradicted each other -- ask_engineer()
+        # no longer feeds tire_wear_pct/pit_window into the model's prompt
+        # at all (see GET /api/engineer/tire_estimate for where that data
+        # lives now instead).
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes.")) as model:
+            self.client.post(
+                "/api/engineer/ask",
+                json={"question": "should I pit now?", "car_state": {"speed": 120, "fuel": 5}},
+            )
+        messages = model.await_args.args[0]
+        prompt_text = "\n".join(m["content"] for m in messages)
+        self.assertNotIn("Estimated tire wear", prompt_text)
+        self.assertNotIn("Pit window analysis", prompt_text)
+        self.client.post("/api/engineer/clear")
+
+    def test_tire_estimate_endpoint_is_independent_of_asking_a_question(self):
+        self.client.post("/api/engineer/clear")
+        self.client.post("/api/telemetry/push", json={"telemetry": RAW_TORCS_FRAME})
+        response = self.client.get("/api/engineer/tire_estimate")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("wear_pct", data)
+        self.assertIn("pit_window", data)
+        self.assertIn("urgency", data["pit_window"])
+        # Never touched ask_engineer() or the model -- polling it on its own
+        # still advances the same tracker /api/engineer/clear resets.
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="never called")) as model:
+            self.client.get("/api/engineer/tire_estimate")
+        model.assert_not_awaited()
+        self.client.post("/api/engineer/clear")
+
+    def test_tire_wear_question_in_chat_points_to_the_dashboard_display_without_calling_the_model(self):
+        # See test_engineer_prompt_no_longer_includes_tire_wear_or_pit_window
+        # above -- since chat no longer has this data at all, asking about it
+        # is deflected the same deterministic way as tire pressure/etc,
+        # rather than leaving an 8B local model to improvise an answer.
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="should never be called")) as model:
+            response = self.client.post("/api/engineer/ask", json={"question": "how's my tire wear?"})
+        self.assertEqual(response.status_code, 200)
+        answer = response.json()["answer"]
+        self.assertIn("tire wear", answer)
+        self.assertIn("dashboard", answer)
+        # The generic unavailable-topic wording ("I can help with ... tire
+        # wear estimate instead") would contradict this specific answer --
+        # must not appear here.
+        self.assertNotIn("I don't have tire wear data", answer)
+        model.assert_not_awaited()
+        self.client.post("/api/engineer/clear")
+
     def test_engineer_answer_is_trimmed_to_first_sentence_even_if_the_model_rambles(self):
         # Real local models don't reliably stop at one sentence just because
         # the persona asks them to -- the endpoint must enforce it itself.

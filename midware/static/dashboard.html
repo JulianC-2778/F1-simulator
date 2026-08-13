@@ -956,6 +956,10 @@
           <button class="secondary" id="engClearBtn" style="width:100%">Clear history</button>
           <button class="secondary" id="engExportBtn" style="width:100%;margin-top:8px">Export conversation</button>
           <div id="engStats" title="-- / -- tokens" style="margin-top:12px;color:var(--text-faint);font-size:0.78rem;">Conversation memory: -- % used</div>
+          <!-- Standalone estimate, decoupled from Q&A -- see
+               GET /api/engineer/tire_estimate in runtime.py. Placeholder
+               styling for now, not wired into the chat feed at all. -->
+          <div id="engTireEstimate" style="margin-top:4px;color:var(--text-faint);font-size:0.78rem;">Estimated tire wear: --%</div>
         </div>
         <div class="panel panel-pad">
           <div class="section-title">Voice input</div>
@@ -2617,6 +2621,20 @@ async function engLoadStats() {
   } catch (e) { /* ignore */ }
 }
 
+// Standalone tire-wear display -- polled independently of chat/alerts (see
+// GET /api/engineer/tire_estimate's docstring in runtime.py for why this is
+// no longer folded into the Q&A prompt). Never touches State.engStreaming
+// or the chat feed.
+async function engLoadTireEstimate() {
+  try {
+    const r = await fetch("/api/engineer/tire_estimate");
+    const data = await r.json();
+    if (typeof data.wear_pct === "number") {
+      $("engTireEstimate").textContent = `Estimated tire wear: ${Math.round(data.wear_pct)}%`;
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function engApplyAlertsButton(enabled) {
   State.engAlertsEnabled = enabled;
   const btn = $("engAlertsToggle");
@@ -3155,6 +3173,7 @@ window.addEventListener("load", () => {
   cmLoadConfig();
   fetch("/api/stats", { cache: "no-store" }).then(r => r.json()).then(cmUpdateStats).catch(() => {});
   engLoadStats();
+  engLoadTireEstimate();
   engCheckVoice();
   engCheckAlerts();
   coRenderSignals([]);
@@ -3169,6 +3188,7 @@ window.addEventListener("load", () => {
   pollHealth();
 
   setInterval(pollHealth, 2000);
+  setInterval(engLoadTireEstimate, 3000);
   setInterval(pollBot, 1000);
   setInterval(renderBotLiveness, 1000);
   setInterval(coLoadDashboard, 500);
