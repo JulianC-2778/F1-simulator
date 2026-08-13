@@ -5,10 +5,12 @@
 > what was actually implemented against the real code in `ai_bot.py`, not
 > what [`docs/bot_test_plan.md`](bot_test_plan.md) originally assumed before
 > implementation — where the two differ, the code (and this report) wins.
-> Written 2026-08-12; updated same day twice more (second pass closed the
-> three `run_bot()`/track-map/traffic gaps; third pass closed the two
+> Written 2026-08-12; updated same day three more times (second pass closed
+> the three `run_bot()`/track-map/traffic gaps; third pass closed the two
 > remaining §6 gaps — `ScrClient`'s real UDP path and a black-box smoke test
-> against a real `midware.app`).
+> against a real `midware.app`; fourth pass, after a `git pull` brought in
+> PRs #38-40 — new `GraniteStrategist` liveness/timing fields and
+> env-var-driven prompt-mode config, see §4's new rows and §9).
 >
 > This is the direction-4 counterpart of [`docs/commentary_test_matrix.md`](commentary_test_matrix.md)
 > for direction 3 (AI Live Commentary): same purpose (requirement → real code →
@@ -113,14 +115,17 @@ gap is what this report covers.
 | Pre-race track-map lookahead (map-ahead braking cap, entry-line bias, brake-point mode, 5-gate trust system) | `compute_control` (map branch) | `track_model.py`'s own self-test (separately, partial) | `tests/bot/test_track_map_lookahead.py` (10 tests) | done — skipped automatically if `track_model.py` isn't importable |
 | Side-traffic avoidance (incl. convergence gate, room taper, standoff breaker), start-of-race launch caution + clutch ramp, front-opponent following/overtake (incl. cone-boundary-jump rejection, next-corner tiebreak), `BLOCK` steering-bias, boxed-in follow cap | `compute_control` | none | `tests/bot/test_traffic_and_launch.py` (25 tests) | done |
 | `BotStatusReporter`/`GraniteStrategist` against a **real** `midware.app` process (not mocked HTTP): status round trip, close()'s final disconnect, a real Granite success round trip through the real `/api/bot/strategy` → fake-model chain, a real HTTP-failure round trip, and the `bot`-feature-disabled fail-closed path | `BotStatusReporter`, `GraniteStrategist`, `midware/runtime.py`'s bot endpoints | none | `tools/smoke_test_bot_status.py` (8 checks, black-box, real subprocess + real HTTP — not part of `tests/bot/`'s pytest count) | done — see §7 for why this is a separate script, not a pytest file |
+| `run_bot()` gives up after a sustained run of `receive_state()` timeouts instead of idling forever (`_CONNECTION_LOST_FRAMES` watchdog) | `run_bot` (`timeout_streak` counter) | none | `tests/bot/test_run_bot_integration.py::test_gives_up_after_a_sustained_run_of_receive_timeouts` + `test_a_single_recovered_timeout_does_not_count_toward_the_watchdog` | done — real bug found via live RB-05 fault injection, see `docs/bot_fault_injection_20260812.md` §4; fixed same day |
+| **New in PR #38-40**: `GraniteStrategist.liveness()`/`.thinking`/`.answer_seq`/`.last_round_trip_s` (dashboard health/timing signals; `answer_seq` and `last_round_trip_s` are a direct, code-comment-cited response to `docs/bot_real_experiment_20260812.md` §4's decision-cadence caveat) | `GraniteStrategist` (`tick`, `liveness`, `_call_granite`) | none | `tests/bot/test_granite_liveness_and_config.py` (16 tests) | done |
+| **New in PR #38-40**: `_interval_from_env()` (`TORCS_BOT_INTERVAL` override, validated: non-numeric/too-small silently falls back with a printed warning) and the mode-dependent `_STRATEGY_INTERVAL`/`_GRANITE_TIMEOUT` defaults (`_PROMPT_MODE` via `TORCS_BOT_PROMPT`) | `_interval_from_env`, module-level `_STRATEGY_INTERVAL`/`_GRANITE_TIMEOUT`/`_PROMPT_MODE` derivation | none | `tests/bot/test_granite_liveness_and_config.py::IntervalFromEnvTests` (5 tests) | done for `_interval_from_env` itself; the mode-dependent default *selection* (`_PROMPT_MODE`/`_REASONING_PROMPT` → which interval/timeout wins) is read at import time from real env vars and is not separately unit-tested — see §9 |
 
-**Total: 186/186 new pytest tests passing** (`tests/bot/`), plus 8/8 in the
+**Total: 237/237 new pytest tests passing** (`tests/bot/`), plus 8/8 in the
 black-box `tools/smoke_test_bot_status.py`, plus the pre-existing
-`ai_bot.py` self-test (`python ai_bot.py`, `python track_model.py`) both
-still green after the §7 production-code change — confirmed to still match
-the current code, since most of the `tests/bot/` assertions were ported
-from that self-test's known-correct values rather than independently
-re-derived.
+`ai_bot.py` self-test (`python ai_bot.py`, `python track_model.py`) — the
+self-test has one known, unrelated, pre-existing failure (the `SAVE_FUEL`
+assertion, see §5.2) that predates and is untouched by today's work; every
+other self-test assertion still passes, confirming `tests/bot/`'s ported
+assertions still match the current code.
 
 ## 5. Findings
 
@@ -310,3 +315,58 @@ are known gaps, not silently skipped:
    discipline already established for commentary in `evaluation/commentary/`.
    This is the only work-package-A-adjacent item left; work package A
    itself (§4) is now fully closed.
+
+## 9. 2026-08-12, fourth pass: `git pull` brought in PRs #38-40
+
+`ai_bot.py` (+189 lines), `midware/bot_strategy.py`, `midware/runtime.py`,
+`midware/shared/model_gateway.py`, and `midware/static/dashboard.html` all
+changed. Investigated before assuming "tests still pass, nothing to see":
+
+- **The 237/237 pass was real, not a blind spot** — the new surface
+  (`GraniteStrategist.liveness()`, `.thinking`, `.answer_seq`,
+  `.last_round_trip_s`, `_interval_from_env()`) is now covered by
+  `tests/bot/test_granite_liveness_and_config.py` (16 new tests, added this
+  pass — see §4's new rows). Before this pass it was genuinely untested,
+  the same pattern as the two earlier merges (pit-system rework, Granite
+  reasoning-trace integration) — each brought real behavior this suite
+  hadn't seen yet.
+- **Two of the new fields are a direct, code-comment-cited response to
+  this test suite's own real-data findings**: `answer_seq` and
+  `last_round_trip_s` exist specifically because
+  `docs/bot_real_experiment_20260812.md` §4 had to caveat its own
+  Granite decision-cadence numbers (the old recorder only logged when the
+  answer *text* changed, silently merging genuinely separate answers with
+  matching wording). `TraceRecorder.decision()` now also takes `seq` and
+  `round_trip_s` and is called on every completed round trip, unconditionally.
+- **A retroactive methodology finding about our own 2026-08-12 data**: the
+  code comment above the new mode-dependent `_STRATEGY_INTERVAL` says our
+  own real-experiment/fault-injection session ran the reasoning prompt at
+  the old flat 5s pacing against a model that (per
+  `docs/bot_prompt_comparison_race3.md`, a file that did not exist when we
+  collected our data) needs ~7.6s median to answer under that prompt —
+  meaning our session likely spent most of its time with a request
+  perpetually in flight, saturating the single-concurrency ModelBroker slot.
+  This does not invalidate the *qualitative* fault-injection results
+  (RB-01 through RB-05 all reasoned about controlled-vs-uncontrolled
+  failure, not about timing), but it does mean the ~9.88s median decision
+  interval reported in `docs/bot_real_experiment_20260812.md` §4 was
+  measured under a pacing/timeout mismatch, not clean conditions — flagged
+  as an added caveat there rather than silently left as if still current.
+- **Default behavior actually changed**: `_STRATEGY_INTERVAL` is no longer
+  a flat `5.0` — it now defaults to `15.0` under the default `reasoning`
+  prompt mode (`10.0` for `concise`, `5.0` only for the `legacy` mode), and
+  `_GRANITE_TIMEOUT` defaults to `180.0` instead of `30.0` under any
+  reasoning-family mode. Every existing test that cares about timing
+  explicitly passes its own `interval=`/uses a mocked queue rather than
+  relying on the module-level default, so none of this broke anything —
+  but any *new* test or manual run that assumes "5 seconds" without reading
+  `TORCS_BOT_PROMPT` first will be wrong under the current default.
+- **Not tested**: which interval/timeout the module picks based on
+  `_PROMPT_MODE` (`_STRATEGY_INTERVAL`/`_GRANITE_TIMEOUT`'s own
+  conditional expression) — these are evaluated once at import time from
+  real environment variables, which is awkward to unit test cleanly
+  without a subprocess-per-value-combination; `_interval_from_env()`
+  itself (the override/validation logic) is tested, the mode-to-default
+  mapping's four branches (`legacy`/`concise`/`bare`/`reasoning`) are not.
+  Low priority — the mapping is a one-line conditional, visible at a
+  glance, not the kind of logic that tends to regress silently.
