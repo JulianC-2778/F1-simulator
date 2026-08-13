@@ -92,10 +92,9 @@ class UnavailableDataTopicDetectionTests(unittest.TestCase):
         self.assertIsNotNone(_unavailable_data_topic("WHAT'S MY TIRE PRESSURE?"))
 
     def test_tire_wear_question_is_flagged(self):
-        # Unlike tire pressure/temperature (never available at all), tire
-        # wear IS estimated by tire_strategy.py -- just no longer surfaced
-        # through chat (see GET /api/engineer/tire_estimate's docstring in
-        # runtime.py for why), so this is flagged too, distinctly.
+        # tire_wear_pct is estimated (tire_strategy.py) but no longer folded
+        # into car_state for chat -- see GET /api/engineer/tire_estimate --
+        # so chat treats it the same as any other topic it doesn't have.
         self.assertEqual(_unavailable_data_topic("how's my tire wear?"), "tire wear")
 
     def test_british_spelling_tyre_wear_is_also_flagged(self):
