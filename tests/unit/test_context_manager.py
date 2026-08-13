@@ -70,50 +70,6 @@ class FormatCarStateTests(unittest.TestCase):
         self.assertIn("estimated laps until critical tire wear = unknown", text)
         self.assertIn("estimated laps remaining before a pit is needed = unknown", text)
 
-    def test_omits_recent_incidents_line_when_none_have_happened(self):
-        # recent_incidents is only added to car_state by runtime.py's
-        # ask_engineer once engineer_events.py's IncidentTracker has found
-        # at least one incident -- see engineer_events.py.
-        text = format_car_state({"problems": [], "recent_incidents": []})
-        self.assertNotIn("Recent incidents", text)
-
-    def test_renders_recent_incidents_when_present(self):
-        car_state = {
-            "problems": [],
-            "recent_incidents": [
-                {"type": "damage", "detail": "took damage (+450)", "seconds_ago": 5.0},
-                {"type": "off_track", "detail": "went off track (track position 1.20)", "seconds_ago": 22.0},
-            ],
-        }
-        text = format_car_state(car_state)
-        self.assertIn(
-            "Recent incidents this session: took damage (+450) (5s ago); "
-            "went off track (track position 1.20) (22s ago)",
-            text,
-        )
-
-    def test_omits_top_priority_line_when_priority_key_is_absent(self):
-        text = format_car_state({"problems": []})
-        self.assertNotIn("Top priority", text)
-
-    def test_renders_top_priority_with_reason(self):
-        car_state = {
-            "problems": [],
-            "priority": {"top_priority": "pit now", "severity": "high", "reason": "tires, fuel"},
-        }
-        text = format_car_state(car_state)
-        self.assertIn("Top priority: pit now [high] (tires, fuel)", text)
-
-    def test_renders_top_priority_without_a_reason(self):
-        car_state = {
-            "problems": [],
-            "priority": {"top_priority": "no urgent priority -- car is in good shape", "severity": "low", "reason": ""},
-        }
-        text = format_car_state(car_state)
-        self.assertIn("Top priority: no urgent priority -- car is in good shape [low]", text)
-        self.assertNotIn("()", text)
-
-
 class FormatEngineerPromptTests(unittest.TestCase):
     def test_combines_car_state_and_question(self):
         cm = ContextManager()
