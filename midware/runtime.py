@@ -1421,17 +1421,15 @@ _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 
 # Topics car_state (see race_analyzer.CAR_STATE_KEYS) categorically never
 # has -- TORCS's SCR telemetry doesn't report any of these -- plus tire
-# wear, which the model used to see as a computed car_state field but no
-# longer does: a teammate found it sometimes trusted that computed number
-# over the raw telemetry facts in the same prompt, so it was pulled out of
-# chat entirely (see GET /api/engineer/tire_estimate) and only shown on the
-# dashboard now. ENGINEER_PERSONA already tells the model "never invent
-# numbers", but that's asking an 8B local model to police itself; answering
-# these deterministically is the same "compute the real answer in Python,
-# don't trust the model to reason about it" pattern tire_strategy.py's
-# module docstring already uses for pit-window math. A question that
-# doesn't match any of these just falls through to the model as normal --
-# this never blocks or changes behavior for anything else.
+# wear, which is estimated (see GET /api/engineer/tire_estimate) but no
+# longer folded into car_state here, so chat treats it the same as any
+# other topic it doesn't have. ENGINEER_PERSONA already tells the model
+# "never invent numbers", but that's asking an 8B local model to police
+# itself; answering these deterministically is the same "compute the real
+# answer in Python, don't trust the model to reason about it" pattern
+# tire_strategy.py's module docstring already uses for pit-window math. A
+# question that doesn't match any of these just falls through to the model
+# as normal -- this never blocks or changes behavior for anything else.
 _UNAVAILABLE_DATA_TOPICS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bt[iy]re wear\b", re.IGNORECASE), "tire wear"),
     (re.compile(r"\bt[iy]re pressure\b", re.IGNORECASE), "tire pressure"),
@@ -1479,22 +1477,10 @@ async def ask_engineer(body: dict):
 
     missing_topic = _unavailable_data_topic(question)
     if missing_topic is not None:
-        if missing_topic == "tire wear":
-            # Unlike the other unavailable topics below, this one IS
-            # estimated -- just not in chat anymore (see
-            # GET /api/engineer/tire_estimate's docstring) -- so point at
-            # where it actually lives instead of the generic "I don't have
-            # that data" wording, which would otherwise contradict itself.
-            answer = (
-                "I don't include the tire wear estimate in chat answers -- check the tire wear "
-                "display on the dashboard instead. I can help with speed, fuel, damage, or pit "
-                "strategy here."
-            )
-        else:
-            answer = (
-                f"I don't have {missing_topic} data -- TORCS doesn't report that. "
-                "I can help with speed, fuel, damage, or pit strategy instead."
-            )
+        answer = (
+            f"I don't have {missing_topic} data -- TORCS doesn't report that. "
+            "I can help with speed, fuel, damage, tire wear estimate, or pit strategy instead."
+        )
         engineer_ctx_mgr.add_assistant(answer)
         await broadcast({"type": "ai_done", "source": "engineer", "content": answer, "request_id": request_id})
         return {
