@@ -136,6 +136,24 @@ a latency one. **This number should not be quoted as "Granite median
 latency" without the caveat above** — it measures decision-cadence as
 observed by the dashboard/log, not model response time.
 
+**Addendum, added after a later `git pull` (same day, fourth doc pass —
+see `docs/bot_test_matrix.md` §9)**: subsequent commits added
+`GraniteStrategist.last_round_trip_s` (a real per-request timing
+measurement) and made `_STRATEGY_INTERVAL`/`_GRANITE_TIMEOUT` depend on
+which prompt mode is active, with a code comment stating this session's
+prompt (the reasoning variant) needs ~7.6 s median to answer
+(`docs/bot_prompt_comparison_race3.md`) but was run at the old flat 5 s
+pacing — i.e. this session most likely spent most of its time with a
+request perpetually in flight, saturating the single-concurrency
+ModelBroker slot, on top of the phrasing-dedup effect already described
+above. Both effects push in the same direction (inflating the apparent
+gap between logged decisions), so the qualitative conclusion here doesn't
+change, but the ~9.88 s number should be read as "this session's specific,
+imperfectly-paced run", not as a property of the reasoning prompt or the
+model in general. A re-run with matched pacing (and now `last_round_trip_s`
+available for a real per-request figure instead of decision-to-decision
+spacing) would be the honest way to get a trustworthy number.
+
 No finer breakdown (first-token, complete-response) is possible from this
 trace format — `_call_granite` has no intermediate timestamp today. Adding
 one (mirroring `midware/latency_log.py`'s approach for commentary) is the
