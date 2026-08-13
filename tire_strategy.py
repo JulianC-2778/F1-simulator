@@ -69,6 +69,22 @@ class RaceStrategyTracker:
         """New tires -- e.g. called when update() detects a pit stop."""
         self._wear_pct = 0.0
 
+    def full_reset(self) -> None:
+        """New session/race, not a continuation of a mid-race pit stop --
+        unlike reset() (which only zeroes wear so fuel/lap memory keeps
+        running across a pit stop), this clears everything, including
+        fuel-per-lap/wear-per-lap memory, so a previous session's readings
+        don't leak into an unrelated new one."""
+        self._wear_pct = 0.0
+        self._last_update_at = None
+        self._last_track_pos = None
+        self._last_fuel = None
+        self._last_lap_time = None
+        self._lap_start_fuel = None
+        self._last_lap_fuel_consumption = None
+        self._lap_start_wear = None
+        self._last_lap_wear_consumption = None
+
     def update(self, car_state: dict) -> None:
         now = self._clock()
         speed = float(car_state.get("speed", 0.0))

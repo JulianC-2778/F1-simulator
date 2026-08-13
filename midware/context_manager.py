@@ -59,10 +59,6 @@ _ENGINEER_PERSONA_TAIL = (
     "Only recommend a pit stop for fuel or damage issues. If the only detected issue is about track "
     "position, speed, rpm, or gear, that is a driving correction, not something a pit stop fixes -- say "
     "so plainly (e.g. 'get back on track') instead of recommending a pit. "
-    "If a 'Top priority' line is given below and the question is general or open-ended (e.g. asking how "
-    "things are going, what to watch out for, or what to focus on), lead your answer with it. For a "
-    "specific factual question (e.g. asking about fuel, speed, or a particular system), just answer what "
-    "was asked -- don't force the top priority in if it isn't relevant to that question. "
     "If a question has nothing to do with the car, the race, or the data provided, deprioritize it "
     "-- answer it last and briefly, or skip it if it doesn't matter. Never pad, ramble, or repeat yourself. "
     "Always answer in English."
@@ -210,30 +206,6 @@ def format_car_state(car_state: dict) -> str:
             f"estimated laps of fuel left = {laps_left_text}, "
             f"estimated laps until critical tire wear = {tire_laps_left_text}, "
             f"estimated laps remaining before a pit is needed = {overall_left_text}"
-        )
-
-    # recent_incidents is optional -- only present when runtime.py's
-    # ask_engineer has run car_state through engineer_events.py's
-    # IncidentTracker and it found at least one incident this session.
-    if car_state.get("recent_incidents"):
-        incidents_text = "; ".join(
-            f"{incident.get('detail', '')} ({_safe_number(incident.get('seconds_ago')):.0f}s ago)"
-            for incident in car_state["recent_incidents"]
-        )
-        lines.append(f"Recent incidents this session: {incidents_text}")
-
-    # priority is optional -- only present when runtime.py's ask_engineer
-    # has run car_state through engineer_priority.py's summarize_priority(),
-    # which synthesizes tire/fuel urgency, off-track state, and recent
-    # incidents into a single top-priority conclusion instead of leaving
-    # that judgment call to the model.
-    if "priority" in car_state:
-        priority = car_state["priority"]
-        reason = priority.get("reason")
-        reason_text = f" ({reason})" if reason else ""
-        lines.append(
-            f"Top priority: {priority.get('top_priority', 'unknown')} "
-            f"[{priority.get('severity', 'low')}]{reason_text}"
         )
 
     return "\n".join(lines)
