@@ -1420,9 +1420,12 @@ def _first_sentence(text: str) -> str:
 _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 
 # Topics car_state (see race_analyzer.CAR_STATE_KEYS) categorically never
-# has -- TORCS's SCR telemetry doesn't report any of these, and neither do
-# this module's own heuristic additions (tire_wear_pct/pit_window).
-# ENGINEER_PERSONA already tells the model "never invent
+# has -- TORCS's SCR telemetry doesn't report any of these -- plus tire
+# wear, which the model used to see as a computed car_state field but no
+# longer does: a teammate found it sometimes trusted that computed number
+# over the raw telemetry facts in the same prompt, so it was pulled out of
+# chat entirely (see GET /api/engineer/tire_estimate) and only shown on the
+# dashboard now. ENGINEER_PERSONA already tells the model "never invent
 # numbers", but that's asking an 8B local model to police itself; answering
 # these deterministically is the same "compute the real answer in Python,
 # don't trust the model to reason about it" pattern tire_strategy.py's
@@ -1430,6 +1433,7 @@ _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 # doesn't match any of these just falls through to the model as normal --
 # this never blocks or changes behavior for anything else.
 _UNAVAILABLE_DATA_TOPICS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bt[iy]re wear\b", re.IGNORECASE), "tire wear"),
     (re.compile(r"\bt[iy]re pressure\b", re.IGNORECASE), "tire pressure"),
     (re.compile(r"\bt[iy]re temp(erature)?\b", re.IGNORECASE), "tire temperature"),
     (re.compile(r"\bbrake temp(erature)?\b", re.IGNORECASE), "brake temperature"),
@@ -1468,18 +1472,6 @@ async def ask_engineer(body: dict):
         telemetry, _rankings = telemetry_store.latest()
         car_state = telemetry_to_car_state(telemetry) if telemetry else empty_car_state()
 
-    # tire_strategy.py: TORCS reports neither tire wear nor a pit
-    # recommendation, so estimate both here (real math in Python, not left
-    # to the model to invent or get wrong) and fold them into car_state so
-    # format_car_state/format_engineer_prompt can hand them to the model
-    # the same way as any other telemetry field.
-    engineer_strategy_tracker.update(car_state)
-    car_state["tire_wear_pct"] = engineer_strategy_tracker.wear_pct
-    car_state["pit_window"] = estimate_pit_window(
-        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
-        engineer_strategy_tracker.wear_per_lap,
-    )
-
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()
     request_id = str(uuid.uuid4())
@@ -1487,10 +1479,22 @@ async def ask_engineer(body: dict):
 
     missing_topic = _unavailable_data_topic(question)
     if missing_topic is not None:
-        answer = (
-            f"I don't have {missing_topic} data -- TORCS doesn't report that. "
-            "I can help with speed, fuel, damage, tire wear estimate, or pit strategy instead."
-        )
+        if missing_topic == "tire wear":
+            # Unlike the other unavailable topics below, this one IS
+            # estimated -- just not in chat anymore (see
+            # GET /api/engineer/tire_estimate's docstring) -- so point at
+            # where it actually lives instead of the generic "I don't have
+            # that data" wording, which would otherwise contradict itself.
+            answer = (
+                "I don't include the tire wear estimate in chat answers -- check the tire wear "
+                "display on the dashboard instead. I can help with speed, fuel, damage, or pit "
+                "strategy here."
+            )
+        else:
+            answer = (
+                f"I don't have {missing_topic} data -- TORCS doesn't report that. "
+                "I can help with speed, fuel, damage, or pit strategy instead."
+            )
         engineer_ctx_mgr.add_assistant(answer)
         await broadcast({"type": "ai_done", "source": "engineer", "content": answer, "request_id": request_id})
         return {
@@ -1725,6 +1729,27 @@ async def set_engineer_alerts_enabled(body: dict):
     if not _engineer_proactive_alerts_enabled:
         _engineer_alert_active_key = None
     return {"ok": True, "enabled": _engineer_proactive_alerts_enabled}
+
+
+@app.get("/api/engineer/tire_estimate")
+async def get_engineer_tire_estimate():
+    """Standalone tire-wear/pit-window display, decoupled from ask_engineer():
+    a teammate found that feeding the computed pit_window conclusion into the
+    model's prompt sometimes misled it into contradicting the raw telemetry
+    facts in the same prompt (it trusted the wrong computed line over the
+    right raw one). ask_engineer() no longer touches engineer_strategy_tracker
+    at all -- this endpoint is now the only thing driving it for the Q&A path,
+    polled independently by the dashboard so the estimate keeps updating off
+    live telemetry regardless of whether the driver is asking anything.
+    """
+    telemetry, _rankings = telemetry_store.latest()
+    car_state = telemetry_to_car_state(telemetry) if telemetry else empty_car_state()
+    engineer_strategy_tracker.update(car_state)
+    pit_window = estimate_pit_window(
+        car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
+        engineer_strategy_tracker.wear_per_lap,
+    )
+    return {"wear_pct": engineer_strategy_tracker.wear_pct, "pit_window": pit_window}
 
 
 @app.get("/api/bot/status")
