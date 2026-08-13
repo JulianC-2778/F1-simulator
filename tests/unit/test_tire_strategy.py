@@ -119,6 +119,39 @@ class RaceStrategyTrackerWearTests(unittest.TestCase):
         tracker.reset()
         self.assertEqual(tracker.wear_pct, 0.0)
 
+    def test_manual_reset_keeps_fuel_per_lap_memory_mid_race_pit_stop(self):
+        # reset() models a mid-race pit stop -- fuel/lap memory must keep
+        # running across it, only wear should zero.
+        clock = ControlledClock()
+        tracker = RaceStrategyTracker(clock=clock)
+        tracker.update(_car_state(lap_time=5.0, fuel=30.0))
+        clock.advance(70.0)
+        tracker.update(_car_state(lap_time=75.0, fuel=28.0))
+        clock.advance(1.0)
+        tracker.update(_car_state(lap_time=1.0, fuel=27.2))  # new lap -- seeds fuel_per_lap
+        self.assertIsNotNone(tracker.fuel_per_lap)
+
+        tracker.reset()
+        self.assertIsNotNone(tracker.fuel_per_lap)
+
+    def test_full_reset_clears_wear_and_fuel_lap_memory(self):
+        # full_reset() models a brand-new session -- unlike reset(), it
+        # clears fuel-per-lap/wear-per-lap memory too.
+        clock = ControlledClock()
+        tracker = RaceStrategyTracker(clock=clock)
+        tracker.update(_car_state(lap_time=5.0, fuel=30.0))
+        clock.advance(70.0)
+        tracker.update(_car_state(lap_time=75.0, fuel=28.0))
+        clock.advance(1.0)
+        tracker.update(_car_state(lap_time=1.0, fuel=27.2))  # new lap -- seeds fuel/wear-per-lap
+        self.assertGreater(tracker.wear_pct, 0.0)
+        self.assertIsNotNone(tracker.fuel_per_lap)
+
+        tracker.full_reset()
+        self.assertEqual(tracker.wear_pct, 0.0)
+        self.assertIsNone(tracker.fuel_per_lap)
+        self.assertIsNone(tracker.wear_per_lap)
+
 
 class RaceStrategyTrackerFuelPerLapTests(unittest.TestCase):
     def test_fuel_per_lap_is_unknown_until_a_lap_boundary_is_seen(self):
