@@ -91,10 +91,15 @@ class UnavailableDataTopicDetectionTests(unittest.TestCase):
     def test_match_is_case_insensitive(self):
         self.assertIsNotNone(_unavailable_data_topic("WHAT'S MY TIRE PRESSURE?"))
 
-    def test_tire_wear_question_is_not_flagged(self):
-        # Real, answerable data (tire_wear_pct is computed by tire_strategy.py)
-        # -- must not collide with the "tire pressure"/"tire temperature" patterns.
-        self.assertIsNone(_unavailable_data_topic("how's my tire wear?"))
+    def test_tire_wear_question_is_flagged(self):
+        # Unlike tire pressure/temperature (never available at all), tire
+        # wear IS estimated by tire_strategy.py -- just no longer surfaced
+        # through chat (see GET /api/engineer/tire_estimate's docstring in
+        # runtime.py for why), so this is flagged too, distinctly.
+        self.assertEqual(_unavailable_data_topic("how's my tire wear?"), "tire wear")
+
+    def test_british_spelling_tyre_wear_is_also_flagged(self):
+        self.assertEqual(_unavailable_data_topic("what's my tyre wear?"), "tire wear")
 
     def test_plain_pit_strategy_question_is_not_flagged(self):
         self.assertIsNone(_unavailable_data_topic("should I pit now?"))
