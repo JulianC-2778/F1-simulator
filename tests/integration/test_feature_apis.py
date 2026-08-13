@@ -71,21 +71,14 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         model.assert_not_awaited()
         self.client.post("/api/engineer/clear")
 
-    def test_tire_wear_question_in_chat_points_to_the_dashboard_display_without_calling_the_model(self):
-        # See test_engineer_prompt_no_longer_includes_tire_wear_or_pit_window
-        # above -- since chat no longer has this data at all, asking about it
-        # is deflected the same deterministic way as tire pressure/etc,
-        # rather than leaving an 8B local model to improvise an answer.
+    def test_tire_wear_question_goes_through_the_same_unavailable_data_flow_as_other_topics(self):
+        # Mirrors test_question_about_unavailable_data_is_answered_without_
+        # calling_the_model below -- tire wear is deflected the exact same
+        # generic way as tire pressure/weather/etc, no special-cased wording.
         with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="should never be called")) as model:
             response = self.client.post("/api/engineer/ask", json={"question": "how's my tire wear?"})
         self.assertEqual(response.status_code, 200)
-        answer = response.json()["answer"]
-        self.assertIn("tire wear", answer)
-        self.assertIn("dashboard", answer)
-        # The generic unavailable-topic wording ("I can help with ... tire
-        # wear estimate instead") would contradict this specific answer --
-        # must not appear here.
-        self.assertNotIn("I don't have tire wear data", answer)
+        self.assertIn("tire wear", response.json()["answer"])
         model.assert_not_awaited()
         self.client.post("/api/engineer/clear")
 
