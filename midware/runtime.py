@@ -43,8 +43,6 @@ from telemetry_common import extract_json_object
 from commentary_engine import EVENT_PRIORITIES, CommentaryConfig, CommentaryDecision, CommentaryEngine
 from context_manager import ContextConfig, ContextManager, ENGINEER_PERSONA, ENGINEER_PERSONA_CONCISE
 from tire_strategy import RaceStrategyTracker, estimate_pit_window
-from engineer_events import IncidentTracker
-from engineer_priority import summarize_priority
 from midware.latency_log import LatencyLog
 from midware.shared.feature_registry import feature_specs
 from midware.shared.model_gateway import OpenAICompatibleGateway
@@ -129,15 +127,13 @@ _ENGINEER_STYLES = {"professional": ENGINEER_PERSONA, "concise": ENGINEER_PERSON
 _engineer_style = "professional"
 _engineer_style_undo_snapshot: dict | None = None  # see POST /api/engineer/style/undo
 engineer_strategy_tracker = RaceStrategyTracker()
-engineer_incident_tracker = IncidentTracker()
 
 # -- Proactive engineer radio alerts -- opt-in (off by default) so the
 # engineer stays silent-until-asked unless the driver explicitly turns this
 # on; see POST /api/engineer/alerts. _engineer_alert_active_key tracks which
-# top_priority we last alerted for, edge-triggered the same way
-# engineer_events.py's off-track detection is: fires once when severity
-# becomes "high", stays quiet while it remains that same priority, and
-# re-arms once severity drops back down.
+# alert signal we last alerted for, edge-triggered: fires once a signal
+# (off track, or a critical pit window) appears, stays quiet while it's the
+# same one, and re-arms once it clears.
 _engineer_proactive_alerts_enabled = False
 _engineer_alert_active_key: str | None = None
 
@@ -858,37 +854,64 @@ async def _auto_commentary_loop():
 # enSpeakKokoro playback functions themselves.
 _ALERT_CATEGORY_PREFIX = {"physical": "⚠️", "strategic": "\U0001f527"}
 
+# race_analyzer.analyze_car_state()'s labels for "car is currently off track
+# or right at the edge" -- a driving correction, not a pit-stop matter, per
+# ENGINEER_PERSONA_TAIL's rule in context_manager.py. This beats a critical
+# pit window below because it's an immediate physical situation, not a
+# strategic one.
+_OFF_TRACK_PROBLEM_LABELS = {"off track", "near track edge"}
 
-def _next_engineer_alert(priority: dict, active_key: str | None) -> tuple[str | None, str | None]:
-    """Pure decision: given the current priority conclusion and what we last
+
+def _compute_alert_signal(car_state: dict, pit_window: dict) -> dict | None:
+    """Pure decision: is there currently a high-severity situation worth a
+    proactive alert? Off-track beats a critical pit window because it's an
+    immediate physical danger, not a strategic decision -- same physical >
+    strategic ordering the persona itself uses. Returns None when nothing
+    rises to alert level.
+    """
+    problems = car_state.get("problems") or []
+    if any(label in _OFF_TRACK_PROBLEM_LABELS for label in problems):
+        return {
+            "key": "get back on track",
+            "reason": "car is currently off track / near the edge",
+            "category": "physical",
+        }
+    if pit_window.get("urgency") == "high":
+        return {
+            "key": "pit now",
+            "reason": ", ".join(pit_window.get("reasons") or []) or "pit window",
+            "category": "strategic",
+        }
+    return None
+
+
+def _next_engineer_alert(signal: dict | None, active_key: str | None) -> tuple[str | None, str | None]:
+    """Pure decision: given the current alert signal and what we last
     alerted for, decide whether to fire a new proactive alert now.
 
-    Returns (alert_text_or_None, new_active_key). Edge-triggered the same
-    way engineer_events.py's off-track detection is: fires once when
-    severity becomes "high", stays quiet while it remains that same
-    priority, and re-arms once severity drops back down (see
-    _engineer_alert_active_key's docstring above).
+    Returns (alert_text_or_None, new_active_key). Edge-triggered: fires once
+    a signal appears, stays quiet while it's the same one, and re-arms once
+    it clears (see _engineer_alert_active_key's docstring above).
     """
-    if priority["severity"] != "high":
+    if signal is None:
         return None, None
-    if priority["top_priority"] == active_key:
+    if signal["key"] == active_key:
         return None, active_key
-    prefix = _ALERT_CATEGORY_PREFIX.get(priority.get("category"), "")
-    body = f"{priority['top_priority'].capitalize()} -- {priority['reason']}".rstrip(" -")
+    prefix = _ALERT_CATEGORY_PREFIX.get(signal.get("category"), "")
+    body = f"{signal['key'].capitalize()} -- {signal['reason']}".rstrip(" -")
     text = f"{prefix} {body}".strip()
-    return text, priority["top_priority"]
+    return text, signal["key"]
 
 
 async def _auto_engineer_alert_loop():
     """Proactive radio alerts: unlike ask_engineer(), which only updates the
-    tire/incident trackers when the driver actually asks something, this
-    polls telemetry on its own so the engineer can speak up unprompted for
+    tire tracker when the driver actually asks something, this polls
+    telemetry on its own so the engineer can speak up unprompted for
     high-severity situations (currently off track, or a critical pit
     window) -- opt-in via POST /api/engineer/alerts, off by default so it
-    never talks unless explicitly turned on. Reuses estimate_pit_window(),
-    engineer_incident_tracker, and summarize_priority() exactly as
-    ask_engineer() does -- same signals, same thresholds, no separate
-    "alert" logic to keep in sync with the Q&A path.
+    never talks unless explicitly turned on. Reuses estimate_pit_window()
+    exactly as ask_engineer() does -- same signals, same thresholds, no
+    separate "alert" logic to keep in sync with the Q&A path.
     """
     global _engineer_alert_active_key
     while True:
@@ -909,16 +932,14 @@ async def _auto_engineer_alert_loop():
                 car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
                 engineer_strategy_tracker.wear_per_lap,
             )
-            engineer_incident_tracker.update(car_state)
-            recent_incidents = engineer_incident_tracker.recent_events
-            priority = summarize_priority(car_state, car_state["pit_window"], recent_incidents)
+            signal = _compute_alert_signal(car_state, car_state["pit_window"])
 
-            alert_text, _engineer_alert_active_key = _next_engineer_alert(priority, _engineer_alert_active_key)
+            alert_text, _engineer_alert_active_key = _next_engineer_alert(signal, _engineer_alert_active_key)
             if alert_text is None:
                 continue
 
             engineer_ctx_mgr.add_assistant(alert_text)
-            await broadcast({"type": "engineer_alert", "content": alert_text, "priority": priority})
+            await broadcast({"type": "engineer_alert", "content": alert_text})
         except Exception as e:
             log.warning(f"proactive engineer alert failed: {e}")
 
@@ -1400,8 +1421,8 @@ _EXPLAIN_REQUEST_RE = re.compile(r"\b(why|explain|reason)\b", re.IGNORECASE)
 
 # Topics car_state (see race_analyzer.CAR_STATE_KEYS) categorically never
 # has -- TORCS's SCR telemetry doesn't report any of these, and neither do
-# this module's own heuristic additions (tire_wear_pct/pit_window/
-# recent_incidents). ENGINEER_PERSONA already tells the model "never invent
+# this module's own heuristic additions (tire_wear_pct/pit_window).
+# ENGINEER_PERSONA already tells the model "never invent
 # numbers", but that's asking an 8B local model to police itself; answering
 # these deterministically is the same "compute the real answer in Python,
 # don't trust the model to reason about it" pattern tire_strategy.py's
@@ -1458,22 +1479,6 @@ async def ask_engineer(body: dict):
         car_state, engineer_strategy_tracker.wear_pct, engineer_strategy_tracker.fuel_per_lap,
         engineer_strategy_tracker.wear_per_lap,
     )
-
-    # engineer_events.py: car_state is only ever "this instant" (see
-    # car_state_source.py), so without this a driver asking "what just
-    # happened to me?" a few seconds after an incident gets nothing --
-    # by the time the question arrives the car may look normal again.
-    engineer_incident_tracker.update(car_state)
-    recent_incidents = engineer_incident_tracker.recent_events
-    if recent_incidents:
-        car_state["recent_incidents"] = recent_incidents
-
-    # engineer_priority.py: synthesizes the above (plus the off-track/
-    # near-edge problem labels race_analyzer.py already computed) into a
-    # single top-priority conclusion, instead of leaving an 8B local model
-    # to weigh tire/fuel urgency against a fresh incident against currently
-    # being off track on its own.
-    car_state["priority"] = summarize_priority(car_state, car_state["pit_window"], recent_incidents)
 
     engineer_ctx_mgr.add_user(engineer_ctx_mgr.format_engineer_prompt(car_state, question))
     messages = engineer_ctx_mgr.build_messages()
@@ -1596,7 +1601,14 @@ async def export_engineer_history(fmt: str = "markdown"):
 
 @app.post("/api/engineer/clear")
 async def clear_engineer_history():
+    global _engineer_alert_active_key
     engineer_ctx_mgr.clear_history()
+    # Also forget tire-wear/fuel/lap memory, not just the chat transcript --
+    # otherwise a "cleared" session still answers using tracker state left
+    # over from whatever was asked before (see RaceStrategyTracker.full_reset()'s
+    # docstring in tire_strategy.py).
+    engineer_strategy_tracker.full_reset()
+    _engineer_alert_active_key = None
     return {"ok": True, "stats": engineer_ctx_mgr.stats()}
 
 
