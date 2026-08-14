@@ -1,0 +1,2 @@
+run_id,duration_s,granite_enabled,control_frames_processed,strategy_requests,granite_failures,safety_filter_interventions,safety_filter_pit_count,safety_filter_defend_count,safety_filter_block_count,safety_filter_normal_cap_count,collisions,off_track_excursions,recoveries,unhandled_exceptions,crashed,cpu_avg_pct,cpu_peak_pct,mem_initial_mb,mem_final_mb,mem_peak_mb
+RB01,1200.0,true,59800,80,2,6,1,0,4,1,0,2,2,0,false,22.0,48.0,180.0,205.0,220.0

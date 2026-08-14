@@ -1,0 +1,10 @@
+session,decision_id,timestamp_s,raw_granite_strategy,filtered_strategy,source
+SA1,DEC0001,10.200,NORMAL,NORMAL,granite_passthrough
+SA1,DEC0002,42.500,ATTACK,NORMAL,safety_filter
+SA1,DEC0003,58.900,ATTACK,PIT,safety_filter
+SA1,DEC0004,90.300,ATTACK,DEFEND,safety_filter
+SA1,DEC0005,121.000,NORMAL,BLOCK,safety_filter
+SA1,DEC0006,140.000,ATTACK,ATTACK,granite_passthrough
+SA2,DEC0007,15.400,ATTACK,ATTACK,granite_passthrough
+SA2,DEC0008,30.000,NORMAL,NORMAL,granite_passthrough
+SA2,DEC0009,80.200,NORMAL,NORMAL,granite_passthrough

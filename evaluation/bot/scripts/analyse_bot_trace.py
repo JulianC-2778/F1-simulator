@@ -47,29 +47,16 @@ if not states:
 # were active driving time. Detect those gaps (state samples are on a ~2s
 # interval; anything much larger than that is a restart gap, not a sampling
 # stall) and split into contiguous run segments instead.
-#
-# Traces recorded from 2026-08-12 onward stamp every record with the
-# recording process's own `session` id, so the seam between runs is stated
-# rather than inferred. The spacing heuristic is kept as the fallback for
-# traces captured before that field existed -- it is a good heuristic, but it
-# cannot tell a restart from a long stall, and it would also split a single
-# run that hiccuped for 15 s.
 GAP_THRESHOLD_S = 15.0
-have_sessions = all("session" in s for s in states)
 segments = []
 seg_start_idx = 0
 for i in range(1, len(states)):
-    if have_sessions:
-        new_segment = states[i]["session"] != states[i - 1]["session"]
-    else:
-        new_segment = states[i]["t"] - states[i - 1]["t"] > GAP_THRESHOLD_S
-    if new_segment:
+    if states[i]["t"] - states[i - 1]["t"] > GAP_THRESHOLD_S:
         segments.append((seg_start_idx, i - 1))
         seg_start_idx = i
 segments.append((seg_start_idx, len(states) - 1))
 
-how = "by session id" if have_sessions else f"by {GAP_THRESHOLD_S}s spacing heuristic"
-print(f"\nDetected {len(segments)} contiguous run segment(s) ({how}):")
+print(f"\nDetected {len(segments)} contiguous run segment(s) (gap threshold {GAP_THRESHOLD_S}s):")
 active_duration_s = 0.0
 for si, (a, b) in enumerate(segments):
     seg_t0, seg_t1 = states[a]["t"], states[b]["t"]

@@ -1,0 +1,2 @@
+session,decision_id,timestamp_s,raw_granite_strategy,filtered_strategy,source
+SA1,DEC0001,42.500,ATTACK,NORMAL,safety_filter

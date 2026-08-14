@@ -1,0 +1,4 @@
+run_id,duration_s,granite_enabled,control_frames_processed,strategy_requests,granite_failures,safety_filter_interventions,safety_filter_pit_count,safety_filter_defend_count,safety_filter_block_count,safety_filter_normal_cap_count,collisions,off_track_excursions,recoveries,unhandled_exceptions,crashed,cpu_avg_pct,cpu_peak_pct,mem_initial_mb,mem_final_mb,mem_peak_mb
+RB01,1200.0,true,59800,80,2,6,1,0,4,1,0,2,2,0,false,22.0,48.0,180.0,205.0,220.0
+RB02,1200.0,true,59750,79,1,4,0,1,2,1,1,1,1,0,false,23.5,51.0,182.0,210.0,228.0
+RB03,1200.0,false,59900,0,0,3,1,1,0,1,0,3,3,0,false,15.0,30.0,150.0,160.0,165.0

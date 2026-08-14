@@ -1,0 +1,2 @@
+session,reading_id,timestamp_s,fuel_L,damage,rear_gap_m,expected_strategy,annotator
+SA1,GT0001,42.300,12.100,0.000,35.000,NORMAL,A1

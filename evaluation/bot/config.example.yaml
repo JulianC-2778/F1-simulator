@@ -1,0 +1,30 @@
+# AI Driving Bot experiment metadata template (bot_test_plan.md section 8,
+# mirroring evaluation/commentary/config.example.yaml). Copy to config.yaml
+# (gitignored) before a real experiment and fill in every field -- do not
+# commit the filled-in copy if it contains machine-specific paths. No
+# secrets belong in this file; the middleware's own API key lives in
+# midware runtime config, never here.
+
+git_commit: ""                 # `git rev-parse HEAD` at experiment time
+test_timestamp_utc: ""         # ISO 8601, e.g. 2026-08-14T16:00:00Z
+torcs_version: ""
+middleware_version: ""         # git tag/commit if different from git_commit
+granite_model: ""              # e.g. granite-4.1-8b-instruct
+granite_quantisation: ""       # e.g. Q4_K_M, or "none" for full precision
+lm_studio_version: ""
+operating_system: ""
+cpu: ""
+gpu: ""
+ram_gb: null
+bot_strategy_interval_s: null  # ai_bot.py's _STRATEGY_INTERVAL at experiment time
+                                # (mode-dependent since PRs #38-40: 5.0 legacy,
+                                # 10.0 concise, 15.0 reasoning -- see bot_test_matrix.md 9)
+granite_timeout_s: null        # ai_bot.py's _GRANITE_TIMEOUT (also mode-dependent, see above)
+prompt_mode: ""                # legacy | concise | bare | reasoning (TORCS_BOT_PROMPT)
+strategy_confirm: null         # ai_bot.py's _STRATEGY_CONFIRM (debounce threshold)
+granite_enabled: null          # bool -- rules-only vs Granite-assisted driving; keep
+                                # separate in every report, per bot_test_plan.md 8's
+                                # explicit "两者的驾驶质量指标不能混在一起统计"
+tracks: []
+opponents: null
+strategy_match_tolerance_s: 2.0  # match_strategy_decisions.py --tolerance, keep in sync

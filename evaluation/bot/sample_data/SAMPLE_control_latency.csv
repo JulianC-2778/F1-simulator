@@ -1,0 +1,10 @@
+session,record_id,kind,u0_scr_state_received,u1_control_computed,u2_control_sent,g0_state_snapshot,g1_first_byte,g2_response_complete,g3_strategy_applied,failed,failure_reason
+SC1,F00001,frame,1000.000000,1000.001800,1000.002100,,,,,false,
+SC1,F00002,frame,1000.020000,1000.021700,1000.022000,,,,,false,
+SC1,F00003,frame,1000.040000,1000.041600,1000.041900,,,,,false,
+SC1,F00004,frame,1000.060000,1000.062400,1000.062800,,,,,false,
+SC1,F00005,frame,1000.080000,1000.081500,1000.081800,,,,,false,
+SC1,F00006,frame,1000.100000,,,,,,,true,control_exception
+SC1,G00001,granite_rtt,,,,1000.000000,,1002.150000,1002.151000,false,
+SC1,G00002,granite_rtt,,,,1015.000000,,1024.800000,1024.801000,false,
+SC1,G00003,granite_rtt,,,,1030.000000,,,,true,granite_timeout
