@@ -1,0 +1,3 @@
+session,record_id,kind,u0_scr_state_received,u1_control_computed,u2_control_sent,g0_state_snapshot,g1_first_byte,g2_response_complete,g3_strategy_applied,failed,failure_reason
+SC1,F00001,frame,1000.000000,1000.002100,1000.002400,,,,,false,
+SC1,G00001,granite_rtt,,,,1000.000000,,1002.150000,1002.151000,false,

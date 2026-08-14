@@ -234,13 +234,26 @@ docs/
 
 ### 5.1 设计
 
+> **人工驾驶场景（下面第一条）已于 2026-08-14 被 operator 明确取消（descoped）**，原话："人工跑
+> 也删除掉，我们bot人工跑没意义，我们人工和bot差距太大"——人的驾驶风格/水平和 bot 的差距大到
+> 用人工驾驶场景去标注"此时刻理想策略应为 X"，再拿这个标注去对比 `safety_filter`/`GraniteStrategist`
+> 在**同一辆车、同一驾驶行为**下会怎么判断，这个前提本身不成立：策略层是根据 bot 自己制造的
+> 车况（自己踩出来的低燃油、自己撞出来的损伤）做决策的，人开出来的车况和 bot 会开出来的车况
+> 分布不一样，人工标注的"理想策略"不能代表 bot 实际会遇到、需要处理的那类局面。
+>
+> **结果**：工作包 B 的 P/R/F1 式策略准确率评测（本节原本的"核心"）不再执行；`evaluation/bot/`
+> 里 `ground_truth_strategy`/`detected_strategy` 两个 CSV schema 和 `match_strategy_decisions.py`
+> 仍然保留在代码库里（工具本身没问题，也仍有 `SAMPLE_*.csv` 演示数据跑通整条链路），只是不再
+> 有真实人工标注数据去填它们，不算未完成的待办。工作包 B 现在**只**通过下面的 bot 自驾场景
+> （客观驾驶质量指标，见 5.3）验证，5 次真实会话（见 `docs/bot_test_matrix.md`）都是这一类。
+
 - 2 条不同赛道 × 每条 3 个 session = 6 个，每次 8–15 分钟（比 commentary 略长，因为要跑完整圈才
-  能统计圈速/完赛率），人工驾驶 **或** bot 自驾均可，但两类场景要分开报告：
-  - **人工驾驶场景**（复用 commentary 工作包 B 的驾驶方式）：主动制造低燃油、高损伤、被追尾等
+  能统计圈速/完赛率）：
+  - ~~**人工驾驶场景**（复用 commentary 工作包 B 的驾驶方式）：主动制造低燃油、高损伤、被追尾等
     情况，人工标注"此时刻理想策略应为 X"，与 `safety_filter`/`GraniteStrategist` 实际给出的策略
-    比较——这是本工作包的核心，对应 commentary 的事件检测 P/R/F1。
+    比较——这是本工作包的核心，对应 commentary 的事件检测 P/R/F1。~~ （descoped，见上）
   - **bot 自驾场景**（`python ai_bot.py --bot [--granite]`）：不需要人工标注策略，改为统计客观
-    驾驶质量指标（见 5.3）。
+    驾驶质量指标（见 5.3）——**这是工作包 B 现在唯一执行的验证方式**。
 
 ### 5.2 CSV schema（策略准确率部分，对应 commentary 的 ground_truth/detected_events）
 
@@ -325,7 +338,13 @@ debounce_overhead   = g3 - g2   # 通常接近 0，除非卡在候选计数阶�
 - 控制环延迟：**不需要真实 TORCS**——可以用工作包 A 里已经搭好的 fake `ScrClient`/直接函数调用
   循环跑 1000+ 帧，测量纯计算耗时分布（`u1-u0`），这是纯 CPU 开销，不受网络影响，适合放进
   L2 自动化集成测试而不是"人工实验"，与 commentary 的延迟测试（必须真实驱动 Granite）性质不同；
-  真实 UDP 收发的 `u2-u1`/`frame_latency` 仍需要一次真实/仿真的 `scr_server` 环境验证。
+  已实现并通过，见 `tests/bot/test_control_loop_latency.py`（median ≤5ms、P95 ≤15ms，均达标）。
+  ~~真实 UDP 收发的 `u2-u1`/`frame_latency` 仍需要一次真实/仿真的 `scr_server` 环境验证。~~
+  **此项已于 2026-08-14 被 operator 明确取消（descoped）**：`send_control()` 只是本机一次同步的
+  UDP `socket.send()` 调用，不是网络往返等待——真正决定"这一帧能不能跟上 `scr_server` 20ms 步长"
+  的瓶颈几乎全部在 `u1-u0`（已验证达标）；`u2-u1` 在这套 WSL2 本机回环网络里量出来的数字既不能
+  代表真实部署环境，也不会改变任何决策，operator 判断这是"设计文档照抄了一个字段，但对这个
+  场景没有实际意义"的一类。
 - Granite RTT：30 次独立策略请求，固定配置（模型、量化、`temperature`、`max_tokens=80`），
   与 commentary 工作包 C 相同的统计口径（count/min/mean/median/stdev/P95/max/failure count）。
 
@@ -347,7 +366,21 @@ debounce_overhead   = g3 - g2   # 通常接近 0，除非卡在候选计数阶�
 
 ## 7. 工作包 D：稳定性与故障恢复
 
-### 7.1 持续运行实验
+### 7.1 持续运行实验 —— **2026-08-14 已被 operator 明确取消（descoped）**
+
+> **取消理由**（operator 原话："删除掉耐久跑，我认为8圈18分钟和20分钟差别不大"）：
+> `docs/bot_real_experiment_20260814g.md` 等 5 次真实会话已经跑出 14.3–17.4
+> 分钟／8 圈的连续驾驶数据，operator 判断这个时长和下面设计的 20 分钟在"纯粹拉长时长"
+> 这一个维度上价值差异不大，不值得再单独跑。**但这条设计原本不只是"跑更久"**——它还要求
+> 在跑的过程中主动注入 midware 重启、Granite/LM Studio 中断恢复、TORCS 侧短暂无响应
+> 三类故障，这部分和 §7.2 的 RB-01..RB-10（每个故障单独、短时间验证一次）是不同的验证
+> 方式："故障发生在一个已经稳定运行了十几分钟的进程里，会不会因为长时间运行积累的状态
+> （比如内存增长、debounce 计数器）而表现不同"，这个问题在单独的 RB-0x 试验和 5 次已收集
+> 的正常会话里都没有被回答。Operator 已知晓这个差异并选择接受这个已知空白，不再要求补，
+> 记录于此以免以后误以为"耐久跑对应的所有验证目的都已被 5 次正常会话覆盖"。
+
+<details>
+<summary>原始设计（保留存档，不再是待办）</summary>
 
 3 × 20 分钟（比 commentary 的 30 分钟略短，因为一场赛程本身有限，可用多个 session 拼够时长）
 bot 自驾（`--bot --granite`），每次包含：
@@ -362,6 +395,8 @@ bot 自驾（`--bot --granite`），每次包含：
 safety_filter interventions（按类型计数，例如 PIT 强制触发了几次）、collisions、
 off-track excursions、recoveries、unhandled exceptions/crashes、CPU/内存峰值。
 
+</details>
+
 ### 7.2 故障注入（对应 commentary 的 RT-01..RT-12，改造成 bot 语境）
 
 | ID | Fault | 预期行为 |
@@ -374,7 +409,7 @@ off-track excursions、recoveries、unhandled exceptions/crashes、CPU/内存峰
 | RB-06 | `receive_state()` 持续超时（返回 `{}`，服务器仍在但数据没来） | **不重发上一次控制包**（这是 L2393-2398 注释里明确记录过的真实 bug 教训，必须有回归测试锁死），继续等待而不是崩溃 |
 | RB-07 | 非法/畸形 SCR 状态包 | `parse_scr_state` 返回 `None` 或安全丢弃，不让异常向上传播炸穿 `run_bot` 主循环 |
 | RB-08 | Granite 返回畸形 JSON / 编造出 `_ALL_STRATEGIES` 之外的策略名 | `_parse_strategy_response` 回落 `NORMAL`；即便回落，`safety_filter` 仍是最后一道关卡（§4.7 已覆盖，此处是端到端真实调用路径的复核） |
-| RB-09 | 高频策略切换（构造持续在阈值边界震荡的 state） | `_next_debounced_strategy` 按 `_STRATEGY_CONFIRM` 门槛工作，不会每帧都切换导致车辆行为抖动；`LatestTaskRunner` 保证不会堆积未完成的 Granite 请求 |
+| RB-09 | 高频策略切换（构造持续在阈值边界震荡的 state） | ~~`_next_debounced_strategy` 按 `_STRATEGY_CONFIRM` 门槛工作，不会每帧都切换导致车辆行为抖动~~ **此预期已过期**：`_STRATEGY_CONFIRM` 已从 2 改为 1（见 `ai_bot.py` L3124 注释，"立即响应"换掉了"防抖"），2026-08-14 真实故障注入（`docs/bot_fault_injection_20260814.md` §3）确认策略现在确实每次决策都会立即翻转，这是当前代码的预期行为，不是回归；`LatestTaskRunner` 保证不会堆积未完成的 Granite 请求——这一条仍然成立，同一次试验已验证（`active:0, queued:0`） |
 | RB-10 | `bot` feature 被禁用 | `/api/bot/status`/`/api/bot/strategy` 返回 409；`ai_bot.py` 侧应能识别这个响应并合理降级（若当前代码没有对 409 的专门处理，记为已确认缺口而不是编造通过） |
 
 恢复时间定义、"故障不适用时如实说明"的规则、5 次重复/故障的要求，均与
@@ -421,9 +456,9 @@ off-track excursions、recoveries、unhandled exceptions/crashes、CPU/内存峰
 - [x] 完成 §4.7 两个强制回归测试（safety_filter 压制 Granite；BLOCK 不可被模型直接触发）
 - [ ] 建立 `evaluation/bot/` 目录、CSV schema、匹配脚本
 - [ ] 实现控制环延迟埋点（无需真实 TORCS 即可测的部分先做）
-- [ ] 人工执行工作包 B（真实驾驶场景，策略准确率）
+- [x] 人工执行工作包 B 的 bot 自驾场景（真实驾驶场景，客观驾驶质量指标；人工驾驶/策略准确率子项已于 2026-08-14 descoped，见 §5.1）——5 次真实会话，见 `docs/bot_test_matrix.md`
 - [ ] 人工执行工作包 C 的 Granite RTT 部分（需要真实 LM Studio）
-- [ ] 人工执行工作包 D（endurance + RB-01..RB-10 故障注入）
+- [x] 人工执行工作包 D 的 RB-01..RB-10 故障注入（endurance 部分已于 2026-08-14 descoped，见 §7.1）——**全部十个 RB ID 均已跑满设计要求的 5 次真实试验，全部通过**（2026-08-12 起步 + 2026-08-14 两轮补齐），见 `docs/bot_fault_injection_20260812.md` / `docs/bot_fault_injection_20260814.md` / `docs/bot_fault_injection_20260814b.md`
 - [ ] 生成 `docs/bot_test_matrix.md`，回填第 2 节代码行号并记录实际状态
 - [ ] 更新 `docs/testing-plan.md`：把 Bot 的新自动化测试计入 L1/L2，把人工实验计入 L4/L5 索引
 

@@ -1,0 +1,7 @@
+trial_id,fault_id,fault_injected_at_s,service_restored_at_s,first_success_after_restore_at_s,recovered,crashed,notes
+T01,RB-01,120.000,150.000,155.200,true,false,granite/midware made unreachable then restored
+T02,RB-01,400.000,430.000,436.800,true,false,granite/midware made unreachable then restored
+T03,RB-03,120.000,140.000,142.100,true,false,midware process killed then restarted
+T04,RB-03,500.000,520.000,,false,true,"midware restart raced with a status POST, ai_bot.py crashed"
+T05,RB-05,300.000,,,true,false,"scr_server connection dropped, run_bot printed Race ended and exited cleanly"
+T06,RB-06,90.000,110.000,,true,false,"receive_state() timed out repeatedly, last control not resent, resumed once data returned"

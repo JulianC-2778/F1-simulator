@@ -1,0 +1,2 @@
+session,track,granite_enabled,laps_target,laps_completed,completed,distance_km,off_track_excursions,off_track_recoveries,collisions,lap_time_mean_s,lap_time_stdev_s,strategy_switches,notes
+SB1,g-track-2,true,3,3,true,9.450,1,1,0,98.400,1.200,4,Example row - replace with real session results
