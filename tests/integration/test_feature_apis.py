@@ -71,6 +71,39 @@ class FeatureApiIntegrationTests(unittest.TestCase):
         model.assert_not_awaited()
         self.client.post("/api/engineer/clear")
 
+    def test_alert_log_endpoint_starts_empty_and_reflects_new_alerts(self):
+        runtime._engineer_alert_log.clear()
+        self.assertEqual(self.client.get("/api/engineer/alert_log").json(), {"alerts": []})
+        runtime._engineer_alert_log.append({"text": "Get back on track -- off track", "at": 123.0})
+        data = self.client.get("/api/engineer/alert_log").json()
+        self.assertEqual(len(data["alerts"]), 1)
+        self.assertEqual(data["alerts"][0]["text"], "Get back on track -- off track")
+        runtime._engineer_alert_log.clear()
+
+    def test_alert_log_is_not_capped(self):
+        # How many alert-worthy situations happen in one race is
+        # unpredictable -- the log keeps everything until /api/engineer/clear,
+        # the dashboard only ever displays the latest one on its own.
+        runtime._engineer_alert_log.clear()
+        for i in range(25):
+            runtime._engineer_alert_log.append({"text": f"alert {i}", "at": float(i)})
+        data = self.client.get("/api/engineer/alert_log").json()
+        self.assertEqual(len(data["alerts"]), 25)
+        self.assertEqual(data["alerts"][0]["text"], "alert 0")
+        runtime._engineer_alert_log.clear()
+
+    def test_clear_resets_the_alert_log_but_not_via_engineer_ctx_mgr(self):
+        # Deliberately separate from engineer_ctx_mgr's Q&A history -- see
+        # _engineer_alert_log's module-level docstring in runtime.py -- so
+        # asking a question must never add anything to it, only the
+        # (untestable-in-isolation) alert loop or a direct append should.
+        runtime._engineer_alert_log.append({"text": "Pit now -- tires", "at": 1.0})
+        with patch.object(runtime, "call_model_for_feature", AsyncMock(return_value="Yes.")):
+            self.client.post("/api/engineer/ask", json={"question": "should I push now?"})
+        self.assertEqual(len(runtime._engineer_alert_log), 1)
+        self.client.post("/api/engineer/clear")
+        self.assertEqual(runtime._engineer_alert_log, [])
+
     def test_tire_wear_question_goes_through_the_same_unavailable_data_flow_as_other_topics(self):
         # Mirrors test_question_about_unavailable_data_is_answered_without_
         # calling_the_model below -- tire wear is deflected the exact same
