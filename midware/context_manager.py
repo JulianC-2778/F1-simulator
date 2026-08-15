@@ -234,7 +234,8 @@ class ContextConfig:
         "React to race events — battles, overtakes, mistakes, dramatic moments — in one short, punchy sentence. "
         "Refer to cars only by their given names: the player's car is \"player\"; other cars use the exact name in the data (e.g. car1, car2). Never invent human driver names. "
         "ALL CAPS only for shock moments. Never mention raw numbers like speed or RPM. "
-        "Do not repeat the previous line."
+        "Do not repeat the previous line. "
+        "Always answer in English."
     )
 
     # ---- 数据字段过滤（选择哪些 TORCS 字段进入 prompt）----
@@ -346,23 +347,23 @@ class ContextManager:
         把 TORCS CSV 行转成自然语言描述，塞进 user message。
         只包含 config.included_fields 中指定的字段。
         """
-        lines = ["【实时遥测数据】"]
+        lines = ["[Live Telemetry]"]
         field_labels = {
-            "sim_time":      ("比赛时间",    "s"),
-            "racePos":       ("当前名次",    "名"),
-            "lap":           ("当前圈数",    "圈"),
-            "speedX":        ("纵向车速",    "km/h"),
-            "rpm":           ("发动机转速",  "rpm"),
-            "gear":          ("挡位",        ""),
-            "throttle":      ("油门",        "%"),
-            "brake":         ("制动",        "%"),
-            "steer":         ("转向",        ""),
-            "damage":        ("车辆损伤",    ""),
-            "fuel":          ("剩余油量",    "L"),
-            "lastLapTime":   ("上圈用时",    "s"),
-            "curLapTime":    ("本圈用时",    "s"),
-            "trackPos":      ("赛道位置",    ""),
-            "distFromStart": ("距起点距离",  "m"),
+            "sim_time":      ("Race time",     "s"),
+            "racePos":       ("Position",      ""),
+            "lap":           ("Lap",           ""),
+            "speedX":        ("Speed",         "km/h"),
+            "rpm":           ("RPM",           "rpm"),
+            "gear":          ("Gear",          ""),
+            "throttle":      ("Throttle",      "%"),
+            "brake":         ("Brake",         "%"),
+            "steer":         ("Steer",         ""),
+            "damage":        ("Damage",        ""),
+            "fuel":          ("Fuel",          "L"),
+            "lastLapTime":   ("Last lap time",  "s"),
+            "curLapTime":    ("Current lap time", "s"),
+            "trackPos":      ("Track position", ""),
+            "distFromStart": ("Distance from start", "m"),
         }
 
         for key in self.config.included_fields:
@@ -378,11 +379,11 @@ class ContextManager:
             lines.append(f"  {label}: {val}{unit}")
 
         if self.config.include_rankings and rankings:
-            lines.append("\n【全场排名】")
+            lines.append("\n[Full Rankings]")
             for r in rankings:
                 lines.append(
                     f"  P{r.get('race_pos','?')} {r.get('car_name','?')} "
-                    f"— 圈数 {r.get('laps','?')} / 距起点 {r.get('dist_from_start',0):.0f}m"
+                    f"— lap {r.get('laps','?')} / dist from start {r.get('dist_from_start',0):.0f}m"
                 )
 
         lines.append("\nDeliver one short commentary line. Focus on position and drama, not numbers.")
@@ -416,7 +417,7 @@ class ContextManager:
         reason = payload.get("event_reason", "")
         event_time = payload.get("event_time", "?")
         return (
-            f"事件摘要: {event_type} @ {event_time}s; {reason}; "
+            f"Event summary: {event_type} @ {event_time}s; {reason}; "
             f"P{payload.get('race_pos', '?')}, lap {payload.get('lap', '?')}, "
             f"speed {payload.get('speed', '?')} km/h."
         )
