@@ -137,6 +137,21 @@ engineer_strategy_tracker = RaceStrategyTracker()
 _engineer_proactive_alerts_enabled = False
 _engineer_alert_active_key: str | None = None
 
+# Alerts get their own log, deliberately separate from engineer_ctx_mgr's
+# Q&A history: _auto_engineer_alert_loop() ticks on its own schedule and can
+# fire mid-question (while ask_engineer() is awaiting the model), and if
+# both wrote to the same shared history the alert could land between a
+# driver's question and its own answer, corrupting the conversation order.
+# A driver-side cost of keeping it separate: the model won't "remember" a
+# past alert in later chat turns, and it's exported separately from the
+# Q&A transcript -- accepted tradeoff, see GET /api/engineer/alert_log.
+# Deliberately uncapped -- how many alert-worthy situations happen in one
+# race is unpredictable, and a session's worth of small {text, at} dicts is
+# negligible memory either way. The dashboard only ever displays the latest
+# one (see engAppendAlert/engLoadAlertLog in dashboard.html); the full
+# history here is for record-keeping, cleared only by /api/engineer/clear.
+_engineer_alert_log: list[dict] = []
+
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
 # recorder because only one dashboard operator is expected to be recording
@@ -938,7 +953,7 @@ async def _auto_engineer_alert_loop():
             if alert_text is None:
                 continue
 
-            engineer_ctx_mgr.add_assistant(alert_text)
+            _engineer_alert_log.append({"text": alert_text, "at": time.time()})
             await broadcast({"type": "engineer_alert", "content": alert_text})
         except Exception as e:
             log.warning(f"proactive engineer alert failed: {e}")
@@ -1599,7 +1614,15 @@ async def clear_engineer_history():
     # docstring in tire_strategy.py).
     engineer_strategy_tracker.full_reset()
     _engineer_alert_active_key = None
+    _engineer_alert_log.clear()
     return {"ok": True, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.get("/api/engineer/alert_log")
+async def get_engineer_alert_log():
+    """Recent proactive alerts, oldest first -- see _engineer_alert_log's
+    module-level docstring for why this is separate from /api/engineer/history."""
+    return {"alerts": _engineer_alert_log}
 
 
 @app.post("/api/engineer/style")
