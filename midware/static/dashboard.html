@@ -231,19 +231,14 @@
 
   .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); margin-bottom: 10px; }
 
-  /* Engineer tab's collapsible "how to use this page" guide -- deliberately
-     styled as a prominent pill, not a plain .section-title toggle like
-     "Model connection"/"Voice / TTS" below, so it reads as help rather than
-     as another settings section to skip past. */
+  /* Engineer tab's collapsible "instructions" guide -- same plain toggle
+     structure as "Model connection"/"Voice / TTS" below (not a standalone
+     pill), but coloured with --accent instead of .section-title's default
+     --text-faint so it still reads as help worth noticing, not just
+     another settings section to skip past. */
   .eng-help { margin-bottom: 14px; }
-  .eng-help-toggle {
-    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
-    padding: 8px 16px; border-radius: 999px; width: fit-content;
-    background: var(--accent-soft); color: var(--accent);
-    font-weight: 700; font-size: 0.82rem; list-style: none;
-  }
-  .eng-help-toggle::-webkit-details-marker { display: none; }
-  .eng-help-toggle:hover { background: rgba(15, 111, 255, 0.2); }
+  .eng-help-toggle { color: var(--accent); cursor: pointer; }
+  .eng-help-toggle:hover { opacity: 0.8; }
   .eng-help-body {
     margin-top: 10px; padding: 14px 16px; border-radius: var(--radius-sm);
     background: var(--surface-muted); border: 1px solid var(--border);
@@ -266,6 +261,20 @@
   }
   .eng-undo-toast[hidden] { display: none; }
   .eng-undo-toast button { flex-shrink: 0; width: auto; padding: 4px 12px; font-size: 0.8rem; }
+
+  /* Proactive-alert log -- its own small panel, deliberately separate from
+     the Q&A feed (#engFeed) so an alert never shares state with an
+     in-flight question/answer. Amber-tinted so it reads as distinct from
+     a normal AI answer at a glance. */
+  .eng-alert-log {
+    margin: 4px 0 10px; max-height: 140px; overflow-y: auto; border-radius: var(--radius-sm);
+    border: 1px solid rgba(199,133,21,0.25); background: rgba(199,133,21,0.06);
+    padding: 8px 10px; font-size: 0.8rem;
+  }
+  .eng-alert-empty { color: var(--text-faint); font-size: 0.78rem; }
+  .eng-alert-item { padding: 4px 0; border-bottom: 1px dashed rgba(199,133,21,0.25); color: var(--text); }
+  .eng-alert-item:last-child { border-bottom: none; }
+  .eng-alert-time { color: var(--text-faint); font-size: 0.72rem; margin-left: 6px; }
 
   .feed {
     height: 360px; overflow-y: auto; padding: 18px; border-radius: var(--radius-md);
@@ -894,27 +903,9 @@
     <div class="disabled-note" id="note-engineer">Engineer is disabled — flip the switch above to ask questions.</div>
     <div class="grid-2">
       <div class="panel panel-pad">
-        <details class="eng-help">
-          <summary class="eng-help-toggle"><span aria-hidden="true">📖</span> How to use this page</summary>
-          <div class="eng-help-body">
-            <button id="engHelpReadBtn" class="secondary" type="button" style="margin-bottom:10px;width:auto;"><span aria-hidden="true">🔊</span> Read aloud</button>
-            <ul>
-              <li><strong>Ask a question</strong> — type below (e.g. "How are the tyres holding up?") and press Send or Enter.</li>
-              <li><strong><span aria-hidden="true">🎤</span> Voice input</strong> — click once to start recording, click again to stop. It transcribes into the text box for you to check before sending — nothing is sent automatically.</li>
-              <li><strong><span aria-hidden="true">🔔</span> Proactive alerts</strong> — off by default. Turn it on and the engineer will speak up on its own for urgent situations (off track, critical tires or fuel), without you having to ask.</li>
-              <li><strong>Answer style</strong> — "Professional" gives a few sentences with numbers and reasoning; "Concise" gives just the bare answer.</li>
-              <li><strong>Clear history / Export</strong> — "Clear history" resets the conversation; "Export conversation" downloads it as a file.</li>
-              <li><strong>Model connection</strong> — advanced settings, only needed if you're changing which AI backend is used.</li>
-              <li><strong>Voice / TTS</strong> — controls how the engineer's replies are read aloud, or turns voice replies off.</li>
-            </ul>
-          </div>
-        </details>
+        <div class="section-title">Voice input</div>
+        <div id="engVoiceNote" style="color:var(--text-faint);font-size:0.8rem;margin-bottom:14px;">Checking microphone…</div>
         <h2 class="card-title">Ask the race engineer</h2>
-        <button id="engAlertsToggle" class="secondary" style="font-size:0.8rem;padding:6px 10px;width:auto;"
-                title="When on, the engineer speaks up on its own for high-severity situations (off track, critical pit window) without being asked. Off by default.">
-          <span aria-hidden="true">🔔</span> <span id="engAlertsToggleLabel">Proactive alerts: off</span>
-        </button>
-        <div id="engAlertsNote" style="color:var(--text-faint);font-size:0.78rem;margin:4px 0 10px;">Off — the engineer only speaks when you ask.</div>
         <div id="engUndoToast" class="eng-undo-toast" hidden>
           <span id="engUndoToastText"></span>
           <button id="engUndoToastBtn" type="button" class="secondary">Undo</button>
@@ -927,6 +918,23 @@
         </div>
       </div>
       <div class="stack">
+        <div class="panel panel-pad">
+          <details class="eng-help">
+            <summary class="section-title eng-help-toggle"><span aria-hidden="true">📖</span> Instructions of the race engineer</summary>
+            <div class="eng-help-body">
+              <button id="engHelpReadBtn" class="secondary" type="button" style="margin-bottom:10px;width:auto;"><span aria-hidden="true">🔊</span> Read aloud</button>
+              <ul>
+                <li><strong>Ask a question</strong> — type below (e.g. "How are the tyres holding up?") and press Send or Enter.</li>
+                <li><strong><span aria-hidden="true">🎤</span> Voice input</strong> — click once to start recording, click again to stop. It transcribes into the text box for you to check before sending — nothing is sent automatically.</li>
+                <li><strong><span aria-hidden="true">🔔</span> Proactive alerts</strong> — off by default. Turn it on and the engineer will speak up on its own for urgent situations (off track, critical tires or fuel), without you having to ask.</li>
+                <li><strong>Answer style</strong> — "Professional" gives a few sentences with numbers and reasoning; "Concise" gives just the bare answer.</li>
+                <li><strong>Clear history / Export</strong> — "Clear history" resets the conversation; "Export conversation" downloads it as a file.</li>
+                <li><strong>Model connection</strong> — advanced settings, only needed if you're changing which AI backend is used.</li>
+                <li><strong>Voice / TTS</strong> — controls how the engineer's replies are read aloud, or turns voice replies off.</li>
+              </ul>
+            </div>
+          </details>
+        </div>
         <div class="panel panel-pad">
           <details>
             <summary class="section-title" style="cursor:pointer">Model connection</summary>
@@ -962,8 +970,24 @@
           <div id="engTireEstimate" style="margin-top:4px;color:var(--text-faint);font-size:0.78rem;">Estimated tire wear: --%</div>
         </div>
         <div class="panel panel-pad">
-          <div class="section-title">Voice input</div>
-          <div id="engVoiceNote" style="color:var(--text-faint);font-size:0.8rem;">Checking microphone…</div>
+          <details>
+            <summary class="section-title" style="cursor:pointer">Proactive alerts</summary>
+            <div style="margin-top:12px;">
+              <button id="engAlertsToggle" class="secondary" style="font-size:0.8rem;padding:6px 10px;width:auto;"
+                      title="When on, the engineer speaks up on its own for high-severity situations (off track, critical pit window) without being asked. Off by default.">
+                <span aria-hidden="true">🔔</span> <span id="engAlertsToggleLabel">Proactive alerts: off</span>
+              </button>
+              <div id="engAlertsNote" style="color:var(--text-faint);font-size:0.78rem;margin:4px 0 10px;">Off — the engineer only speaks when you ask.</div>
+              <!-- Collapsed by default, opens only when the driver clicks
+                   the summary above -- never auto-expanded when a new
+                   alert arrives (it's already announced by voice, see
+                   engEnqueueSpeech). Collapsed state is purely visual:
+                   the toggle/log elements below stay in the DOM and keep
+                   working normally either way -- see engAppendAlert /
+                   GET /api/engineer/alert_log's docstring in runtime.py. -->
+              <div id="engAlertLog" class="eng-alert-log"><div class="eng-alert-empty">No proactive alerts yet.</div></div>
+            </div>
+          </details>
         </div>
         <div class="panel panel-pad">
           <details>
@@ -1720,16 +1744,13 @@ function routeWsMessage(msg) {
     case "engineer_alert":
       // Proactive radio alert (see _auto_engineer_alert_loop in runtime.py) --
       // opt-in via the "Proactive alerts" toggle, so this only ever arrives
-      // when the driver turned it on. Rendered the same way as a normal
-      // answer, then spoken with whichever TTS provider the Engineer tab
-      // is already configured to use.
-      engOnStart();
-      engOnDone(msg.content);
-      {
-        const enProvider = cmTtsProvider("en");
-        if (enProvider === "browser") cmSpeakBrowser(msg.content, "en");
-        else if (enProvider === "kokoro") enSpeakKokoro(msg.content);
-      }
+      // when the driver turned it on. Deliberately NOT rendered through
+      // engOnStart/engOnDone or the Q&A feed -- an alert isn't an answer to
+      // a pending question, so it gets its own small panel (engAppendAlert)
+      // and jumps the Engineer speech queue instead of fighting the answer
+      // flow for the shared TTS channel.
+      engAppendAlert(msg.content);
+      engEnqueueSpeech(msg.content, true);
       break;
     case "user_msg":
       if (source !== "engineer") {
@@ -2165,6 +2186,17 @@ function cmStopAudio() {
     if (State.cmAudio._objectUrl) URL.revokeObjectURL(State.cmAudio._objectUrl);
     State.cmAudio = null;
   }
+  // If something outside the Engineer queue (Commentary auto-narration,
+  // the "Test voice" button) interrupted an Engineer utterance mid-flight,
+  // still resolve its completion callback -- otherwise the Engineer queue
+  // would stay "busy" forever and never speak again this session. A stuck
+  // queue is worse than the rare case of it immediately reclaiming the
+  // channel back from whatever just interrupted it.
+  if (State.cmSpeakDoneCallback) {
+    const cb = State.cmSpeakDoneCallback;
+    State.cmSpeakDoneCallback = null;
+    cb();
+  }
 }
 
 function cmSplitSentences(text) {
@@ -2185,6 +2217,14 @@ function cmSpeakNextSentence() {
     // playback queue -- the Engineer tab and the "Test voice" button also
     // drive this same sentence queue with State.cmSpeakIsCommentary unset.
     if (State.cmSpeakIsCommentary) cmReportPlaybackDone(State.cmCurrentRequestId);
+    // Engineer's own playback queue (engEnqueueSpeech) waits for this to
+    // know a full utterance actually finished before starting the next
+    // queued item -- see cmSpeakBrowser's onDone parameter.
+    if (State.cmSpeakDoneCallback) {
+      const cb = State.cmSpeakDoneCallback;
+      State.cmSpeakDoneCallback = null;
+      cb();
+    }
     return;
   }
   const text = State.cmSentenceQueue.shift();
@@ -2214,10 +2254,11 @@ function cmSpeakNextSentence() {
   speechSynthesis.speak(utterance);
 }
 
-function cmSpeakBrowser(text, prefix = "cm", isCommentary = false) {
+function cmSpeakBrowser(text, prefix = "cm", isCommentary = false, onDone = null) {
   cmStopAudio();
   State.cmSpeakPrefix = prefix;
   State.cmSpeakIsCommentary = isCommentary;
+  State.cmSpeakDoneCallback = onDone;
   State.cmSentenceQueue = cmSplitSentences(text);
   cmSpeakNextSentence();
 }
@@ -2464,14 +2505,12 @@ $("engSendBtn").addEventListener("click", async () => {
     const data = await r.json().catch(() => ({}));
     if (r.ok && data.answer != null) {
       engOnDone(data.answer);
-      // Browser speech and Kokoro are wired here; both are self-contained
-      // (client-side synthesis, or a direct browser->tts_server.py call --
-      // see enSpeakKokoro below). Custom HTTP TTS is not wired since its
-      // request/response shape is user-defined and would need the same
-      // per-field handling as the Commentary tab's cmSaveTtsConfig.
-      const enProvider = cmTtsProvider("en");
-      if (enProvider === "browser") cmSpeakBrowser(data.answer, "en");
-      else if (enProvider === "kokoro") enSpeakKokoro(data.answer);
+      // Queued rather than spoken directly -- see engEnqueueSpeech's
+      // docstring for why (a proactive alert could otherwise cut this off
+      // mid-sentence, or vice versa). Custom HTTP TTS is not wired since
+      // its request/response shape is user-defined and would need the
+      // same per-field handling as the Commentary tab's cmSaveTtsConfig.
+      engEnqueueSpeech(data.answer, false);
     } else {
       engOnError(data.error || `HTTP ${r.status}`);
     }
@@ -2486,9 +2525,9 @@ $("engSendBtn").addEventListener("click", async () => {
    tts_server.py, added separately) and plays the WAV response locally.
    Custom HTTP TTS is not wired here -- only Kokoro's fixed request/response
    shape is supported by this direct call. */
-async function enSpeakKokoro(text) {
+async function enSpeakKokoro(text, onDone = null) {
   const url = $("enTtsUrl").value.trim();
-  if (!url) return;
+  if (!url) { if (onDone) onDone(); return; }
   cmStopAudio();
   cmSetPlaybackStatus(text, "loading");
   try {
@@ -2511,13 +2550,18 @@ async function enSpeakKokoro(text) {
       URL.revokeObjectURL(blobUrl);
       if (State.cmAudio === audio) State.cmAudio = null;
       cmSetPlaybackStatus(text);
+      if (onDone) onDone();
     };
-    audio.onerror = () => cmSetPlaybackStatus("Engineer TTS audio could not be played.", "error");
+    audio.onerror = () => {
+      cmSetPlaybackStatus("Engineer TTS audio could not be played.", "error");
+      if (onDone) onDone();
+    };
     State.cmAudio = audio;
     await audio.play();
   } catch (e) {
     console.warn("Engineer Kokoro TTS failed", e);
     cmSetPlaybackStatus(`Engineer TTS failed: ${engFriendlyError(e.message)}`, "error");
+    if (onDone) onDone();
   }
 }
 
@@ -2529,6 +2573,7 @@ $("engClearBtn").addEventListener("click", async () => {
   await fetch("/api/engineer/clear", { method: "POST" });
   $("engFeed").innerHTML = '<div class="feed-empty">Ask about tyres, fuel, damage, or strategy…</div>';
   engLoadStats();
+  engLoadAlertLog();
 });
 
 // On-demand only -- navigating here just triggers the browser's normal file
@@ -2635,6 +2680,91 @@ async function engLoadTireEstimate() {
   } catch (e) { /* ignore */ }
 }
 
+// Engineer-only playback queue: the Q&A answer and proactive alerts each
+// call into TTS independently and would otherwise fight over the single
+// shared playback slot (cmStopAudio cancels whatever's currently playing,
+// see its docstring). This serializes them instead -- one Engineer
+// utterance plays at a time, the next waits for a real completion signal.
+// Alerts jump to the front of the queue (safety-relevant, shouldn't wait
+// behind a long answer) but never interrupt whatever's currently playing;
+// they wait for it to finish naturally, same as everything else.
+State.engSpeechQueue = [];
+State.engSpeechBusy = false;
+
+function engEnqueueSpeech(text, isAlert = false) {
+  if (isAlert) State.engSpeechQueue.unshift(text);
+  else State.engSpeechQueue.push(text);
+  engDrainSpeechQueue();
+}
+
+function engDrainSpeechQueue() {
+  if (State.engSpeechBusy || !State.engSpeechQueue.length) return;
+  State.engSpeechBusy = true;
+  const text = State.engSpeechQueue.shift();
+  engSpeak(text, () => {
+    State.engSpeechBusy = false;
+    engDrainSpeechQueue();
+  });
+}
+
+function engSpeak(text, onDone) {
+  const enProvider = cmTtsProvider("en");
+  if (enProvider === "browser") cmSpeakBrowser(text, "en", false, onDone);
+  else if (enProvider === "kokoro") enSpeakKokoro(text, onDone);
+  else onDone();
+}
+
+// Proactive-alert log: its own small panel (#engAlertLog), deliberately not
+// the Q&A feed -- an alert isn't an answer to a pending question, so it
+// doesn't touch State.engStreaming (see engOnStart/engOnDone above) or
+// share a DOM container with it. Backed by its own server-side log too
+// (GET /api/engineer/alert_log) -- see that endpoint's docstring in
+// runtime.py for why it's kept separate from engineer_ctx_mgr.
+function engBuildAlertItem(text, timeText) {
+  const el = document.createElement("div");
+  el.className = "eng-alert-item";
+  const textSpan = document.createElement("span");
+  textSpan.textContent = text;
+  const timeSpan = document.createElement("span");
+  timeSpan.className = "eng-alert-time";
+  timeSpan.textContent = timeText;
+  el.appendChild(textSpan);
+  el.appendChild(timeSpan);
+  return el;
+}
+
+function engFormatAlertTime(date) {
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function engAppendAlert(content) {
+  // The panel only ever shows the latest alert -- a burst of repeated
+  // alerts (e.g. bouncing on/off the track edge) was crowding out the Q&A
+  // area otherwise. Full history is still kept server-side (see
+  // _engineer_alert_log in runtime.py); this replaces, not appends.
+  const log = $("engAlertLog");
+  log.innerHTML = "";
+  log.appendChild(engBuildAlertItem(content, engFormatAlertTime(new Date())));
+}
+
+async function engLoadAlertLog() {
+  try {
+    const r = await fetch("/api/engineer/alert_log");
+    const data = await r.json();
+    const alerts = data.alerts || [];
+    const log = $("engAlertLog");
+    log.innerHTML = "";
+    if (!alerts.length) {
+      log.innerHTML = '<div class="eng-alert-empty">No proactive alerts yet.</div>';
+      return;
+    }
+    // Backend returns oldest-first -- only the latest is shown (see
+    // engAppendAlert above).
+    const latest = alerts[alerts.length - 1];
+    log.appendChild(engBuildAlertItem(latest.text, engFormatAlertTime(new Date(latest.at * 1000))));
+  } catch (e) { /* ignore */ }
+}
+
 async function engApplyAlertsButton(enabled) {
   State.engAlertsEnabled = enabled;
   const btn = $("engAlertsToggle");
@@ -2672,7 +2802,7 @@ $("engAlertsToggle").addEventListener("click", async () => {
   } catch (e) { /* leave the button as-is on failure */ }
 });
 
-// "How to use this page" narration -- spoken only when the driver presses
+// "Instructions of the race engineer" narration -- spoken only when the driver presses
 // the button (not automatically on opening the panel, since auto-playing
 // audio the moment you open something is unwelcome, especially mid-drive).
 // A dedicated, plainly-worded script rather than reading the bullet HTML
@@ -3174,6 +3304,7 @@ window.addEventListener("load", () => {
   fetch("/api/stats", { cache: "no-store" }).then(r => r.json()).then(cmUpdateStats).catch(() => {});
   engLoadStats();
   engLoadTireEstimate();
+  engLoadAlertLog();
   engCheckVoice();
   engCheckAlerts();
   coRenderSignals([]);
