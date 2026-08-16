@@ -2951,59 +2951,6 @@ def strategy_source_summary() -> dict[str, float]:
                                       key=lambda item: -item[1])}
 
 
-# Presentation-only labels for the dashboard.  These do NOT add strategies:
-# `strategy` stays one of _ALL_STRATEGIES and is what safety_filter,
-# compute_control, the trace and every metric in bot_replay.py still see, so
-# nothing here can move a measured result.  All this does is name the same
-# strategy differently depending on the race situation.
-#
-# Why it exists: the model answers every 10-40 s depending on hardware, and in
-# a clean race it answers ATTACK most of the time, so the card reads as frozen
-# even while the race changes underneath it.  The label is derived from live
-# state on every status tick (~1 s), so leading, being caught and chasing all
-# read differently without asking the model any more often.
-#
-# Edit the strings here to change the wording — nothing else reads them.
-_LABEL_CHASE_GAP  = 60.0    # m: car ahead close enough to call it a chase
-_LABEL_PRESSED_GAP = 25.0   # m: car behind close enough to call it pressure
-
-
-def display_label(strategy: str, state: dict[str, Any]) -> str:
-    """Human-facing name for the strategy currently in force.
-
-    Pure function of (strategy, state); never consulted by the control loop.
-    Falls back to the raw strategy name for anything unrecognised, so a new
-    strategy added later shows up as itself rather than vanishing.
-    """
-    opponents = state.get("opponents") or []
-    ahead = min((opponents[i] for i in _FRONT_CONE if i < len(opponents)), default=200.0)
-    behind = _rear_gap(opponents)
-    leading = state.get("race_pos", 0) == 1
-    damage = state.get("damage", 0.0)
-
-    if strategy == ATTACK:
-        if ahead < _LABEL_CHASE_GAP:
-            return "Chasing · full throttle"
-        if leading:
-            return "Leading · holding pace"
-        return "Attacking"
-    if strategy == NORMAL:
-        if behind < _LABEL_PRESSED_GAP:
-            return "Under pressure · holding position"
-        return "Balanced pace"
-    if strategy == DEFEND:
-        if damage >= _DMG_NO_ATTACK:
-            return "Damaged · nursing it home"
-        return "Defensive"
-    if strategy == BLOCK:
-        return "Blocking · defending the line"
-    if strategy == SAVE_FUEL:
-        return "Conserving fuel"
-    if strategy == PIT:
-        return "Pitting"
-    return strategy
-
-
 def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
     """Map a Granite-supplied strategy to a safe strategy using hard rules.
 
@@ -3972,16 +3919,12 @@ def run_bot(
                     last_control={"wire": control},
                     fallback=fallback_active,
                     error=strategist.last_error if strategist else "",
-                    # `label` rides alongside `strategy`, never replaces it —
-                    # every consumer that matters (safety_filter, the trace,
-                    # bot_replay's metrics) reads `strategy`.
-                    details={
-                        "label": display_label(current_strategy, state),
-                        **({"reasoning": {"considered": strategist.last_considered,
-                                          "rejected":   strategist.last_rejected,
-                                          **strategist.liveness()}}
-                           if strategist is not None else {}),
-                    },
+                    details=(
+                        {"reasoning": {"considered": strategist.last_considered,
+                                       "rejected":   strategist.last_rejected,
+                                       **strategist.liveness()}}
+                        if strategist is not None else {}
+                    ),
                 )
                 step += 1
 
@@ -5256,7 +5199,16 @@ def _run_tests() -> None:
     # valid strategy + healthy car → pass through unchanged
     assert safety_filter(ATTACK,    base) == ATTACK,    "FAIL: healthy ATTACK should pass"
     assert safety_filter(NORMAL,    base) == NORMAL,    "FAIL: healthy NORMAL should pass"
-    assert safety_filter(SAVE_FUEL, base) == SAVE_FUEL, "FAIL: healthy SAVE_FUEL should pass"
+    # SAVE_FUEL's availability is gated by _SAVE_FUEL_ENABLED (2026-08-09
+    # pit-system rework, made switchable 2026-08-12 — see the "TEMP
+    # (pit-system testing...)" comment above SAVE_FUEL's definition). When
+    # disabled it's not in _GRANITE_STRATEGIES, so priority 1 downgrades it
+    # to NORMAL like any other unavailable strategy. Read the live flag so
+    # this stays correct either way it's set, matching
+    # tests/bot/test_safety_filter.py::SaveFuelStrategyAvailabilityTests.
+    _save_fuel_expected = SAVE_FUEL if _SAVE_FUEL_ENABLED else NORMAL
+    assert safety_filter(SAVE_FUEL, base) == _save_fuel_expected, \
+        f"FAIL: SAVE_FUEL should resolve to {_save_fuel_expected} (_SAVE_FUEL_ENABLED={_SAVE_FUEL_ENABLED})"
     print("safety_filter pass-through   ... OK")
 
     # unknown / None → NORMAL
@@ -5265,18 +5217,30 @@ def _run_tests() -> None:
     assert safety_filter("",          base) == NORMAL, "FAIL: empty → NORMAL"
     print("safety_filter unknown/None   ... OK")
 
-    # fuel < 5 → PIT (beats any strategy including ATTACK) — the absolute
-    # floor, unchanged from before the bt-style dynamic check existed.
-    low_fuel = {**base, "fuel": 3.0}
-    assert safety_filter(ATTACK, low_fuel) == PIT, "FAIL: low fuel + ATTACK → PIT"
-    assert safety_filter(NORMAL, low_fuel) == PIT, "FAIL: low fuel + NORMAL → PIT"
-    print("safety_filter low fuel → PIT ... OK")
+    # fuel < _FUEL_PIT → PIT, but ONLY once the car is actually near a real
+    # pit lane (_near_pit_lane) — see the "TEMP (pit-system testing,
+    # 2026-08-09)" comment above _PIT_APPROACH_DIST. Far from one, a
+    # fuel-critical car keeps racing instead of crawling a lap early at
+    # PIT's ~50 km/h cap for nothing — matches
+    # tests/bot/test_safety_filter.py::PriorityTwoFuelPitTests.
+    near_pit_state = {"dist_from_start": 990.0, "track_length": 2000.0,
+                       "pit_entry": 1000.0, "pit_exit": 1050.0}  # 10 m out, inside the 150 m approach window
+    low_fuel_near = {**base, **near_pit_state, "fuel": 3.0}
+    assert safety_filter(ATTACK, low_fuel_near) == PIT, "FAIL: low fuel near pit lane + ATTACK → PIT"
+    assert safety_filter(NORMAL, low_fuel_near) == PIT, "FAIL: low fuel near pit lane + NORMAL → PIT"
+    print("safety_filter low fuel, near pit lane → PIT ... OK")
+
+    low_fuel_far = {**base, "fuel": 3.0}   # no pit-lane telemetry → _near_pit_lane() is unconditionally False
+    assert safety_filter(ATTACK, low_fuel_far) == ATTACK, "FAIL: low fuel far from pit lane should keep racing"
+    assert safety_filter(NORMAL, low_fuel_far) == NORMAL, "FAIL: low fuel far from pit lane should keep racing"
+    print("safety_filter low fuel, far from pit lane → keeps racing ... OK")
 
     # bt-style dynamic trigger (strategy.cpp: needPitstop) fires EARLIER than
-    # the flat floor: 8 L is well above _FUEL_PIT=5, but at 6 L/lap with 2
+    # the flat floor: 8 L is well above _FUEL_PIT=10, but at 6 L/lap with 2
     # laps left, both of bt's conditions hold — 8 < 1.5*6=9 (1.5-lap margin)
-    # and 8 < 2*6=12 (won't finish the race) — so it must PIT anyway.
-    dyn_fuel = {**base, "fuel": 8.0, "fuel_per_lap": 6.0, "laps_left": 2}
+    # and 8 < 2*6=12 (won't finish the race) — so it must PIT anyway, again
+    # only once near the pit lane (same 2026-08-09 gate as the flat floor above).
+    dyn_fuel = {**base, **near_pit_state, "fuel": 8.0, "fuel_per_lap": 6.0, "laps_left": 2}
     assert safety_filter(ATTACK, dyn_fuel) == PIT, \
         f"FAIL: dynamic fuel check should PIT before the flat floor: {safety_filter(ATTACK, dyn_fuel)}"
     print("safety_filter dynamic fuel (bt-style) → PIT ... OK")
@@ -5309,9 +5273,16 @@ def _run_tests() -> None:
     assert safety_filter(DEFEND, high_dmg) == DEFEND,  "FAIL: high damage + DEFEND should pass"
     print("safety_filter high damage     ... OK")
 
-    # fuel < 15 → ATTACK blocked
+    # fuel < _FUEL_CAUTION(15) → ATTACK blocked, but ONLY while
+    # _FUEL_CAUTION_ENABLED is True — disabled by default since the
+    # 2026-08-09 pit-system rework ("the car now commits to ATTACK
+    # everywhere except right at the pit lane"). Read the live flag so this
+    # stays correct either way it's set — matches
+    # tests/bot/test_safety_filter.py::PriorityFiveNoAttackOnLowFuelTests.
     caution_fuel = {**base, "fuel": 12.0}
-    assert safety_filter(ATTACK, caution_fuel) == NORMAL, "FAIL: caution fuel + ATTACK → NORMAL"
+    _caution_expected = NORMAL if _FUEL_CAUTION_ENABLED else ATTACK
+    assert safety_filter(ATTACK, caution_fuel) == _caution_expected, \
+        f"FAIL: caution fuel + ATTACK should be {_caution_expected} (_FUEL_CAUTION_ENABLED={_FUEL_CAUTION_ENABLED})"
     assert safety_filter(NORMAL, caution_fuel) == NORMAL, "FAIL: caution fuel + NORMAL passes"
     print("safety_filter caution fuel    ... OK")
 
@@ -5379,10 +5350,16 @@ def _run_tests() -> None:
     assert s == NORMAL, f"FAIL parse BLOCK (Granite-forbidden): {s}"
     print(f"_parse_strategy_response BLOCK forbidden → NORMAL ... OK")
 
-    # missing reason field → empty string, strategy still valid
-    s, r = _parse_strategy_response('{"strategy": "SAVE_FUEL"}')
-    assert s == SAVE_FUEL, f"FAIL parse no-reason: {s}"
-    assert r == "",         f"FAIL reason should be empty: {r!r}"
+    # missing reason field → empty string, strategy still valid.
+    # DEFEND, not SAVE_FUEL: SAVE_FUEL's membership in _GRANITE_STRATEGIES is
+    # gated by _SAVE_FUEL_ENABLED (currently disabled by default, see the
+    # safety_filter pass-through check above), which is orthogonal to what
+    # this checks (a missing `reason` key defaults to ""), so use a strategy
+    # that's always valid — matches
+    # tests/bot/test_granite_strategy.py::test_missing_reason_field_is_empty_string.
+    s, r = _parse_strategy_response('{"strategy": "DEFEND"}')
+    assert s == DEFEND, f"FAIL parse no-reason: {s}"
+    assert r == "",      f"FAIL reason should be empty: {r!r}"
     print(f"_parse_strategy_response no-reason ... OK  ({s})")
 
     # ---- Step 7: _next_debounced_strategy (strategy switch, CONFIRM=1) -----

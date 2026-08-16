@@ -137,6 +137,21 @@ engineer_strategy_tracker = RaceStrategyTracker()
 _engineer_proactive_alerts_enabled = False
 _engineer_alert_active_key: str | None = None
 
+# Alerts get their own log, deliberately separate from engineer_ctx_mgr's
+# Q&A history: _auto_engineer_alert_loop() ticks on its own schedule and can
+# fire mid-question (while ask_engineer() is awaiting the model), and if
+# both wrote to the same shared history the alert could land between a
+# driver's question and its own answer, corrupting the conversation order.
+# A driver-side cost of keeping it separate: the model won't "remember" a
+# past alert in later chat turns, and it's exported separately from the
+# Q&A transcript -- accepted tradeoff, see GET /api/engineer/alert_log.
+# Deliberately uncapped -- how many alert-worthy situations happen in one
+# race is unpredictable, and a session's worth of small {text, at} dicts is
+# negligible memory either way. The dashboard only ever displays the latest
+# one (see engAppendAlert/engLoadAlertLog in dashboard.html); the full
+# history here is for record-keeping, cleared only by /api/engineer/clear.
+_engineer_alert_log: list[dict] = []
+
 # -- Engineer voice input (server-side mic recording, same mechanism as
 # chat_engineer_gui.py's mic button -- see voice_input.py). Single global
 # recorder because only one dashboard operator is expected to be recording
@@ -306,7 +321,7 @@ process_registry.register(
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="TORCS 比赛解说中间件")
+app = FastAPI(title="TORCS Race Commentary Middleware")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -557,7 +572,7 @@ async def generate_commentary(
         user_content = ctx_mgr.format_telemetry(telemetry, rankings)
         history_content = user_content
     else:
-        raise ValueError("没有遥测数据或手动 prompt")
+        raise ValueError("No telemetry data or manual prompt provided")
 
     # 2. 加入历史
     if history_mode != "assistant_only":
@@ -619,7 +634,7 @@ async def generate_commentary(
         event_time = float(event_payload.get("event_time", 0.0))
         is_duplicate = not commentary_engine.should_emit_text(reply, event_time)
         if is_duplicate:
-            log.info("重复解说已在展示前被去重，不广播 ai_done 正文/tts_audio")
+            log.info("Duplicate commentary deduped before display, skipping ai_done body/tts_audio broadcast")
 
     # 7. TTS — 先合成语音，再广播字幕，确保字幕和音频始终一起出现。
     # 如果这期间被新事件取消（见 _auto_commentary_loop 的抢占逻辑），
@@ -708,10 +723,10 @@ async def _run_commentary(decision, t, r, request_id=None):
             t, r, event_payload=decision.payload, history_mode="summary", request_id=request_id,
         )
     except asyncio.CancelledError:
-        log.info(f"解说被新事件中断: {decision.event.get('event_type')}")
+        log.info(f"Commentary interrupted by new event: {decision.event.get('event_type')}")
         raise
     except Exception as e:
-        log.warning(f"自动解说失败: {e}")
+        log.warning(f"Auto commentary failed: {e}")
     finally:
         if request_id:
             latency_log.forget(request_id)
@@ -774,7 +789,7 @@ async def _advance_queue() -> None:
         except asyncio.CancelledError:
             result = None
         except Exception as e:
-            log.warning(f"排队解说预生成失败: {e}")
+            log.warning(f"Queued commentary prefetch failed: {e}")
             result = None
         if result is not None:
             await _broadcast_silent_result(result, event=decision.event, payload=decision.payload)
@@ -841,7 +856,7 @@ async def _auto_commentary_loop():
             _commentary_task = asyncio.create_task(_run_commentary(decision, t, r, request_id=request_id))
 
         except Exception as e:
-            log.warning(f"自动解说失败: {e}")
+            log.warning(f"Auto commentary failed: {e}")
 
 
 # Alarm-fatigue research (aviation/medical HMI alert design) says alerts
@@ -938,7 +953,7 @@ async def _auto_engineer_alert_loop():
             if alert_text is None:
                 continue
 
-            engineer_ctx_mgr.add_assistant(alert_text)
+            _engineer_alert_log.append({"text": alert_text, "at": time.time()})
             await broadcast({"type": "engineer_alert", "content": alert_text})
         except Exception as e:
             log.warning(f"proactive engineer alert failed: {e}")
@@ -953,7 +968,7 @@ async def index():
     html_path = STATIC_DIR / UI_FILE
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(f"<h1>找不到 {UI_FILE}，请检查 static/ 目录</h1>")
+    return HTMLResponse(f"<h1>{UI_FILE} not found, please check the static/ directory</h1>")
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -973,7 +988,7 @@ async def dashboard():
             html_path.read_text(encoding="utf-8"),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
-    return HTMLResponse("<h1>找不到 dashboard.html，请检查 midware/static/ 目录</h1>")
+    return HTMLResponse("<h1>dashboard.html not found, please check the midware/static/ directory</h1>")
 
 
 @app.get("/api/config")
@@ -1599,7 +1614,15 @@ async def clear_engineer_history():
     # docstring in tire_strategy.py).
     engineer_strategy_tracker.full_reset()
     _engineer_alert_active_key = None
+    _engineer_alert_log.clear()
     return {"ok": True, "stats": engineer_ctx_mgr.stats()}
+
+
+@app.get("/api/engineer/alert_log")
+async def get_engineer_alert_log():
+    """Recent proactive alerts, oldest first -- see _engineer_alert_log's
+    module-level docstring for why this is separate from /api/engineer/history."""
+    return {"alerts": _engineer_alert_log}
 
 
 @app.post("/api/engineer/style")
@@ -1950,7 +1973,7 @@ async def load_csv(body: dict):
     rank_path = body.get("rankings_path")
 
     if not csv_path.exists():
-        return JSONResponse({"error": f"文件不存在: {csv_path}"}, status_code=404)
+        return JSONResponse({"error": f"File not found: {csv_path}"}, status_code=404)
 
     # 读取最后一行（最新时刻）
     rows = []
@@ -1960,7 +1983,7 @@ async def load_csv(body: dict):
             rows.append({k: _try_float(v) for k, v in row.items()})
 
     if not rows:
-        return JSONResponse({"error": "CSV 为空"}, status_code=400)
+        return JSONResponse({"error": "CSV is empty"}, status_code=400)
 
     t = rows[-1]
 
@@ -2066,7 +2089,7 @@ def _refresh_runtime_status() -> None:
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     ws_clients.add(ws)
-    log.info(f"WebSocket 已连接，当前客户端数: {len(ws_clients)}")
+    log.info(f"WebSocket connected, current client count: {len(ws_clients)}")
     try:
         # 发送初始状态
         await ws.send_json(normalize_outbound_message({
@@ -2102,7 +2125,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await broadcast(parsed)
     except WebSocketDisconnect:
         ws_clients.discard(ws)
-        log.info(f"WebSocket 断开，剩余客户端: {len(ws_clients)}")
+        log.info(f"WebSocket disconnected, remaining clients: {len(ws_clients)}")
 
 
 # ---------------------------------------------------------------------------
@@ -2113,13 +2136,13 @@ async def websocket_endpoint(ws: WebSocket):
 async def startup():
     # The middleware lifespan is the sole production owner of UDP 3101.
     telemetry_service.start()
-    log.info(f"UDP 监听器启动 0.0.0.0:{config.TELEMETRY_UDP_PORT}")
+    log.info(f"UDP listener started 0.0.0.0:{config.TELEMETRY_UDP_PORT}")
 
     # 启动自动解说循环
     global _auto_task, _auto_engineer_alert_task
     _auto_task = asyncio.create_task(_auto_commentary_loop())
     _auto_engineer_alert_task = asyncio.create_task(_auto_engineer_alert_loop())
-    log.info(f"服务启动完成 → {config.MIDWARE_BASE_URL}")
+    log.info(f"Service startup complete → {config.MIDWARE_BASE_URL}")
 
 
 @app.on_event("shutdown")
@@ -2136,12 +2159,12 @@ async def shutdown():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TORCS 解说中间件")
+    parser = argparse.ArgumentParser(description="TORCS race commentary middleware")
     parser.add_argument("--ui", choices=["text", "voice"], default="text",
-                        help="界面模式：text=文字解说(index.html)，voice=语音解说(index2.html)")
+                        help="UI mode: text=text commentary (index.html), voice=voice commentary (index2.html)")
     args = parser.parse_args()
 
     UI_FILE = "index2.html" if args.ui == "voice" else "index.html"
-    log.info(f"界面模式: {args.ui} → {UI_FILE}")
+    log.info(f"UI mode: {args.ui} → {UI_FILE}")
 
     uvicorn.run(app, host="0.0.0.0", port=config.MIDWARE_PORT, reload=False)
