@@ -1,0 +1,170 @@
+using 50 of 588 states (evenly spaced)
+
+=== legacy — 50 states ===
+  trace @ 0 m                         ATTACK        1.6s  High fuel, no damage, strong race position.
+  trace @ 729 m                       ATTACK        1.7s  High fuel and zero damage allow aggressive positioning.
+  trace @ 1688 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 2931 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 3784 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 4573 m                      ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 5569 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 6551 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 7632 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 8392 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 9352 m                      ATTACK        1.5s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 10278 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 11403 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 12289 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 13044 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 14114 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 15016 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 16173 m                     ATTACK        1.7s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 16944 m                     ATTACK        1.7s  Low damage and ample fuel allow aggressive pursuit.
+  trace @ 17894 m                     ATTACK        1.5s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 18826 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 19920 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 20887 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 21612 m                     ATTACK        1.7s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 22740 m                     ATTACK        1.5s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 23634 m                     ATTACK        1.7s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 24772 m                     ATTACK        1.5s  Low damage and ample fuel allow aggressive pursuit.
+  trace @ 25541 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 26531 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 27460 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 28487 m                     ATTACK        1.5s  Low damage and high fuel allow aggressive positioning.
+  trace @ 29490 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 30242 m                     ATTACK        1.5s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 31327 m                     ATTACK        1.8s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 32106 m                     ATTACK        1.7s  Low damage and ample fuel allow aggressive pursuit.
+  trace @ 33368 m                     ATTACK        1.5s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 34182 m                     ATTACK        1.5s  Low damage and ample fuel allow aggressive pursuit.
+  trace @ 59 m                        ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 904 m                       ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 1815 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 3072 m                      ATTACK        1.5s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 3892 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 4805 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 5733 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 6895 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 7924 m                      ATTACK        1.7s  Low damage and ample fuel allow aggressive positioning.
+  trace @ 8606 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 9736 m                      ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  trace @ 10677 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive pursuit.
+  trace @ 11898 m                     ATTACK        1.7s  Low damage and high fuel allow aggressive positioning.
+  --> answered 50/50  distinct=1  {'ATTACK': 50}  sensitive=True  consistent=True  median 1.7s
+
+=== bare — 50 states ===
+  trace @ 0 m                         ATTACK        4.1s  The driver is in P2 with a small gap to both the leader and 
+  trace @ 729 m                       NORMAL        2.6s  With a comfortable fuel margin and no damage, a balanced app
+  trace @ 1688 m                      ATTACK        2.6s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 2931 m                      ATTACK        2.7s  The driver is in P2 with a comfortable gap ahead and behind,
+  trace @ 3784 m                      ATTACK        3.2s  With no cars in front or behind and ample fuel, the driver c
+  trace @ 4573 m                      ATTACK        2.7s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 5569 m                      ATTACK        3.5s  With no car ahead and a comfortable fuel margin, the driver 
+  trace @ 6551 m                      ATTACK        3.3s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 7632 m                      ATTACK        2.8s  With no car ahead and a comfortable fuel margin, the driver 
+  trace @ 8392 m                      ATTACK        2.4s  With no car ahead and a comfortable fuel margin, the driver 
+  trace @ 9352 m                      ATTACK        2.6s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 10278 m                     NORMAL        2.3s  With a comfortable fuel margin and only moderate damage, a b
+  trace @ 11403 m                     NORMAL        3.1s  The driver is in 5th place with a comfortable gap to both th
+  trace @ 12289 m                     NORMAL        2.7s  The driver is in 5th place with a comfortable gap ahead and 
+  trace @ 13044 m                     NORMAL        2.2s  The driver is in 5th place with a comfortable gap ahead and 
+  trace @ 14114 m                     NORMAL        2.2s  The driver is in 5th place with a comfortable gap ahead and 
+  trace @ 15016 m                     ATTACK        2.6s  With no car ahead and a comfortable fuel margin, the driver 
+  trace @ 16173 m                     NORMAL        3.0s  With a comfortable fuel margin and minimal damage, a balance
+  trace @ 16944 m                     ATTACK        2.7s  With no car ahead and ample fuel, the driver can push aggres
+  trace @ 17894 m                     ATTACK        2.5s  With no car ahead and a comfortable fuel margin, the driver 
+  trace @ 18826 m                     ATTACK        2.8s  With no car ahead and ample fuel, the driver can safely push
+  trace @ 19920 m                     ATTACK        2.5s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 20887 m                     ATTACK        2.6s  With no car ahead and ample fuel (74.2 L spare), the driver 
+  trace @ 21612 m                     NORMAL        2.6s  The driver is in 5th place with a comfortable gap ahead and 
+  trace @ 22740 m                     ATTACK        2.4s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 23634 m                     ATTACK        2.6s  With no car ahead and a comfortable fuel margin, the driver 
+  trace @ 24772 m                     ATTACK        2.9s  With no cars in front or behind and ample fuel, the driver c
+  trace @ 25541 m                     NORMAL        2.8s  With a comfortable fuel margin and only moderate damage, a b
+  trace @ 26531 m                     ATTACK        2.4s  With no cars in front or behind and ample fuel, the driver c
+  trace @ 27460 m                     ATTACK        2.4s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 28487 m                     ATTACK        3.4s  With no car in front and ample fuel, the driver can push agg
+  trace @ 29490 m                     ATTACK        2.4s  With no car in front and ample fuel, the driver can push agg
+  trace @ 30242 m                     ATTACK        2.9s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 31327 m                     ATTACK        3.0s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 32106 m                     ATTACK        2.3s  With no cars in front or behind and ample fuel, the driver c
+  trace @ 33368 m                     ATTACK        3.0s  With no car in front and ample fuel, the driver can safely p
+  trace @ 34182 m                     ATTACK        3.1s  With no car in front and a comfortable fuel margin, the driv
+  trace @ 59 m                        NORMAL        3.0s  The driver is in P5 with a small gap to the car ahead and be
+  trace @ 904 m                       NORMAL        3.3s  The car is in third place with a comfortable gap to both the
+  trace @ 1815 m                      NORMAL        4.5s  The driver is in P2 with a 60 m gap ahead and a comfortable 
+  trace @ 3072 m                      ATTACK        2.4s  With no car ahead and a comfortable gap behind, the driver c
+  trace @ 3892 m                      ATTACK        2.6s  The car is in the lead with a comfortable gap ahead and a sl
+  trace @ 4805 m                      ATTACK        2.5s  With no car in front and a small gap behind, the driver can 
+  trace @ 5733 m                      ATTACK        3.3s  With no car in front or behind and a comfortable fuel margin
+  trace @ 6895 m                      ATTACK        3.0s  With no car in front or behind and a comfortable fuel margin
+  trace @ 7924 m                      ATTACK        2.8s  With no car in front or behind and a large fuel reserve, the
+  trace @ 8606 m                      ATTACK        3.5s  With no car in front or behind and a comfortable fuel margin
+  trace @ 9736 m                      ATTACK        3.4s  With no car in front or behind and a comfortable fuel margin
+  trace @ 10677 m                     ATTACK        5.0s  The driver is in P2 with a significant gap ahead (188 m / ~3
+  trace @ 11898 m                     ATTACK        3.3s  With no car in front or behind and a comfortable fuel margin
+  --> answered 50/50  distinct=2  {'ATTACK': 38, 'NORMAL': 12}  sensitive=True  consistent=True  median 2.7s
+
+=== reasoning — 50 states ===
+  trace @ 0 m                         ATTACK        6.6s  Best chance to overtake while maintaining fuel margin.
+  trace @ 729 m                       ATTACK        6.9s  Best chance to overtake and gain positions with ample fuel a
+  trace @ 1688 m                      ATTACK        6.9s  Lead car ahead, good fuel, low damage allows aggressive lap 
+  trace @ 2931 m                      ATTACK        7.1s  Large gap allows aggressive overtake while fuel and damage p
+  trace @ 3784 m                      ATTACK        6.6s  Clear track, sufficient fuel, minor damage allow aggressive 
+  trace @ 4573 m                      ATTACK        7.2s  Maximize speed advantage with safe margin for error.
+  trace @ 5569 m                      ATTACK        6.9s  Maximize advantage with ample fuel and safe damage level.
+  trace @ 6551 m                      ATTACK        7.2s  lead, fuel, and damage permit aggressive lap for fastest tim
+  trace @ 7632 m                      ATTACK        6.7s  Maximize advantage with clear field and sufficient fuel.
+  trace @ 8392 m                      ATTACK        7.2s  Maximize lap time advantage with safe fuel margin and low da
+  trace @ 9352 m                      ATTACK        6.9s  Maximize speed advantage with sufficient fuel and low risk f
+  trace @ 10278 m                     ATTACK        6.7s  Can overtake while maintaining fuel margin and drivability.
+  trace @ 11403 m                     ATTACK        6.5s  Aggressive cornering justified by safety margin and fuel res
+  trace @ 12289 m                     ATTACK        6.7s  Can overtake with ample fuel and low damage risk.
+  trace @ 13044 m                     ATTACK        6.8s  Can overtake with ample fuel and low damage risk.
+  trace @ 14114 m                     ATTACK        7.0s  Can overtake with ample fuel and small risk of damage.
+  trace @ 15016 m                     ATTACK        6.7s  Best chance to overtake and close gap with ample fuel and lo
+  trace @ 16173 m                     ATTACK        6.9s  Maximize lap time advantage with safe fuel margin and low da
+  trace @ 16944 m                     ATTACK        6.6s  Clear track ahead, ample fuel, low damage; aggressive lap to
+  trace @ 17894 m                     ATTACK        6.8s  Clear track ahead, ample fuel, low damage risk allows aggres
+  trace @ 18826 m                     ATTACK        6.5s  Lead car clear; ample fuel; low damage; aggressive lap neede
+  trace @ 19920 m                     ATTACK        7.1s  Aggressive cornering to close gap and overtake while fuel su
+  trace @ 20887 m                     ATTACK        6.5s  Clear track ahead, ample fuel, low damage; maximize lap time
+  trace @ 21612 m                     ATTACK        7.3s  Can overtake with ample fuel, minimal risk of damage.
+  trace @ 22740 m                     ATTACK        6.5s  Best chance to close gap and finish ahead with ample fuel an
+  trace @ 23634 m                     ATTACK        6.7s  Clear track ahead, ample fuel, low damage risk allows aggres
+  trace @ 24772 m                     NORMAL        6.8s  Balanced approach maximizes speed without risking damage or 
+  trace @ 25541 m                     ATTACK        6.7s  Aggressive approach maximizes overtaking chance with ample f
+  trace @ 26531 m                     ATTACK        6.8s  Clear track, ample fuel, low damage risk allows aggressive l
+  trace @ 27460 m                     ATTACK        7.4s  Clear track, low damage risk, sufficient fuel for aggressive
+  trace @ 28487 m                     ATTACK        6.8s  Aggressive cornering maximizes overtaking chance while fuel 
+  trace @ 29490 m                     ATTACK        7.1s  Aggressive cornering can overtake and win with ample fuel an
+  trace @ 30242 m                     ATTACK        7.8s  Aggressive cornering can overtake and maintain lead despite 
+  trace @ 31327 m                     ATTACK        6.1s  Best chance to overtake and improve position with minimal ri
+  trace @ 32106 m                     ATTACK        6.6s  No risk, maximize speed for early lead.
+  trace @ 33368 m                     ATTACK        6.8s  Best chance to move up with ample gap and low damage risk.
+  trace @ 34182 m                     ATTACK        7.1s  Aggressive approach maximizes overtaking chance with ample f
+  trace @ 59 m                        ATTACK        6.8s  Aggressive approach can close gap and overtake while damage 
+  trace @ 904 m                       ATTACK        6.9s  Best chance to overtake while car is drivable and fuel suffi
+  trace @ 1815 m                      NORMAL        7.0s  Balanced approach maintains position without excessive risk.
+  trace @ 3072 m                      ATTACK        6.4s  Lead position allows aggressive lap for fastest time.
+  trace @ 3892 m                      ATTACK        7.2s  Lead allows aggressive line for fastest lap without risking 
+  trace @ 4805 m                      ATTACK        7.3s  Lead with aggressive cornering, minimal risk of error.
+  trace @ 5733 m                      ATTACK        7.1s  Clear track, good fuel, moderate damage allows aggressive la
+  trace @ 6895 m                      ATTACK        7.5s  lead with aggressive style, no risk factors present
+  trace @ 7924 m                      ATTACK        7.4s  lead, high speed, minimal risk, maximize lap time
+  trace @ 8606 m                      ATTACK        7.4s  lead, high speed, minimal risk, maximize lap time
+  trace @ 9736 m                      ATTACK        7.4s  lead with aggressive style, no competitors, low damage risk
+  trace @ 10677 m                     ATTACK        7.2s  Large gap allows aggressive overtake with manageable risk.
+  trace @ 11898 m                     ATTACK        6.7s  lead with aggressive style, no risk factors present
+  --> answered 50/50  distinct=2  {'ATTACK': 48, 'NORMAL': 2}  sensitive=True  consistent=True  median 6.9s
+
+=== comparison ===
+mode        answered  distinct  sensitive  consistent  median
+-------------------------------------------------------------
+legacy      50/50     1         True       True        1.7s
+bare        50/50     2         True       True        2.7s
+reasoning   50/50     2         True       True        6.9s
+
+distinct == 1 means mode collapse: the model gave one answer to every situation.
+sensitive == False means it did not notice a key number changing.
