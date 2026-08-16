@@ -126,6 +126,23 @@ def load_states(path: str | None) -> list[dict[str, Any]]:
     return states
 
 
+def subsample(states: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+    """Thin a corpus down to `limit` states, evenly spaced across the race.
+
+    Evenly spaced rather than random on purpose. Two runs of the same file with
+    the same limit must select the *same* states, or the comparison between
+    them measures the sample as much as the thing being compared — which is
+    exactly what stops the existing LM Studio numbers being lined up against a
+    second platform: that sample came from `shuf` and was never kept. Even
+    spacing also covers the whole race, where a random draw can cluster in one
+    stint and miss the fuel or damage range entirely.
+    """
+    if not limit or limit >= len(states):
+        return states
+    step = len(states) / limit
+    return [states[int(i * step)] for i in range(limit)]
+
+
 def ask(state: dict[str, Any], mode: str) -> dict[str, Any]:
     """One strategy request. Returns the decision dict, or {} plus an error note."""
     sensor_state = {
@@ -248,16 +265,34 @@ def _yn(value: bool | None) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", default="bare", choices=("legacy", "bare", "reasoning"))
+    variants = ("legacy", "bare", "reasoning", "concise")
+    parser.add_argument("--mode", default="bare", choices=variants)
     parser.add_argument("--states", help="JSONL trace of recorded race states")
+    parser.add_argument("--limit", type=int, metavar="N",
+                        help="use only N states, evenly spaced across the race "
+                             "(deterministic — the same file and N always give "
+                             "the same states, so two runs are comparable)")
     parser.add_argument("--compare", action="store_true",
-                        help="run all three variants over the same states")
+                        help="run every variant over the same states")
+    parser.add_argument("--modes", help="comma-separated subset for --compare, "
+                                        f"default all of: {', '.join(variants)}")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="print the model's factor list where present")
     args = parser.parse_args()
 
     states = load_states(args.states)
-    modes = ("legacy", "bare", "reasoning") if args.compare else (args.mode,)
+    total = len(states)
+    states = subsample(states, args.limit)
+    if len(states) != total:
+        print(f"using {len(states)} of {total} states (evenly spaced)")
+
+    if args.compare:
+        modes = tuple(m.strip() for m in args.modes.split(",")) if args.modes else variants
+        unknown = [m for m in modes if m not in variants]
+        if unknown:
+            parser.error(f"unknown mode(s): {', '.join(unknown)}")
+    else:
+        modes = (args.mode,)
     summaries = [run_variant(states, mode, args.verbose) for mode in modes]
 
     if len(summaries) > 1:
