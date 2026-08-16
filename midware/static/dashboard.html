@@ -1592,7 +1592,18 @@ function renderBotReasoning(s) {
     return;
   }
   box.hidden = false;
-  $("botReasoningDecision").textContent = s.strategy || "NORMAL";
+  // The badge shows the situational label ("Chasing · full throttle") while
+  // the tooltip keeps the underlying strategy name. The label is derived from
+  // live state each poll, so it tracks the race between model answers; the
+  // strategy behind it is what actually drives the car, and is what every
+  // measurement records — keeping both visible stops the two being conflated
+  // when reading a demo recording back.
+  const botBadge = $("botReasoningDecision");
+  const botStrategy = s.strategy || "NORMAL";
+  const botLabel = (s.details && s.details.label) || botStrategy;
+  botBadge.textContent = botLabel;
+  botBadge.title = botLabel === botStrategy
+    ? botStrategy : `${botLabel}  (strategy: ${botStrategy})`;
 
   botRenderRows(considered);
   if (!considered.length) {

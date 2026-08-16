@@ -2951,6 +2951,59 @@ def strategy_source_summary() -> dict[str, float]:
                                       key=lambda item: -item[1])}
 
 
+# Presentation-only labels for the dashboard.  These do NOT add strategies:
+# `strategy` stays one of _ALL_STRATEGIES and is what safety_filter,
+# compute_control, the trace and every metric in bot_replay.py still see, so
+# nothing here can move a measured result.  All this does is name the same
+# strategy differently depending on the race situation.
+#
+# Why it exists: the model answers every 6-40 s depending on hardware, and in
+# a clean race it answers ATTACK most of the time, so the card reads as frozen
+# even while the race changes underneath it.  The label is derived from live
+# state on every status tick (~1 s), so leading, being caught and chasing all
+# read differently without asking the model any more often.
+#
+# Edit the strings here to change the wording — nothing else reads them.
+_LABEL_CHASE_GAP   = 60.0   # m: car ahead close enough to call it a chase
+_LABEL_PRESSED_GAP = 25.0   # m: car behind close enough to call it pressure
+
+
+def display_label(strategy: str, state: dict[str, Any]) -> str:
+    """Human-facing name for the strategy currently in force.
+
+    Pure function of (strategy, state); never consulted by the control loop.
+    Falls back to the raw strategy name for anything unrecognised, so a new
+    strategy added later shows up as itself rather than vanishing.
+    """
+    opponents = state.get("opponents") or []
+    ahead = min((opponents[i] for i in _FRONT_CONE if i < len(opponents)), default=200.0)
+    behind = _rear_gap(opponents)
+    leading = state.get("race_pos", 0) == 1
+    damage = state.get("damage", 0.0)
+
+    if strategy == ATTACK:
+        if ahead < _LABEL_CHASE_GAP:
+            return "Chasing · full throttle"
+        if leading:
+            return "Leading · holding pace"
+        return "Attacking"
+    if strategy == NORMAL:
+        if behind < _LABEL_PRESSED_GAP:
+            return "Under pressure · holding position"
+        return "Balanced pace"
+    if strategy == DEFEND:
+        if damage >= _DMG_NO_ATTACK:
+            return "Damaged · nursing it home"
+        return "Defensive"
+    if strategy == BLOCK:
+        return "Blocking · defending the line"
+    if strategy == SAVE_FUEL:
+        return "Conserving fuel"
+    if strategy == PIT:
+        return "Pitting"
+    return strategy
+
+
 def safety_filter(strategy: str | None, state: dict[str, Any]) -> str:
     """Map a Granite-supplied strategy to a safe strategy using hard rules.
 
@@ -3919,12 +3972,16 @@ def run_bot(
                     last_control={"wire": control},
                     fallback=fallback_active,
                     error=strategist.last_error if strategist else "",
-                    details=(
-                        {"reasoning": {"considered": strategist.last_considered,
-                                       "rejected":   strategist.last_rejected,
-                                       **strategist.liveness()}}
-                        if strategist is not None else {}
-                    ),
+                    # `label` rides alongside `strategy`, never replaces it —
+                    # every consumer that matters (safety_filter, the trace,
+                    # bot_replay's metrics) reads `strategy`.
+                    details={
+                        "label": display_label(current_strategy, state),
+                        **({"reasoning": {"considered": strategist.last_considered,
+                                          "rejected":   strategist.last_rejected,
+                                          **strategist.liveness()}}
+                           if strategist is not None else {}),
+                    },
                 )
                 step += 1
 
