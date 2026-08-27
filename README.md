@@ -47,6 +47,7 @@ Granite is used for language and high-level reasoning. Time-critical tasks such 
 | `midware/commentary_engine.py` | Race-event detection, priorities, cooldowns, and deduplication |
 | `midware/bot_strategy.py` | Granite prompts and response validation for the AI bot |
 | `ai_bot.py` | SCR client, local driving controller, strategy handling, and safety filters |
+| `overlay-app/` | Optional Electron floating caption HUD for Feature 1 engineer replies |
 | `config.json` | Shared hosts and ports |
 
 ## Prerequisites
@@ -57,7 +58,7 @@ The recommended environment is Ubuntu 22.04/24.04 or Ubuntu under WSL2. You will
 - Git and a C/C++ build toolchain;
 - the Linux development libraries required by TORCS;
 - access to an OpenAI-compatible LM API;
-- an API key; and
+- an API key if your LM API provider requires one; and
 - the Base URL and model ID for an IBM Granite instruct/chat model.
 
 The middleware sends chat-completion requests to `<BASE_URL>/chat/completions`. A local model server is not required; an optional local setup is described in the appendix.
@@ -106,7 +107,7 @@ The simulator will be available at `BUILD/bin/torcs`. See [the full startup guid
 Obtain these three values from your LM API provider or project instructor:
 
 1. **Base URL** — the OpenAI-compatible API root, normally ending in `/v1`;
-2. **API key** — the credential used as a Bearer token; and
+2. **API key** — the credential used as a Bearer token, if your provider requires one; and
 3. **Model ID** — the exact IBM Granite model name accepted by the API.
 
 Do not commit API keys to this repository or include them in screenshots and reports.
@@ -124,7 +125,7 @@ Open the project dashboard:
 http://127.0.0.1:8880/static/dashboard.html
 ```
 
-Enter the LM API Base URL, API key, and Granite model ID in the dashboard settings, or configure them through the middleware API:
+Enter the LM API Base URL, API key if required, and Granite model ID in the dashboard settings, or configure them through the middleware API:
 
 ```bash
 curl -X POST http://127.0.0.1:8880/api/config/api \
@@ -178,6 +179,16 @@ Create a Granite-powered assistant that combines a driver's question with live t
    - “Should I pit now?”
    - “Why am I losing pace?”
 4. Compare the answer with the live telemetry displayed on screen.
+
+For an optional always-on-top engineer caption window, install the overlay dependencies once and start the Electron overlay:
+
+```bash
+cd overlay-app
+npm install
+npm start
+```
+
+The overlay renders Feature 1 engineer messages only. Commentary and coaching output stay in the browser dashboard.
 
 The same feature can be tested without the browser:
 
@@ -349,6 +360,19 @@ See [the bot evaluation guide](evaluation/bot/README.md) for more test templates
 ## Testing the Project
 
 Run the offline tests before a live demonstration:
+
+```bash
+source .venv/bin/activate
+bash tools/run_tests.sh
+```
+
+Add `--service` when you also want the runtime smoke checks with a temporary middleware process:
+
+```bash
+bash tools/run_tests.sh --service
+```
+
+For focused checks, run the main pieces directly:
 
 ```bash
 source .venv/bin/activate
