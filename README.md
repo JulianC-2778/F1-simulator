@@ -1,127 +1,94 @@
-# F1 Simulator — TORCS × IBM Granite
+# TORCS × IBM Granite: Student AI Racing Project
 
-基于 TORCS 1.3.7 的本地 AI 赛车演示系统。项目将 TORCS 遥测与 SCR 控制接口连接到 OpenAI-compatible 的 IBM Granite 模型服务，提供赛车工程师问答、实时遥测看板、赛事解说和 AI 驾驶四个功能方向。模型可以通过 LM Studio 在本机运行；AI 服务、字幕 Overlay 和语音能力均保留在本地。
+This project integrates **IBM Granite** models with the open-source racing simulator **TORCS**. It demonstrates four AI racing features and provides a practical walkthrough that students can follow to run the project, understand each feature, and create their own version.
 
-## 演示截图
+The project was designed for hands-on learning in generative AI, data science, real-time systems, and game development. It can also be used as an IBM SkillsBuild demonstration of how Granite can turn live data into useful decisions and natural-language experiences.
 
-<!-- TODO: 在最终录制后添加实际演示截图。 -->
+## The Four Features
 
-## 功能状态
+| Feature | What the student creates | How IBM Granite is used |
+| --- | --- | --- |
+| **1. AI Race Engineer** | A chat assistant that answers questions such as “Should I pit?” | Interprets live telemetry and returns a short race-engineering answer |
+| **2. Telemetry Analysis & Coaching** | A dashboard that explains pace, braking, steering, fuel, and track position | Adds a model-generated pre-race briefing and coaching context |
+| **3. Procedural Commentary** | Live commentary for overtakes, crashes, lap changes, battles, and pace events | Converts structured race events into natural commentary |
+| **4. AI Race Bot** | An autonomous TORCS driver with strategy and safety logic | Selects high-level strategies such as attack, defend, save fuel, or pit |
 
-| Feature | 功能 | 主要入口 | 当前状态 |
-| --- | --- | --- | --- |
-| 1 | AI 赛车工程师问答 | `POST /api/engineer/ask` | 由统一后端和 Model Broker 提供 |
-| 2 | 实时遥测看板与驾驶建议 | `GET /api/coach/dashboard` | 使用共享 TelemetryStore |
-| 3 | 事件驱动的 AI 实时赛事解说 | `python3 -m midware.app` | 正式后端入口 |
-| 4 | Granite 辅助策略的 AI 驾驶机器人 | `ai_bot.py --bot --granite` | 策略经 Middleware，控制循环保持本地 |
+All four features are coordinated through the same middleware, model connection, and dashboard. Features 1–3 share the human-driver telemetry store; Feature 4 sends its own SCR race snapshots for strategy decisions. Students can reproduce the complete project or choose one feature to extend.
 
-“已实现”表示代码入口和运行链路已经存在，不代表所有机器配置、模型或赛道组合均已完成自动化验收。
-
-## 系统架构
+## System Architecture
 
 ```text
-                              OpenAI-compatible Granite API
-                                        (LM Studio)
-                                             ^
-                                             |
-TORCS human driver -- UDP :3101 --> Middleware (sole listener)
-       |                              |-- Feature 1: racing engineer
-       |                              |-- Feature 2: dashboard / coach
-       |                              `-- Feature 3: commentary
-       |                                         |
-       |                         REST + WebSocket :8880/:8766
-       |                                         |
-       |                    |-- Browser dashboard (all features)
-       |                    `-- Electron overlay-app (Feature 1 caption only)
-       |                                         |
-       |                              optional Kokoro TTS :8881
-       |
-       `-- scr_server <------ UDP :3001 ------> Feature 4: ai_bot.py
+                              IBM Granite through an LM API
+                                         ^
+                                         |
+                                Model Broker / Middleware
+                              /          |          |       \
+                    Race Engineer      Coach    Commentary   Bot Strategy
+                         |                |          |             |
+                         `---------- Browser Dashboard ------------'
+                                         ^
+                                         |
+Human driver telemetry -- UDP :3101 -----+----- UDP :3001 -- AI Race Bot
+          ^                                                   |
+          |                                                   v
+          `-------------------------- TORCS <------------------'
 ```
 
-端口和主机默认值集中在 `config.json`，Python 代码通过 `config.py` 读取。环境变量优先于配置文件。更详细的模块说明见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)，集成协议见 [docs/integration-contract.md](docs/integration-contract.md)。
+Granite is used for language and high-level reasoning. Time-critical tasks such as telemetry collection, event detection, steering, braking, and safety fallbacks remain local. This makes the system responsive even when model generation is slow or temporarily unavailable.
 
-## 支持的平台
+## Main Project Files
 
-| 平台 | 支持情况 | 备注 |
-| --- | --- | --- |
-| Ubuntu 22.04/24.04（X11） | 推荐 | TORCS、Python 服务和 Electron 可在同一系统运行 |
-| Windows 10/11 + WSL2/WSLg（Ubuntu） | 支持 | LM Studio 通常运行在 Windows；WSLg 图形、麦克风和音频桥接可能需要额外处理 |
-| 原生 Windows / macOS | 未提供 | 当前没有对应的 TORCS 构建、启动和验收流程 |
+| File or directory | Purpose |
+| --- | --- |
+| `midware/app.py` | Main backend entry point for all four features |
+| `midware/static/dashboard.html` | Browser interface for commentary, engineer, coach, and bot status |
+| `midware/context_manager.py` | Engineer/commentary personas, prompt context, and history limits |
+| `midware/feature2_core.py` | Telemetry analysis and coaching rules |
+| `midware/commentary_engine.py` | Race-event detection, priorities, cooldowns, and deduplication |
+| `midware/bot_strategy.py` | Granite prompts and response validation for the AI bot |
+| `ai_bot.py` | SCR client, local driving controller, strategy handling, and safety filters |
+| `config.json` | Shared hosts and ports |
 
-Python 3.10+ 和 Node.js 18+ 为建议版本。WSL 中必须使用 Linux 版 `node`/`npm`，不能使用 `/mnt/c/...` 下的 Windows 可执行文件。
+## Prerequisites
 
-## 从全新 Ubuntu / WSL 环境安装
+The recommended environment is Ubuntu 22.04/24.04 or Ubuntu under WSL2. You will need:
 
-仓库没有“安装全部项目”的单一 shell 脚本。`setup_linux.sh` 是 TORCS 上游的运行配置安装辅助脚本，需要目标目录参数；它不是本 AI 项目的一键安装器。下面是完整、可复现的安装流程。
+- Python 3.10 or newer;
+- Git and a C/C++ build toolchain;
+- the Linux development libraries required by TORCS;
+- access to an OpenAI-compatible LM API;
+- an API key; and
+- the Base URL and model ID for an IBM Granite instruct/chat model.
 
-先获取代码（如果你正在阅读本地仓库，可跳过）：
+The middleware sends chat-completion requests to `<BASE_URL>/chat/completions`. A local model server is not required; an optional local setup is described in the appendix.
+
+## Part A — Shared Setup
+
+Complete these steps once before trying any of the four features.
+
+### 1. Clone the repository
 
 ```bash
-cd ~
 git clone https://github.com/JulianC-2778/F1-simulator.git
 cd F1-simulator
 ```
 
-### 1. 安装系统依赖
+### 2. Create the Python environment
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential automake autoconf libtool pkg-config \
-  libglib2.0-dev libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev \
-  libplib-dev libopenal-dev libalut-dev libxi-dev libxmu-dev \
-  libxrender-dev libxrandr-dev libpng-dev libvorbis-dev \
-  python3 python3-venv python3-pip python3-tk \
-  nodejs npm curl ffmpeg alsa-utils pulseaudio-utils \
-  xdotool x11-utils \
-  libatk-bridge2.0-0 libgtk-3-0 libnss3 libxss1 libasound2 \
-  libdrm2 libgbm1 speech-dispatcher espeak-ng
-```
-
-`xdotool` 和 `xwininfo`（由 `x11-utils` 提供）是 `torcs_launcher.sh` 实际使用的启动辅助工具。无麦克风需求时可不安装 `ffmpeg`、`alsa-utils`、`pulseaudio-utils`；不用 Electron 时可省略对应桌面运行库。
-
-### 2. 创建 Python 环境并安装依赖
-
-```bash
-cd ~/F1-simulator
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-
-# 完整安装：核心 + 语音输入 + Kokoro TTS
-python -m pip install -r requirements.txt
-```
-
-如果只演示不含语音的核心功能，可缩短安装时间：
-
-```bash
 python -m pip install -r requirements-core.txt
 ```
 
-分层依赖如下：
+Use `requirements.txt` instead if you also want the optional voice-input and local TTS features.
 
-- `requirements-core.txt`：midware、Granite API、WebSocket 广播和测试依赖。
-- `requirements-voice.txt`：Feature 1 的 faster-whisper 语音输入。
-- `requirements-tts.txt`：Kokoro TTS 服务及模型下载工具。
-- `requirements.txt`：聚合以上三个文件，用于完整安装。
+### 3. Build TORCS
 
-### 3. 安装 Electron Overlay（Feature 1 工程师字幕窗口，可选）
+After installing the TORCS development libraries for your Linux distribution:
 
 ```bash
-cd ~/F1-simulator/overlay-app
-npm install
-cd ..
-```
-
-这个 Electron 应用只渲染 Feature 1（AI 赛车工程师）的悬浮字幕窗口；Feature 3 的实时解说显示在下方“最小演示流程”里打开的浏览器 dashboard，不再需要这里的 overlay-app。
-
-WSL 用户应先执行 `which node` 和 `which npm`，确认结果不是 `/mnt/c/...` 或 `/mnt/d/...`。
-
-### 4. 编译 TORCS
-
-```bash
-cd ~/F1-simulator
 export CFLAGS="-fPIC"
 export CPPFLAGS="$CFLAGS"
 export CXXFLAGS="$CFLAGS"
@@ -132,199 +99,328 @@ make install
 make datainstall
 ```
 
-编译结果位于仓库内的 `BUILD/`，不会安装到系统目录。TORCS 用户配置仍默认写入 `~/.torcs`。
+The simulator will be available at `BUILD/bin/torcs`. See [the full startup guide](docs/full-stack-e2e-startup.md) for platform-specific setup.
 
-### 5. 可选：准备 Kokoro 模型
+### 4. Prepare the Granite LM API
 
-```bash
-source ~/F1-simulator/.venv/bin/activate
-cd ~/F1-simulator
-python -c "from huggingface_hub import hf_hub_download; hf_hub_download('hexgrad/Kokoro-82M', 'kokoro-v1_0.pth', local_dir='.'); hf_hub_download('hexgrad/Kokoro-82M', 'voices/bm_lewis.pt', local_dir='.')"
-```
+Obtain these three values from your LM API provider or project instructor:
 
-模型权重不提交到 Git。详细语音配置见 [docs/tts-setup.md](docs/tts-setup.md) 和 [docs/voice-input-setup.md](docs/voice-input-setup.md)。
+1. **Base URL** — the OpenAI-compatible API root, normally ending in `/v1`;
+2. **API key** — the credential used as a Bearer token; and
+3. **Model ID** — the exact IBM Granite model name accepted by the API.
 
-## Granite 模型选择与配置
+Do not commit API keys to this repository or include them in screenshots and reports.
 
-1. 在 LM Studio 中下载并加载一个 IBM Granite instruct/chat 模型。
-2. 在 Developer / Local Server 页面启动 OpenAI-compatible server，通常为 `http://127.0.0.1:1234/v1`。
-3. 建议优先选择机器能够稳定实时运行的 Granite 模型；仓库不锁定具体量化版本。较小模型响应更快，较大模型通常需要更多内存/显存。
-4. 验证连接：
+### 5. Start the shared middleware
 
 ```bash
-cd ~/F1-simulator
-source .venv/bin/activate
-python lmstudio_smoke_test.py
-```
-
-默认会读取服务的 `/v1/models` 并优先选择 ID 中包含 `granite` 的模型。需要显式指定时：
-
-```bash
-export TORCS_AI_BASE_URL="http://127.0.0.1:1234/v1"
-export TORCS_AI_MODEL="<LM Studio 中显示的模型 ID>"
-```
-
-WSL2 无法访问 Windows 上的 LM Studio 时，在 LM Studio 开启局域网访问，并把 `127.0.0.1` 替换为其显示的可达地址。Feature 1 还支持 `TORCS_ENGINEER_BASE_URL` / `TORCS_ENGINEER_MODEL` 覆盖；项目端口可直接编辑 `config.json` 或使用 `TORCS_MIDWARE_PORT`、`TORCS_FEATURE2_PORT`、`TORCS_TTS_PORT` 等环境变量。
-
-## 最小演示流程（Feature 3 实时解说）
-
-以下流程从仓库根目录开始，使用三个终端。解说输出显示在浏览器 dashboard（`http://127.0.0.1:8880`），不需要启动 Electron overlay-app。
-
-终端 1：启动 Granite 模型服务后，启动主 midware：
-
-```bash
-cd ~/F1-simulator
 source .venv/bin/activate
 python3 -m midware.app
 ```
 
-终端 2：配置遥测并启动 TORCS：
+Open the project dashboard:
+
+```text
+http://127.0.0.1:8880/static/dashboard.html
+```
+
+Enter the LM API Base URL, API key, and Granite model ID in the dashboard settings, or configure them through the middleware API:
 
 ```bash
-cd ~/F1-simulator
+curl -X POST http://127.0.0.1:8880/api/config/api \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base_url":"YOUR_LM_API_BASE_URL",
+    "api_key":"YOUR_LM_API_KEY",
+    "model":"YOUR_GRANITE_MODEL_ID"
+  }'
+```
+
+Check the complete `middleware → LM API → Granite` connection with:
+
+```bash
+curl -X POST http://127.0.0.1:8880/api/engineer/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Reply with: Granite is ready"}'
+```
+
+## Part B — Start the Telemetry Feed
+
+Features 1, 2, and 3 use telemetry from a human-driven TORCS car. In a second terminal:
+
+```bash
 mkdir -p logs
 export TORCS_PLAYER_LOG_DIR="$PWD/logs"
 export TORCS_PLAYER_LOG_HZ=20
 export TORCS_PLAYER_UDP_HOST=127.0.0.1
 export TORCS_PLAYER_UDP_PORT=3101
-./torcs_launcher.sh
+bash torcs_launcher.sh
 ```
 
-若不需要 WSLg 窗口修复，也可直接运行 `./BUILD/bin/torcs`。进入 **Race → Quick Race**，选择 human driver 并开始驾驶。
+In TORCS, open **Race → Quick Race**, select a human driver, choose a track, and start driving. The dashboard should begin showing changing speed, fuel, lap, and position values.
 
-终端 3（可选）：启动本地 TTS：
+Feature 4 uses a different two-way SCR control connection; its TORCS steps are included in its own walkthrough below.
+
+---
+
+## Feature 1 Walkthrough — AI Race Engineer
+
+### Goal
+
+Create a Granite-powered assistant that combines a driver's question with live telemetry and returns a concise, race-relevant answer.
+
+### Run it
+
+1. Complete the shared setup and start the human-driver telemetry feed.
+2. Open the **Engineer** tab in the dashboard.
+3. Ask questions such as:
+   - “What is my current fuel level?”
+   - “Should I pit now?”
+   - “Why am I losing pace?”
+4. Compare the answer with the live telemetry displayed on screen.
+
+The same feature can be tested without the browser:
 
 ```bash
-cd ~/F1-simulator
-source .venv/bin/activate
-python tts_server.py
+curl -X POST http://127.0.0.1:8880/api/engineer/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Should I pit now?"}'
 ```
 
-验收信号：`http://127.0.0.1:8880` 能打开、遥测数值随比赛变化、dashboard 的 Commentary 标签页已连接（WebSocket 状态显示 ready），并在事件触发后显示 Granite 生成的解说。
+### Create your own version
 
-## 四个 Feature 的启动方法
+1. Edit the professional or concise engineer persona in `midware/context_manager.py`.
+2. Choose which telemetry fields should be included in the question context.
+3. Add a new supported question, such as a fuel target or damage warning.
+4. Keep the rule that the model must not invent unavailable telemetry.
 
-### Feature 1 — AI 赛车工程师
+### Verify it
+
+Ask the same question under two different car states. A successful engineer should use the supplied values, change its advice when the situation changes, stay focused on racing, and clearly admit when TORCS does not provide the requested data.
+
+---
+
+## Feature 2 Walkthrough — Telemetry Analysis & Coaching
+
+### Goal
+
+Create a coaching dashboard that turns raw lap data into clear feedback about speed, braking, throttle, steering, track position, fuel use, and areas for improvement.
+
+### Run it
+
+1. Complete the shared setup and start the human-driver telemetry feed.
+2. Open the **Coach** tab in the dashboard.
+3. Use **Drive now** for live guidance and **Plan and review** for track preparation and session feedback.
+4. Drive several laps so the system has enough history to compare behaviour.
+
+The live coaching payload is also available at:
 
 ```bash
-cd ~/F1-simulator
-source .venv/bin/activate
-python chat_engineer.py  # legacy debug API client
-# 或调试用桌面 GUI
-python chat_engineer_gui.py
+curl http://127.0.0.1:8880/api/coach/dashboard
 ```
 
-没有 TORCS 时可使用假数据演示：
+Request a pre-race briefing with a Granite supplement:
 
 ```bash
-TORCS_ENGINEER_USE_FAKE_DATA=true python chat_engineer.py
+curl -X POST http://127.0.0.1:8880/api/coach/prebrief \
+  -H "Content-Type: application/json" \
+  -d '{"driver_style":"auto","road_condition":"dry","use_model":true}'
 ```
 
-在提问提示符输入 `v` 可录入英文语音。该工具只调用 Middleware API，不监听 UDP，也不直连 Granite。
+### Create your own version
 
-### Feature 2 — 遥测看板 / 驾驶建议
+1. Select one coaching target, such as late braking, unstable steering, or poor corner exits.
+2. Add or tune its measurable rule in `midware/feature2_core.py`.
+3. Improve the Granite pre-brief prompt so it explains the most important finding clearly.
+4. Add track-specific context in `midware/shared/track_profiles.py` if needed.
 
-先启动 `python3 -m midware.app`。以下独立服务仅为一个版本周期的兼容代理：
+### Verify it
+
+Record a baseline lap, follow the coaching instruction, and drive another lap. Compare lap time, braking behaviour, track position, and consistency. The feedback should cite observed data and provide one practical action rather than a vague motivational message.
+
+---
+
+## Feature 3 Walkthrough — Procedural Commentary
+
+### Goal
+
+Create live race commentary that reacts to structured events instead of sending every telemetry frame directly to the language model.
+
+### Run it
+
+1. Complete the shared setup and start the human-driver telemetry feed.
+2. Open the **Commentary** tab in the dashboard.
+3. Select event or hybrid commentary mode in the page, or configure hybrid mode through the API:
 
 ```bash
-cd ~/F1-simulator
-source .venv/bin/activate
-python midware/feature2_service.py
+curl -X POST http://127.0.0.1:8880/api/commentary/config \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"hybrid","max_words":45}'
 ```
 
-打开 `http://127.0.0.1:8766/feature2`。保留的早期 CLI 驾驶建议入口为：
+4. Drive a lap and create events naturally: complete a lap, change position, battle another car, leave the track, or make contact.
+5. Watch Granite commentary arrive in the dashboard through WebSocket streaming.
+
+You can trigger a manual line for a quick test:
 
 ```bash
-python telemetry_analyzer.py
+curl -X POST http://127.0.0.1:8880/api/commentary/manual \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Give one short commentary line about the current race."}'
 ```
 
-### Feature 3 — AI 实时赛事解说
+### Create your own version
 
-按“最小演示流程”启动 `python3 -m midware.app` 和 TORCS，在浏览器打开 `http://127.0.0.1:8880` 查看解说输出（不需要 overlay-app）。事件检测、上下文构建与流式输出说明见 [docs/commentary-loop.md](docs/commentary-loop.md)。
+1. Add or tune an event in `midware/commentary_engine.py`.
+2. Select the event data sent to Granite in `midware/event_payload_config.py`.
+3. Adjust commentary tone, length, or persona in `midware/context_manager.py`.
+4. Set event priority, cooldown, and deduplication so commentary remains timely without repeating itself.
 
-### Feature 4 — AI 驾驶机器人
+### Verify it
 
-先以 SCR 2013 协议启动 TORCS：
+Trigger each chosen event more than once. Confirm that the correct event produces commentary, repeated events are rate-limited, higher-priority moments are handled first, and the model does not claim race facts missing from the event payload.
+
+---
+
+## Feature 4 Walkthrough — AI Race Bot
+
+### Goal
+
+Create an autonomous race bot in which Granite makes high-level strategy decisions while a fast local controller handles steering, throttle, braking, gears, recovery, and safety.
+
+### Run it
+
+Keep Granite and the middleware running. Start TORCS in SCR 2013 mode:
 
 ```bash
-cd ~/F1-simulator
 ./BUILD/bin/torcs -ver 2013
 ```
 
-在 Quick Race 中选择 `scr_server 1`。另开终端：
+In TORCS:
+
+1. Open **Race → Quick Race**.
+2. Choose a track.
+3. Select **scr_server 1** as the driver.
+4. Start the race and wait at `Initializing Driver scr_server 1...`.
+
+In another terminal, launch the bot:
 
 ```bash
-cd ~/F1-simulator
 source .venv/bin/activate
-python ai_bot.py --bot --granite
+python3 ai_bot.py --bot --granite
 ```
 
-`--bot` 必须提供；不加时只运行内置自测试。完整操作和故障排查见 [docs/torcs-granite-quickstart.md](docs/torcs-granite-quickstart.md)。
+The bot connects to UDP port `3001`. Granite chooses from strategies such as `ATTACK`, `NORMAL`, `DEFEND`, `SAVE_FUEL`, and `PIT`; the local controller converts the active strategy into driving commands.
 
-## 测试
-
-项目包含标准库单元测试和内置控制算法回归测试；完整端到端验收仍需真实 TORCS/Granite 环境。
-分层流程、人工验收清单和覆盖缺口见 [docs/testing-plan.md](docs/testing-plan.md)。
-
-一键执行静态检查、离线单测、集成测试和服务冒烟（L0–L3）：
+Test the controller without Granite first if necessary:
 
 ```bash
-bash tools/run_tests.sh --service
+python3 ai_bot.py --bot --strategy NORMAL
 ```
 
-也可以逐条手动执行：
+### Create your own version
+
+1. Edit the strategy descriptions or prompt in `midware/bot_strategy.py`.
+2. Add useful telemetry to the race snapshot supplied to Granite.
+3. Tune how each strategy changes speed, throttle, braking, or racing line in `ai_bot.py`.
+4. To add a strategy, update the allowed values, prompt, controller behaviour, response validation, and safety fallback.
+
+Keep model output structured:
+
+```json
+{
+  "strategy": "SAVE_FUEL",
+  "reason": "Fuel is low for the remaining race distance."
+}
+```
+
+### Verify it
+
+Run the same track with a fixed `NORMAL` strategy and with Granite enabled. Compare lap time, fuel, damage, strategy changes, and recovery behaviour. Temporarily make the LM API unavailable during a test run and confirm that the local fallback keeps the car under control.
+
+Save a detailed trace with:
 
 ```bash
-cd ~/F1-simulator
+TORCS_BOT_TRACE=bot_run.jsonl python3 ai_bot.py --bot --granite
+```
+
+See [the bot evaluation guide](evaluation/bot/README.md) for more test templates.
+
+## Testing the Project
+
+Run the offline tests before a live demonstration:
+
+```bash
 source .venv/bin/activate
 
-# Python 语法检查
-python -m compileall -q *.py midware tools
+# Core protocol and controller checks
+python3 ai_bot.py
 
-# Granite 连通性（需要已启动模型服务）
+# Unit and integration tests for all features
+python -m pytest tests/unit tests/integration -q
+
+# Dedicated bot tests
+python -m pytest tests/bot -q
+```
+
+End-to-end testing still requires a real TORCS session and a running Granite model.
+
+## Suggested Student Project Process
+
+For any of the four features:
+
+1. Run the existing feature and save a baseline result.
+2. Choose one clear problem or improvement.
+3. Change one prompt, rule, telemetry field, or control parameter.
+4. Repeat the same race scenario.
+5. Compare results and explain what changed.
+6. Document limitations, especially model latency and missing telemetry.
+
+A short final demo should show the live TORCS data, Granite input and output, the student's modification, evidence of improvement, and safe behaviour when the model is unavailable.
+
+## Troubleshooting
+
+| Problem | Check |
+| --- | --- |
+| Dashboard values do not change | Confirm TORCS is racing and UDP telemetry is sent to port `3101` |
+| Granite requests fail | Check the LM API Base URL, API key, model ID, and account access |
+| Commentary never appears | Enable event/hybrid mode and confirm telemetry events are being detected |
+| Coach page has no history | Drive for several seconds and confirm `/api/telemetry/history` contains frames |
+| TORCS stays on `Initializing Driver...` | Start `ai_bot.py --bot`; check that `scr_server 1` uses port `3001` |
+| `ai_bot.py` prints tests and exits | Add the required `--bot` option |
+| TORCS has sound but no window in WSL2 | See [WSLg black-screen recovery](docs/wslg-black-screen-recovery.md) |
+
+More detailed TORCS and dashboard instructions are available in [the full-stack startup guide](docs/full-stack-e2e-startup.md).
+
+## Appendix — Optional Local Granite with LM Studio
+
+[LM Studio](https://lmstudio.ai/) can replace the remote LM API when students want to run Granite locally and have suitable hardware. It is optional and is not required by the project architecture.
+
+1. Download and load an IBM Granite instruct/chat model in LM Studio.
+2. Open **Developer / Local Server** and start the OpenAI-compatible server.
+3. Copy the model ID displayed by LM Studio.
+4. Configure the middleware with the local endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8880/api/config/api \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base_url":"http://127.0.0.1:1234/v1",
+    "api_key":"",
+    "model":"YOUR_LOCAL_GRANITE_MODEL_ID"
+  }'
+```
+
+If LM Studio runs on Windows while the project runs in WSL2, replace `127.0.0.1` with the Windows host IP reported by `ip route | grep default` and allow local-network access in LM Studio.
+
+The local connection can also be checked with:
+
+```bash
 python lmstudio_smoke_test.py
-
-# AI bot 内置协议/控制测试（不连接 TORCS）
-python ai_bot.py
-
-# 后端单元测试
-python -m unittest discover -s tests/unit -v
-
-# API/WebSocket/UDP/Bot 集成测试
-python -m unittest discover -s tests/integration -v
-
-# 运行时矩阵检查
-python tools/runtime_matrix_check.py
-
-# Electron JavaScript 静态检查
-node --check overlay-app/electron/main.js
-node --check overlay-app/src/engineer-renderer.js
 ```
 
-端到端测试应至少确认：UDP 3101 遥测变化、Feature 2 页面更新、WebSocket 断线重连、Feature 1 输出路由到工程师窗口、TTS `/health` 返回正常，以及 `ai_bot.py` 与 UDP 3001 完成 SCR 握手。Overlay 的详细人工验收表见 [overlay-app/TESTING.md](overlay-app/TESTING.md)。
-
-## Demo 视频与 vlog
-
-- Demo 视频：
-- 开发 vlog：
-
-## 已知限制
-
-- 首次安装不是完全离线流程：Python/npm 包、Granite 模型、Whisper 模型和 Kokoro 权重均可能需要下载。
-- WSLg 的 OpenGL、PulseAudio 麦克风和音频播放存在环境差异；黑屏恢复见 [docs/wslg-black-screen-recovery.md](docs/wslg-black-screen-recovery.md)。
-- LM Studio 位于 Windows、服务位于 WSL2 时，`localhost` 路由取决于 WSL 网络模式。
-- Feature 2 独立服务依赖主 midware 的遥测历史 API；它不能单独产生真实遥测。
-- 生产模式只有 Middleware 监听 UDP 3101；旧工具不会自动回退绑定该端口。
-- Kokoro 权重和 voices 不在仓库中，必须单独下载。
-- Feature 4 的 Granite 只通过 Model Broker 负责低频策略选择；实时转向、油门、制动和安全过滤由本地控制器完成。
-- 自动化测试和 CI 覆盖仍不完整，最终演示前需执行人工端到端检查。
-
-## 数据采集与底层接口
-
-- human driver 可按 `TORCS_PLAYER_LOG_*` 环境变量写出 CSV，并将同一遥测行发送至 UDP 3101。
-- `scr_server 1` 至 `scr_server 10` 使用 UDP 3001–3010，为外部客户端提供双向 SCR 控制接口。
-- 更完整的字段、协议与原生 TORCS 信息保留在 [README](README) 和 `doc/` 目录中。
+See [the local TORCS + Granite quickstart](docs/torcs-granite-quickstart.md) for detailed LM Studio and WSL2 instructions.
 
 ## License
 
-TORCS 引擎及项目代码沿用仓库内已有许可证。部分 `data/cars/models/pw-*` 和 `data/cars/models/kc-*` 车辆素材具有单独许可，请在再分发前查看相应目录的 `readme.txt`。
+TORCS and the project code use the licenses included in this repository. Some car assets under `data/cars/models/` have separate terms; review their local license or readme files before redistribution.
