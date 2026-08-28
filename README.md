@@ -287,11 +287,11 @@ curl -X POST http://127.0.0.1:8880/api/commentary/manual \
 3. Adjust commentary tone, length, or persona in `midware/context_manager.py`.
 4. Set event priority, cooldown, and deduplication so commentary remains timely without repeating itself.
 5. Choose the commentary voice source in the dashboard's Commentary tab — a TTS provider dropdown lets you pick:
+   - **Browser** — uses the client's built-in Web Speech API (`speechSynthesis`), free and needs no server process; voice/rate/pitch/volume are pulled from whatever voices the browser exposes.
+   - **Kokoro (server TTS)** — routes audio through the local `tts_server.py` (see `docs/tts-setup.md`), with server-side voice/speed/volume controls.
+   - **Custom HTTP** — points at any OpenAI-compatible or custom TTS endpoint (URL, API key, model, voice, response format all configurable).
+   - **Off** — disables spoken playback entirely.
 
-Browser — uses the client's built-in Web Speech API (speechSynthesis), free and needs no server process; voice/rate/pitch/volume are pulled from whatever voices the browser exposes.
-Kokoro (server TTS) — routes audio through the local tts_server.py (see docs/tts-setup.md), with server-side voice/speed/volume controls.
-Custom HTTP — points at any OpenAI-compatible or custom TTS endpoint (URL, API key, model, voice, response format all configurable).
-Off — disables spoken playback entirely.
 ### Verify it
 
 Trigger each chosen event more than once. Confirm that the correct event produces commentary, repeated events are rate-limited, higher-priority moments are handled first, and the model does not claim race facts missing from the event payload.
